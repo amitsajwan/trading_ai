@@ -56,7 +56,7 @@ Macro Economic Context:
 - Inflation Rate (CPI): {inflation_rate if inflation_rate else 'Unknown'}
 - Banking Sector NPA Ratio: {npa_ratio if npa_ratio else 'Unknown'}
 
-Analyze the macro regime and its impact on Bank Nifty.
+Analyze the macro regime and its impact on {settings.instrument_name}.
 """
             
             response_format = {

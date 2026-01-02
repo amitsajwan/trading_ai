@@ -88,7 +88,7 @@ Your role: Place orders via trading API and track execution."""
         
         instrument_token = self._get_instrument_token()
         if not instrument_token:
-            raise ValueError("Could not find Bank Nifty instrument token")
+            raise ValueError(f"Could not find {settings.instrument_name} instrument token")
         
         try:
             # Determine transaction type

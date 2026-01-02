@@ -24,11 +24,15 @@ class BaseAgent(ABC):
         """Initialize base agent."""
         self.agent_name = agent_name
         self.system_prompt = system_prompt or self._get_default_prompt()
+        
+        # Substitute instrument name from settings in prompts
+        self.system_prompt = self._substitute_instrument_placeholders(self.system_prompt)
+        
         # Use multi-provider manager for automatic fallback
         self.llm_manager = get_llm_manager()
         # Keep old client for backward compatibility (will use manager)
         self.llm_client = None  # Deprecated - use llm_manager instead
-        logger.info(f"Initialized {agent_name} agent with multi-provider LLM manager")
+        logger.info(f"Initialized {agent_name} agent with multi-provider LLM manager for {settings.instrument_name}")
     
     def _initialize_llm_client(self):
         """Initialize LLM client (Groq, OpenAI, Azure OpenAI, Ollama, Hugging Face, Together AI, or Gemini)."""
@@ -101,6 +105,14 @@ class BaseAgent(ABC):
                 raise ImportError("Google Generative AI package not installed. Run: pip install google-generativeai")
         else:
             raise ValueError(f"Unknown LLM provider: {settings.llm_provider}. Use 'groq', 'openai', 'azure', 'ollama', 'huggingface', 'together', or 'gemini'.")
+    
+    def _substitute_instrument_placeholders(self, prompt: str) -> str:
+        """Substitute instrument-specific placeholders in prompts."""
+        return prompt.format(
+            instrument_name=settings.instrument_name,
+            instrument_symbol=settings.instrument_symbol,
+            instrument_exchange=settings.instrument_exchange
+        )
     
     @abstractmethod
     def _get_default_prompt(self) -> str:

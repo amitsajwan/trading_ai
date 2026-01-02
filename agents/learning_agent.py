@@ -26,7 +26,7 @@ class LearningAgent(BaseAgent):
     
     def _get_default_prompt(self) -> str:
         """Get default system prompt."""
-        return """You are the Learning Agent for a Bank Nifty trading system.
+        return """You are the Learning Agent for a {instrument_name} trading system.
 Your role: Analyze completed trades, identify patterns, and suggest improvements to agent prompts."""
     
     def analyze_trades(self, days: int = 7) -> Dict[str, Any]:

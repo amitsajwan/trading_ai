@@ -20,7 +20,7 @@ class SentimentAnalysisAgent(BaseAgent):
     
     def _get_default_prompt(self) -> str:
         """Get default system prompt."""
-        return """You are the Sentiment Analysis Agent for a Bank Nifty trading system.
+        return """You are the Sentiment Analysis Agent for a {instrument_name} trading system.
 Analyze market sentiment from news, social media, and options flow."""
     
     def process(self, state: AgentState) -> AgentState:

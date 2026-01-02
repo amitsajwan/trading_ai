@@ -67,7 +67,7 @@ Banking Sector Metrics:
 - NPA Ratio: {npa_ratio if npa_ratio else 'Unknown'}
 
 Analyze the fundamental strength of the banking sector and provide your assessment.
-Focus on factors that directly impact Bank Nifty performance.
+Focus on factors that directly impact {settings.instrument_name} performance.
 """
             
             response_format = {
