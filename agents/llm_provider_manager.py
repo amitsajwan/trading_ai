@@ -168,7 +168,7 @@ class LLMProviderManager:
                     from openai import OpenAI
                     self.provider_clients["ollama"] = OpenAI(
                         api_key="ollama",
-                        base_url=ollama_base_url
+                        base_url=f"{ollama_base_url}/v1" if not ollama_base_url.endswith("/v1") else ollama_base_url
                     )
                     logger.info(f"✅ Ollama provider initialized (model: {ollama_model})")
                 except Exception as e:
