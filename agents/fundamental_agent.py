@@ -5,6 +5,7 @@ from typing import Dict, Any
 from agents.base_agent import BaseAgent
 from agents.state import AgentState
 from pathlib import Path
+from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -14,9 +15,8 @@ class FundamentalAnalysisAgent(BaseAgent):
     
     def __init__(self):
         """Initialize fundamental analysis agent."""
-        prompt_path = Path(__file__).parent.parent / "config" / "prompts" / "fundamental_analysis.txt"
-        system_prompt = prompt_path.read_text() if prompt_path.exists() else self._get_default_prompt()
-        super().__init__("fundamental", system_prompt)
+        # Use dynamic prompt so system is instrument-decoupled (crypto vs indices, etc.)
+        super().__init__("fundamental", self._get_default_prompt())
     
     def _get_default_prompt(self) -> str:
         """Get default system prompt."""
@@ -49,6 +49,7 @@ Analyze fundamental factors affecting {instrument_name} performance."""
             latest_news = state.latest_news[:10] if state.latest_news else []
             rbi_rate = state.rbi_rate
             npa_ratio = state.npa_ratio
+            instrument_name = settings.instrument_name
             
             # Prepare prompt
             news_summary = "\n".join([
@@ -57,17 +58,14 @@ Analyze fundamental factors affecting {instrument_name} performance."""
             ]) if latest_news else "No recent news available"
             
             prompt = f"""
-Latest Banking Sector News:
+Latest News:
 {news_summary}
 
-RBI Policy Context:
-- Current Repo Rate: {rbi_rate if rbi_rate else 'Unknown'}
-
-Banking Sector Metrics:
+Macro Context (if available):
+- Policy Rate: {rbi_rate if rbi_rate else 'Unknown'}
 - NPA Ratio: {npa_ratio if npa_ratio else 'Unknown'}
 
-Analyze the fundamental strength of the banking sector and provide your assessment.
-Focus on factors that directly impact Bank Nifty performance.
+Analyze the fundamental/news-driven backdrop and provide your assessment for {instrument_name}.
 """
             
             response_format = {

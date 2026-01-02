@@ -217,16 +217,28 @@ class SystemHealthChecker:
                         "message": f"Agent import failed: {e}"
                     }
             
-            # Check LLM provider
-            llm_status = "configured" if (settings.groq_api_key or settings.openai_api_key) else "not_configured"
+            # Check LLM provider availability (including local Ollama)
+            try:
+                from agents.llm_provider_manager import get_llm_manager
+                llm_manager = get_llm_manager()
+                provider_status = llm_manager.get_provider_status()
+                available = len([p for p in provider_status.values() if p.get("status") == "available"])
+                llm_configured = available > 0
+                llm_current = llm_manager.current_provider
+            except Exception as e:
+                llm_configured = bool(settings.groq_api_key or settings.openai_api_key or settings.google_api_key)
+                llm_current = None
+                provider_status = {"error": {"status": "error", "last_error": str(e)}}
             
             return {
-                "status": "healthy" if llm_status == "configured" else "degraded",
-                "llm_provider": settings.llm_provider,
-                "llm_configured": llm_status == "configured",
+                "status": "healthy" if llm_configured else "degraded",
+                "llm_provider_config": settings.llm_provider,
+                "llm_current_provider": llm_current,
+                "llm_configured": llm_configured,
+                "llm_providers": provider_status,
                 "agents": agent_status,
                 "total_agents": len(agents),
-                "message": f"{len(agents)} agents available, LLM: {settings.llm_provider}"
+                "message": f"{len(agents)} agents available, LLM current={llm_current or 'none'}"
             }
         except Exception as e:
             return {
@@ -422,12 +434,13 @@ class SystemHealthChecker:
             
             # Get latest analysis from agent_decisions collection (includes HOLD decisions)
             latest_analysis = analysis_collection.find_one(
+                {"instrument": settings.instrument_symbol},
                 sort=[("timestamp", -1)]
             )
             
             # Get latest trade with agent decisions
             latest_trade = trades_collection.find_one(
-                {"agent_decisions": {"$exists": True}},
+                {"agent_decisions": {"$exists": True}, "instrument": settings.instrument_symbol},
                 sort=[("entry_timestamp", -1)]
             )
             

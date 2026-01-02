@@ -703,6 +703,7 @@ async def get_latest_signal() -> Dict[str, Any]:
         
         # Get the most recent trade decision (even if not executed)
         latest_trade = trades_collection.find_one(
+            {"instrument": settings.instrument_symbol},
             sort=[("entry_timestamp", -1)]
         )
         
@@ -811,7 +812,7 @@ async def get_recent_trades(limit: int = 10) -> List[Dict[str, Any]]:
         trades_collection = get_collection(db, "trades_executed")
         
         trades = list(trades_collection.find(
-            {},
+            {"instrument": settings.instrument_symbol},
             sort=[("entry_timestamp", -1)]
         ).limit(limit))
         
@@ -887,7 +888,7 @@ async def get_latest_analysis() -> Dict[str, Any]:
         
         # Fallback: Get most recent trade with agent decisions
         latest_trade = trades_collection.find_one(
-            {"agent_decisions": {"$exists": True}},
+            {"agent_decisions": {"$exists": True}, "instrument": settings.instrument_symbol},
             sort=[("entry_timestamp", -1)]
         )
         

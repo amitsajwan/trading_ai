@@ -88,7 +88,7 @@ Your role: Place orders via trading API and track execution."""
         
         instrument_token = self._get_instrument_token()
         if not instrument_token:
-            raise ValueError("Could not find Bank Nifty instrument token")
+            raise ValueError(f"Could not find instrument token for {settings.instrument_symbol}")
         
         try:
             # Determine transaction type
@@ -101,7 +101,7 @@ Your role: Place orders via trading API and track execution."""
             order_id = self.kite.place_order(
                 variety=self.kite.VARIETY_BO,  # Bracket order
                 exchange=self.kite.EXCHANGE_NSE,
-                tradingsymbol="NIFTY BANK",
+                tradingsymbol=settings.instrument_symbol,
                 transaction_type=transaction_type,
                 quantity=quantity,
                 product=self.kite.PRODUCT_MIS,  # Intraday
@@ -192,6 +192,10 @@ Your role: Place orders via trading API and track execution."""
             trade_doc = {
                 "trade_id": state.trade_id,
                 "order_id": state.order_id,
+                "instrument": settings.instrument_symbol,
+                "instrument_name": settings.instrument_name,
+                "instrument_exchange": settings.instrument_exchange,
+                "data_source": settings.data_source,
                 "signal": signal_str,
                 "quantity": quantity,
                 "entry_price": entry_price,

@@ -18,7 +18,8 @@ class PortfolioManagerAgent(BaseAgent):
     
     def _get_default_prompt(self) -> str:
         """Get default system prompt."""
-        return """You are the Portfolio Manager Agent for a Bank Nifty trading system.
+        instrument_name = settings.instrument_name
+        return f"""You are the Portfolio Manager Agent for a {instrument_name} trading system.
 Your role: Synthesize all agent analyses and make final trading decisions.
 You receive inputs from technical, fundamental, sentiment, macro, bull/bear researchers, and risk agents.
 Make decisions based on consensus and risk management."""

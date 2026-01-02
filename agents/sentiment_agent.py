@@ -5,6 +5,7 @@ from typing import Dict, Any
 from agents.base_agent import BaseAgent
 from agents.state import AgentState
 from pathlib import Path
+from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -14,14 +15,14 @@ class SentimentAnalysisAgent(BaseAgent):
     
     def __init__(self):
         """Initialize sentiment analysis agent."""
-        prompt_path = Path(__file__).parent.parent / "config" / "prompts" / "sentiment_analysis.txt"
-        system_prompt = prompt_path.read_text() if prompt_path.exists() else self._get_default_prompt()
-        super().__init__("sentiment", system_prompt)
+        # Use dynamic prompt so system is instrument-decoupled (crypto vs indices, etc.)
+        super().__init__("sentiment", self._get_default_prompt())
     
     def _get_default_prompt(self) -> str:
         """Get default system prompt."""
-        return """You are the Sentiment Analysis Agent for a Bank Nifty trading system.
-Analyze market sentiment from news, social media, and options flow."""
+        instrument_name = settings.instrument_name
+        return f"""You are the Sentiment Analysis Agent for a {instrument_name} trading system.
+Analyze market sentiment from news and other available sources."""
     
     def process(self, state: AgentState) -> AgentState:
         """Process sentiment analysis."""

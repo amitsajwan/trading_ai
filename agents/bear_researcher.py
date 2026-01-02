@@ -5,6 +5,7 @@ from typing import Dict, Any
 from agents.base_agent import BaseAgent
 from agents.state import AgentState
 from pathlib import Path
+from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -14,13 +15,13 @@ class BearResearcherAgent(BaseAgent):
     
     def __init__(self):
         """Initialize bear researcher agent."""
-        prompt_path = Path(__file__).parent.parent / "config" / "prompts" / "bear_researcher.txt"
-        system_prompt = prompt_path.read_text() if prompt_path.exists() else self._get_default_prompt()
-        super().__init__("bear", system_prompt)
+        # Use dynamic prompt so system is instrument-decoupled (crypto vs indices, etc.)
+        super().__init__("bear", self._get_default_prompt())
     
     def _get_default_prompt(self) -> str:
         """Get default system prompt."""
-        return """You are the Bear Researcher Agent for Bank Nifty trading.
+        instrument_name = settings.instrument_name
+        return f"""You are the Bear Researcher Agent for {instrument_name} trading.
 Construct the strongest bear case for SELL signals."""
     
     def process(self, state: AgentState) -> AgentState:
@@ -76,7 +77,7 @@ Current Price: {current_price}
 Downside Target: {target:.2f} (-3%)
 Stop Loss: {stop_loss:.2f} (+1.5%)
 
-Build the strongest BEAR CASE for why Bank Nifty should go DOWN from here.
+Build the strongest BEAR CASE for why {settings.instrument_name} should go DOWN from here.
 """
             
             response_format = {

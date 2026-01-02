@@ -361,6 +361,7 @@ class TradingGraph:
         try:
             from mongodb_schema import get_mongo_client, get_collection
             from config.settings import settings
+            from agents.llm_provider_manager import get_llm_manager
             from datetime import datetime
             
             mongo_client = get_mongo_client()
@@ -406,8 +407,19 @@ class TradingGraph:
                 }
             
             # Store analysis document
+            llm_provider = None
+            try:
+                llm_provider = get_llm_manager().current_provider
+            except Exception:
+                llm_provider = None
+
             analysis_doc = {
                 "timestamp": datetime.now().isoformat(),
+                "instrument": settings.instrument_symbol,
+                "instrument_name": settings.instrument_name,
+                "instrument_exchange": settings.instrument_exchange,
+                "data_source": settings.data_source,
+                "llm_provider": llm_provider,
                 "current_price": state.current_price,
                 "final_signal": signal_str,
                 "trend_signal": trend_signal_str,  # BULLISH, BEARISH, or NEUTRAL

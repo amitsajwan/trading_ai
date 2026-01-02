@@ -5,6 +5,7 @@ from typing import Dict, Any
 from agents.base_agent import BaseAgent
 from agents.state import AgentState
 from pathlib import Path
+from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -14,9 +15,8 @@ class MacroAnalysisAgent(BaseAgent):
     
     def __init__(self):
         """Initialize macro analysis agent."""
-        prompt_path = Path(__file__).parent.parent / "config" / "prompts" / "macro_analysis.txt"
-        system_prompt = prompt_path.read_text() if prompt_path.exists() else self._get_default_prompt()
-        super().__init__("macro", system_prompt)
+        # Use dynamic prompt so system is instrument-decoupled (crypto vs indices, etc.)
+        super().__init__("macro", self._get_default_prompt())
     
     def _get_default_prompt(self) -> str:
         """Get default system prompt."""
@@ -50,13 +50,14 @@ Analyze macro economic conditions and market regime."""
             inflation_rate = state.inflation_rate
             npa_ratio = state.npa_ratio
             
+            instrument_name = settings.instrument_name
             prompt = f"""
 Macro Economic Context:
 - RBI Repo Rate: {rbi_rate if rbi_rate else 'Unknown'}
 - Inflation Rate (CPI): {inflation_rate if inflation_rate else 'Unknown'}
 - Banking Sector NPA Ratio: {npa_ratio if npa_ratio else 'Unknown'}
 
-Analyze the macro regime and its impact on Bank Nifty.
+Analyze the macro regime and its impact on {instrument_name}.
 """
             
             response_format = {

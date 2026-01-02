@@ -53,7 +53,7 @@ class StateManager:
         macro_context = self.macro_collector.get_latest_macro_context()
         
         # Get latest tick for order flow data
-        latest_tick = self._get_latest_tick("BANKNIFTY")
+        latest_tick = self._get_latest_tick(instrument_key)
         
         # Calculate volume analysis
         volume_analysis = self._calculate_volume_analysis(ohlc_5min)
@@ -242,7 +242,7 @@ class StateManager:
             state.npa_ratio = macro_context["npa_ratio"]
         
         # Update order flow data from latest tick
-        latest_tick = self._get_latest_tick("BANKNIFTY")
+        latest_tick = self._get_latest_tick(instrument_key)
         if latest_tick:
             state.best_bid_price = latest_tick.get("best_bid_price")
             state.best_ask_price = latest_tick.get("best_ask_price")

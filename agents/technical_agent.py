@@ -7,6 +7,7 @@ from typing import Dict, Any
 from agents.base_agent import BaseAgent
 from agents.state import AgentState
 from pathlib import Path
+from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -16,13 +17,13 @@ class TechnicalAnalysisAgent(BaseAgent):
     
     def __init__(self):
         """Initialize technical analysis agent."""
-        prompt_path = Path(__file__).parent.parent / "config" / "prompts" / "technical_analysis.txt"
-        system_prompt = prompt_path.read_text() if prompt_path.exists() else self._get_default_prompt()
-        super().__init__("technical", system_prompt)
+        # Use dynamic prompt so system is instrument-decoupled (crypto vs indices, etc.)
+        super().__init__("technical", self._get_default_prompt())
     
     def _get_default_prompt(self) -> str:
         """Get default system prompt."""
-        return """You are the Technical Analysis Agent for a Bank Nifty trading system.
+        instrument_name = settings.instrument_name
+        return f"""You are the Technical Analysis Agent for a {instrument_name} trading system.
 Your role: Extract chart patterns and momentum signals from market data.
 Analyze OHLC data and provide structured technical analysis."""
     
