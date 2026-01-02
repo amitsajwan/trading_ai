@@ -118,21 +118,51 @@ class SystemHealthChecker:
             current_price = self.market_memory.get_current_price(instrument_key)
             ohlc_data = self.market_memory.get_recent_ohlc(instrument_key, "1min", 1)
             
+            # Also check MongoDB as fallback
+            ohlc_count_mongo = 0
+            try:
+                mongo_client = get_mongo_client()
+                db = mongo_client[settings.mongodb_db_name]
+                ohlc_collection = get_collection(db, "ohlc_history")
+                ohlc_count_mongo = ohlc_collection.count_documents({"instrument": settings.instrument_symbol})
+                
+                # If no price from Redis, try MongoDB
+                if not current_price and ohlc_count_mongo > 0:
+                    last_ohlc = ohlc_collection.find_one(
+                        {"instrument": settings.instrument_symbol},
+                        sort=[("timestamp", -1)]
+                    )
+                    if last_ohlc and last_ohlc.get("close"):
+                        current_price = float(last_ohlc["close"])
+            except Exception as e:
+                logger.debug(f"Error checking MongoDB for market data: {e}")
+            
             if current_price:
+                currency_symbol = "$" if settings.data_source == "CRYPTO" else "₹"
                 return {
                     "status": "healthy",
                     "current_price": current_price,
-                    "has_ohlc": len(ohlc_data) > 0,
-                    "ohlc_count": len(ohlc_data),
-                    "message": f"Market data available, price: ₹{current_price:.2f}"
+                    "has_ohlc": len(ohlc_data) > 0 or ohlc_count_mongo > 0,
+                    "ohlc_count": len(ohlc_data) or ohlc_count_mongo,
+                    "message": f"Market data available, price: {currency_symbol}{current_price:.2f}"
                 }
             else:
-                return {
-                    "status": "degraded",
-                    "current_price": None,
-                    "has_ohlc": len(ohlc_data) > 0,
-                    "message": "No current price available (data feed may not be running)"
-                }
+                # More specific error message
+                if ohlc_count_mongo > 0:
+                    return {
+                        "status": "degraded",
+                        "current_price": None,
+                        "has_ohlc": True,
+                        "ohlc_count": ohlc_count_mongo,
+                        "message": f"No current price in Redis, but {ohlc_count_mongo} OHLC records in MongoDB. Data feed may have stopped."
+                    }
+                else:
+                    return {
+                        "status": "degraded",
+                        "current_price": None,
+                        "has_ohlc": False,
+                        "message": f"No market data for {settings.instrument_name} ({instrument_key}). Start data feed: python scripts/start_all.py {settings.instrument_symbol.split('-')[0] if '-' in settings.instrument_symbol else settings.instrument_symbol}"
+                    }
         except Exception as e:
             return {
                 "status": "unhealthy",
@@ -206,16 +236,21 @@ class SystemHealthChecker:
             }
     
     def _check_data_feed(self) -> Dict[str, Any]:
-        """Check data feed status - Zerodha only (primary source)."""
+        """Check data feed status - supports Zerodha and Crypto."""
         try:
             from datetime import datetime, timedelta
             from pathlib import Path
             
-            # Check Zerodha configuration (primary source)
+            # Get instrument key for data lookup
+            instrument_key = settings.instrument_symbol.replace("-", "").replace(" ", "").upper()
+            
+            # Check data source configuration
+            data_source = settings.data_source or "UNKNOWN"
             zerodha_configured = Path("credentials.json").exists()
+            crypto_configured = data_source == "CRYPTO"
             
             # Check if we have recent data (from Redis or MongoDB)
-            current_price = self.market_memory.get_current_price("BANKNIFTY")
+            current_price = self.market_memory.get_current_price(instrument_key)
             
             # Also check MongoDB for recent OHLC data as fallback
             ohlc_count = 0
@@ -247,14 +282,17 @@ class SystemHealthChecker:
             instrument_key = settings.instrument_symbol.replace("-", "").replace(" ", "").upper()
             ohlc_data = self.market_memory.get_recent_ohlc(instrument_key, "1min", 1)
             
-            # Check if market is open
+            # Check if market is open - for 24/7 markets (crypto), always open
             now = datetime.now()
-            try:
-                open_time = datetime.strptime(settings.market_open_time, "%H:%M:%S").time()
-                close_time = datetime.strptime(settings.market_close_time, "%H:%M:%S").time()
-                market_open = (now.weekday() < 5 and open_time <= now.time() <= close_time)
-            except ValueError:
-                market_open = False
+            if settings.market_24_7:
+                market_open = True
+            else:
+                try:
+                    open_time = datetime.strptime(settings.market_open_time, "%H:%M:%S").time()
+                    close_time = datetime.strptime(settings.market_close_time, "%H:%M:%S").time()
+                    market_open = (now.weekday() < 5 and open_time <= now.time() <= close_time)
+                except ValueError:
+                    market_open = False
             
             # Check if data is recent (within last 5 minutes)
             data_is_recent = False
@@ -265,54 +303,97 @@ class SystemHealthChecker:
             # If we have price data OR recent OHLC records, feed is working
             has_data = current_price is not None or (ohlc_count > 0 and data_is_recent)
             
-            # Zerodha is the only source we check
-            if not zerodha_configured:
-                return {
-                    "status": "unhealthy",
-                    "source": "None",
-                    "configured": False,
-                    "receiving_data": False,
-                    "zerodha_configured": False,
-                    "message": "Zerodha not configured. Run: python auto_login.py"
-                }
+            # Determine data source name for display
+            data_source_map = {
+                "CRYPTO": "Binance WebSocket",
+                "ZERODHA": "Zerodha Kite",
+                "FINNHUB": "Finnhub"
+            }
+            source_name = data_source_map.get(data_source, data_source)
             
-            # Check if Zerodha is receiving data
-            if has_data:
-                return {
-                    "status": "healthy",
-                    "source": "Zerodha",
-                    "configured": True,
-                    "receiving_data": True,
-                    "current_price": current_price,
-                    "ohlc_count": ohlc_count,
-                    "zerodha_configured": True,
-                    "market_open": market_open,
-                    "data_is_recent": data_is_recent,
-                    "message": f"Zerodha WebSocket active, receiving data" + (f" at Rs {current_price:.2f}" if current_price else f" ({ohlc_count} OHLC records)")
-                }
-            else:
-                # No data - determine reason
-                if not market_open:
+            # Check configuration based on data source
+            if data_source == "CRYPTO":
+                # Crypto doesn't need credentials.json
+                configured = True
+                if has_data:
                     return {
-                        "status": "degraded",
-                        "source": "Zerodha",
+                        "status": "healthy",
+                        "source": source_name,
                         "configured": True,
-                        "receiving_data": False,
-                        "zerodha_configured": True,
-                        "market_open": False,
-                        "message": "Zerodha configured but market is closed (data only available 9:15 AM - 3:30 PM IST, Mon-Fri)"
+                        "receiving_data": True,
+                        "current_price": current_price,
+                        "ohlc_count": ohlc_count,
+                        "market_open": True,  # Crypto is 24/7
+                        "data_is_recent": data_is_recent,
+                        "message": f"{source_name} active, receiving data" + (f" at ${current_price:.2f}" if current_price else f" ({ohlc_count} OHLC records)")
                     }
                 else:
-                    # Market is open but no data - provide specific instructions
                     return {
                         "status": "degraded",
-                        "source": "Zerodha",
+                        "source": source_name,
                         "configured": True,
                         "receiving_data": False,
-                        "zerodha_configured": True,
                         "market_open": True,
-                        "message": "Zerodha configured but not receiving data. Start feed: python -m services.trading_service OR python -m data.run_ingestion"
+                        "message": f"{source_name} configured but not receiving data. Start feed: python scripts/start_all.py BTC"
                     }
+            elif data_source == "ZERODHA" or zerodha_configured:
+                # Zerodha requires credentials.json
+                if not zerodha_configured:
+                    return {
+                        "status": "unhealthy",
+                        "source": source_name,
+                        "configured": False,
+                        "receiving_data": False,
+                        "zerodha_configured": False,
+                        "message": "Zerodha not configured. Run: python auto_login.py"
+                    }
+                
+                # Check if Zerodha is receiving data
+                if has_data:
+                    return {
+                        "status": "healthy",
+                        "source": source_name,
+                        "configured": True,
+                        "receiving_data": True,
+                        "current_price": current_price,
+                        "ohlc_count": ohlc_count,
+                        "zerodha_configured": True,
+                        "market_open": market_open,
+                        "data_is_recent": data_is_recent,
+                        "message": f"{source_name} active, receiving data" + (f" at ₹{current_price:.2f}" if current_price else f" ({ohlc_count} OHLC records)")
+                    }
+                else:
+                    # No data - determine reason
+                    if not market_open:
+                        return {
+                            "status": "degraded",
+                            "source": source_name,
+                            "configured": True,
+                            "receiving_data": False,
+                            "zerodha_configured": True,
+                            "market_open": False,
+                            "message": f"{source_name} configured but market is closed (data only available 9:15 AM - 3:30 PM IST, Mon-Fri)"
+                        }
+                    else:
+                        # Market is open but no data - provide specific instructions
+                        return {
+                            "status": "degraded",
+                            "source": source_name,
+                            "configured": True,
+                            "receiving_data": False,
+                            "zerodha_configured": True,
+                            "market_open": True,
+                            "message": f"{source_name} configured but not receiving data. Start feed: python scripts/start_all.py BANKNIFTY"
+                        }
+            else:
+                # Unknown or unconfigured data source
+                return {
+                    "status": "unhealthy",
+                    "source": source_name,
+                    "configured": False,
+                    "receiving_data": False,
+                    "message": f"Data source '{data_source}' not properly configured. Check DATA_SOURCE in .env"
+                }
         except Exception as e:
             logger.error(f"Error in data feed check: {e}", exc_info=True)
             return {

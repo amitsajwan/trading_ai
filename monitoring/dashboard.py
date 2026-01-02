@@ -226,7 +226,7 @@ async def dashboard_home():
     <body>
         <div class="container">
             <div class="header">
-                <h1>🚀 GenAI Trading System Dashboard
+                <h1>🚀 GenAI Trading System Dashboard - <span id="header-instrument">Loading...</span>
                     <span id="status-badge" class="status-badge status-running">RUNNING</span>
                     <span id="paper-badge" class="status-badge status-paper">PAPER MODE</span>
                 </h1>
@@ -274,7 +274,11 @@ async def dashboard_home():
                     </div>
                     <div class="metric">
                         <span class="metric-label">Data Source</span>
-                        <span class="metric-value" id="data-source">Zerodha</span>
+                        <span class="metric-value" id="data-source">Loading...</span>
+                    </div>
+                    <div class="metric">
+                        <span class="metric-label">Instrument</span>
+                        <span class="metric-value" id="instrument-name">Loading...</span>
                     </div>
                     <div class="metric">
                         <span class="metric-label">Market Status</span>
@@ -391,7 +395,9 @@ async def dashboard_home():
                         } else {
                             priceElement.parentElement.style.display = 'none';
                         }
-                        document.getElementById('data-source').textContent = market.data_source || 'Zerodha';
+                        document.getElementById('data-source').textContent = market.data_source || 'Unknown';
+                        document.getElementById('instrument-name').textContent = market.instrument_name || 'Unknown';
+                        document.getElementById('header-instrument').textContent = market.instrument_name || 'Unknown';
                         document.getElementById('market-status').textContent = market.market_open ? '🟢 OPEN' : '🔴 CLOSED';
                     }
 
@@ -763,16 +769,25 @@ async def get_market_data() -> Dict[str, Any]:
             open_time = datetime.strptime("09:15:00", "%H:%M:%S").time()
             close_time = datetime.strptime("15:30:00", "%H:%M:%S").time()
         
-        market_open = (now.weekday() < 5 and open_time <= now.time() <= close_time)
+        # Check market hours - for 24/7 markets (crypto), always open
+        if settings.market_24_7:
+            market_open = True
+        else:
+            market_open = (now.weekday() < 5 and open_time <= now.time() <= close_time)
         
-        # Determine data source - Zerodha
-        from pathlib import Path
-        kite_available = Path("credentials.json").exists()
-        data_source = "Zerodha" if kite_available else "None"
+        # Determine data source from settings
+        data_source_map = {
+            "CRYPTO": "Binance WebSocket",
+            "ZERODHA": "Zerodha Kite",
+            "FINNHUB": "Finnhub"
+        }
+        data_source = data_source_map.get(settings.data_source, settings.data_source or "Unknown")
         
         return {
             "current_price": current_price,
             "data_source": data_source,
+            "instrument_name": settings.instrument_name,
+            "instrument_symbol": settings.instrument_symbol,
             "market_open": market_open,
             "redis_available": market_memory._redis_available,
             "timestamp": datetime.now().isoformat()

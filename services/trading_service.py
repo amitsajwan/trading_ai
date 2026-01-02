@@ -84,20 +84,26 @@ class TradingService:
                 self.paper_trading_sim = PaperTrading(initial_capital=1000000)
                 logger.info("Paper trading simulator initialized")
             
-            # Initialize data ingestion - Zerodha WebSocket (required)
-            if self.kite:
+            # Initialize data ingestion based on data source
+            if settings.data_source.upper() == "CRYPTO":
+                # Crypto data feed doesn't need kite credentials
+                logger.info("✅ Crypto data feed will be initialized in start() method")
+                logger.info(f"✅ Will use Binance WebSocket for real-time {settings.instrument_name} data")
+                self.data_ingestion = None  # Will be created in start() method
+            elif self.kite:
                 # Use Zerodha WebSocket (DataIngestionService)
                 from data.ingestion_service import DataIngestionService
                 self.data_ingestion = DataIngestionService(self.kite, self.market_memory)
                 logger.info("✅ Zerodha WebSocket data ingestion initialized")
-                logger.info("✅ Using Zerodha WebSocket for real-time Bank Nifty data")
+                logger.info(f"✅ Using Zerodha WebSocket for real-time {settings.instrument_name} data")
             else:
                 logger.error("=" * 60)
-                logger.error("ERROR: Zerodha Kite not initialized!")
-                logger.error("Zerodha credentials are required for data feed.")
-                logger.error("Please run: python auto_login.py")
+                logger.error("ERROR: No data source configured!")
+                logger.error(f"DATA_SOURCE is set to: {settings.data_source}")
+                logger.error("For Zerodha: Run 'python auto_login.py' to set up credentials")
+                logger.error("For Crypto: Set DATA_SOURCE=CRYPTO in .env")
                 logger.error("=" * 60)
-                raise ValueError("Zerodha Kite credentials required. Run: python auto_login.py")
+                raise ValueError(f"No valid data source configured. DATA_SOURCE={settings.data_source}")
             
             # Initialize trading graph
             self.trading_graph = TradingGraph(kite=self.kite, market_memory=self.market_memory)
@@ -150,10 +156,25 @@ class TradingService:
             if settings.data_source.upper() == "CRYPTO":
                 # Use crypto data feed (Binance WebSocket - free)
                 from data.crypto_data_feed import CryptoDataFeed
-                crypto_feed = CryptoDataFeed(self.market_memory)
-                asyncio.create_task(crypto_feed.start())
-                logger.info("✅ Crypto data feed (Binance WebSocket) started")
-                logger.info(f"✅ Receiving live market data for {settings.instrument_name}...")
+                self.crypto_feed = CryptoDataFeed(self.market_memory)
+                self.crypto_feed_task = asyncio.create_task(self.crypto_feed.start())
+                logger.info("✅ Crypto data feed (Binance WebSocket) task started")
+                logger.info("⏳ Waiting for WebSocket connection to Binance...")
+                
+                # Wait a moment for connection to establish
+                await asyncio.sleep(2)
+                
+                # Give it a few more seconds to connect and receive first data
+                max_wait = 10
+                for i in range(max_wait):
+                    if self.crypto_feed.connected:
+                        logger.info(f"✅ Crypto data feed connected to Binance WebSocket")
+                        break
+                    await asyncio.sleep(1)
+                else:
+                    logger.warning("⚠️  Crypto data feed connection still establishing... (may take longer)")
+                
+                logger.info(f"✅ Crypto data feed initialized - receiving live market data for {settings.instrument_name}...")
             elif self.data_ingestion:
                 # Use Zerodha WebSocket
                 self.data_ingestion.start()
@@ -310,6 +331,17 @@ class TradingService:
             self.data_ingestion.stop()
             logger.info("Zerodha WebSocket data ingestion stopped")
         
+        # Stop crypto data feed if running
+        if hasattr(self, 'crypto_feed') and self.crypto_feed:
+            self.crypto_feed.stop()
+            if hasattr(self, 'crypto_feed_task') and self.crypto_feed_task:
+                self.crypto_feed_task.cancel()
+                try:
+                    await self.crypto_feed_task
+                except asyncio.CancelledError:
+                    pass
+            logger.info("Crypto data feed stopped")
+        
         # Stop position monitoring
         if self.position_monitor:
             self.position_monitor.stop()
@@ -352,33 +384,48 @@ async def main():
     )
     
     kite = None
-    try:
-        # Load Zerodha credentials (required)
-        creds = load_kite_credentials()
-        kite = KiteConnect(api_key=creds["api_key"])
-        kite.set_access_token(creds["access_token"])
-        logger.info("✅ Zerodha Kite Connect initialized")
-        
-        # Test connection
-        try:
-            profile = kite.profile()
-            logger.info(f"✅ Connected as: {profile.get('user_name', 'Unknown')}")
-        except Exception as e:
-            logger.warning(f"Could not fetch profile: {e}")
-    except FileNotFoundError:
-        logger.error("=" * 60)
-        logger.error("ERROR: credentials.json not found!")
-        logger.error("Please run: python auto_login.py")
-        logger.error("=" * 60)
-        return
-    except Exception as e:
-        logger.error(f"ERROR: Could not initialize Zerodha Kite: {e}")
-        logger.error("Please check your credentials.json file")
-        return
     
-    # Create and start trading service with Zerodha
-    service = TradingService(kite=kite)
-    await service.start()
+    # Check data source - crypto doesn't need Zerodha credentials
+    if settings.data_source.upper() == "CRYPTO":
+        logger.info("=" * 60)
+        logger.info("Crypto Mode Detected")
+        logger.info("=" * 60)
+        logger.info(f"Instrument: {settings.instrument_name} ({settings.instrument_symbol})")
+        logger.info("Data Source: Binance WebSocket (no credentials needed)")
+        logger.info("=" * 60)
+        # Create trading service without kite (crypto mode)
+        service = TradingService(kite=None)
+        await service.start()
+    else:
+        # Zerodha mode - requires credentials
+        try:
+            # Load Zerodha credentials (required for Zerodha mode)
+            creds = load_kite_credentials()
+            kite = KiteConnect(api_key=creds["api_key"])
+            kite.set_access_token(creds["access_token"])
+            logger.info("✅ Zerodha Kite Connect initialized")
+            
+            # Test connection
+            try:
+                profile = kite.profile()
+                logger.info(f"✅ Connected as: {profile.get('user_name', 'Unknown')}")
+            except Exception as e:
+                logger.warning(f"Could not fetch profile: {e}")
+        except FileNotFoundError:
+            logger.error("=" * 60)
+            logger.error("ERROR: credentials.json not found!")
+            logger.error("Zerodha credentials are required when DATA_SOURCE=ZERODHA")
+            logger.error("Please run: python auto_login.py")
+            logger.error("=" * 60)
+            return
+        except Exception as e:
+            logger.error(f"ERROR: Could not initialize Zerodha Kite: {e}")
+            logger.error("Please check your credentials.json file")
+            return
+        
+        # Create and start trading service with Zerodha
+        service = TradingService(kite=kite)
+        await service.start()
 
 
 if __name__ == "__main__":

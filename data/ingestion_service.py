@@ -175,8 +175,8 @@ class DataIngestionService:
                         "depth_sell": sell_depth[:3] if sell_depth else []
                     }
                     # Use configured instrument symbol for storage
-                instrument_key = settings.instrument_symbol.replace("-", "").replace(" ", "").upper()
-                self.market_memory.store_tick(instrument_key, tick_data)
+                    instrument_key = settings.instrument_symbol.replace("-", "").replace(" ", "").upper()
+                    self.market_memory.store_tick(instrument_key, tick_data)
                 except Exception as e:
                     logger.error(f"Error storing tick: {e}", exc_info=True)
                 
@@ -279,7 +279,8 @@ class DataIngestionService:
         # Store in Redis (remove _id if present)
         try:
             candle_for_redis = {k: v for k, v in candle.items() if k != '_id'}
-            self.market_memory.store_ohlc("BANKNIFTY", timeframe, candle_for_redis)
+            instrument_key = settings.instrument_symbol.replace("-", "").replace(" ", "").upper()
+            self.market_memory.store_ohlc(instrument_key, timeframe, candle_for_redis)
         except Exception as e:
             logger.error(f"Error storing OHLC in Redis: {e}", exc_info=True)
         
@@ -313,7 +314,7 @@ class DataIngestionService:
             logger.info(f"Subscribing to token: {self._instrument_token}")
             ws.subscribe([self._instrument_token])
             ws.set_mode(ws.MODE_FULL, [self._instrument_token])
-                logger.info(f"✅ Subscribed to {settings.instrument_name} (token: {self._instrument_token})")
+            logger.info(f"✅ Subscribed to {settings.instrument_name} (token: {self._instrument_token})")
             logger.info("✅ Waiting for market data...")
             logger.info("=" * 60)
         else:
@@ -385,5 +386,6 @@ class DataIngestionService:
     
     def get_ohlc_data(self, timeframe: str, count: int = 60) -> List[Dict[str, Any]]:
         """Get OHLC data for a specific timeframe."""
-        return self.market_memory.get_recent_ohlc("BANKNIFTY", timeframe, count)
+        instrument_key = settings.instrument_symbol.replace("-", "").replace(" ", "").upper()
+        return self.market_memory.get_recent_ohlc(instrument_key, timeframe, count)
 

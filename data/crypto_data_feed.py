@@ -25,6 +25,7 @@ class CryptoDataFeed:
         self.market_memory = market_memory
         self.ws: Optional[websockets.WebSocketServerProtocol] = None
         self.running = False
+        self.connected = False  # Track connection status
         
         # MongoDB connection
         self.mongo_client = get_mongo_client()
@@ -218,7 +219,9 @@ class CryptoDataFeed:
         try:
             async with websockets.connect(ws_url) as ws:
                 self.ws = ws
+                self.connected = True  # Mark as connected
                 logger.info(f"✅ Connected to Binance WebSocket for {binance_symbol}")
+                logger.info(f"✅ WebSocket connection established - ready to receive data")
                 
                 # Receive messages
                 async for message in ws:
@@ -235,8 +238,10 @@ class CryptoDataFeed:
                         
         except websockets.exceptions.ConnectionClosed:
             logger.warning("Binance WebSocket connection closed")
+            self.connected = False
         except Exception as e:
             logger.error(f"Error connecting to Binance WebSocket: {e}", exc_info=True)
+            self.connected = False
             raise
     
     async def start(self):
@@ -256,12 +261,14 @@ class CryptoDataFeed:
             try:
                 await self._connect_and_subscribe()
             except Exception as e:
+                self.connected = False  # Mark as disconnected
                 if self.running:
                     logger.error(f"WebSocket error: {e}. Reconnecting in 5 seconds...")
                     await asyncio.sleep(5)
                 else:
                     break
         
+        self.connected = False
         logger.info("Crypto data feed stopped")
     
     def stop(self):
