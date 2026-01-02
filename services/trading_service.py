@@ -124,10 +124,18 @@ class TradingService:
                 self.news_collector = NewsCollector(self.market_memory)
                 logger.info("News collector initialized")
             
-            # Initialize macro data fetcher
-            from data.macro_data_fetcher import MacroDataFetcher
-            self.macro_fetcher = MacroDataFetcher()
-            logger.info("Macro data fetcher initialized")
+            # Initialize macro data fetcher (only for non-crypto instruments)
+            self.macro_fetcher = None
+            if settings.data_source.upper() != "CRYPTO" and settings.macro_data_enabled:
+                try:
+                    from data.macro_data_fetcher import MacroDataFetcher
+                    self.macro_fetcher = MacroDataFetcher()
+                    logger.info("Macro data fetcher initialized")
+                except ImportError as e:
+                    logger.warning(f"Macro data fetcher not available (missing dependencies): {e}")
+                    logger.info("Continuing without macro data fetcher...")
+            else:
+                logger.info("Macro data fetcher skipped (crypto mode or disabled)")
             
             logger.info("Trading service initialization complete")
             
@@ -193,14 +201,22 @@ class TradingService:
                 asyncio.create_task(self.news_collector.run_continuous())
                 logger.info("✅ News collector started - collecting news every 5 minutes")
             
-            # Start macro data fetcher (runs daily)
-            asyncio.create_task(self.macro_fetcher.run_continuous(update_interval_hours=24))
-            logger.info("✅ Macro data fetcher started - updating daily")
+            # Start macro data fetcher (runs daily, only if initialized)
+            if self.macro_fetcher:
+                asyncio.create_task(self.macro_fetcher.run_continuous(update_interval_hours=24))
+                logger.info("✅ Macro data fetcher started - updating daily")
+            else:
+                logger.info("⏭️  Macro data fetcher skipped (not needed for crypto)")
             
             # Start trading loop (run immediately, then check market status in loop)
-            logger.info("Starting trading loop (will run analysis immediately, then every 60 seconds)...")
+            logger.info("=" * 60)
+            logger.info("🚀 Starting trading loop (will run analysis immediately, then every 60 seconds)...")
+            logger.info("=" * 60)
             self.trading_loop_task = asyncio.create_task(self._trading_loop())
-            logger.info("✅ Trading loop started - agents will run now and every 60 seconds")
+            logger.info("✅ Trading loop task created - waiting for first iteration...")
+            # Give it a moment to start
+            await asyncio.sleep(1)
+            logger.info("✅ Trading loop should be running now - check logs for [LOOP #] messages")
             
             # Keep service running until shutdown requested
             while self.running and not self.shutdown_requested:
@@ -244,23 +260,27 @@ class TradingService:
     async def _trading_loop(self):
         """Main trading loop that runs every 60 seconds."""
         logger.info("=" * 60)
-        logger.info("Trading Loop Started")
+        logger.info("🚀 Trading Loop Started - This message confirms the loop is running!")
         logger.info("=" * 60)
         
         # Run first analysis immediately
         first_run = True
         
+        loop_count = 0
         while self.running and not self.shutdown_requested:
+            # Log that we're entering the loop iteration
+            logger.info(f"🔄 [LOOP ITERATION] Entering loop iteration #{loop_count + 1}")
             try:
+                loop_count += 1
                 market_open = self._is_market_open()
                 
                 if first_run:
-                    logger.info("Running initial trading analysis...")
+                    logger.info(f"🔄 [LOOP #{loop_count}] Running initial trading analysis...")
                     first_run = False
                 else:
                     if not market_open:
-                        logger.info("Market is closed - running analysis anyway (for testing/monitoring)")
-                    logger.info("Running trading analysis...")
+                        logger.info(f"🔄 [LOOP #{loop_count}] Market is closed - running analysis anyway (for testing/monitoring)")
+                    logger.info(f"🔄 [LOOP #{loop_count}] Running trading analysis... (Last analysis was {loop_count * 60} seconds ago)")
                 
                 # Run trading graph (runs all agents)
                 logger.info("=" * 60)
@@ -272,8 +292,19 @@ class TradingService:
                     raise RuntimeError("Trading graph not initialized")
                 
                 logger.info("🔄 [TRADING_LOOP] Calling trading_graph.arun()...")
-                result = await self.trading_graph.arun()
-                logger.info("✅ [TRADING_LOOP] Trading graph execution completed")
+                # Add timeout protection - analysis should complete within 5 minutes
+                try:
+                    result = await asyncio.wait_for(
+                        self.trading_graph.arun(),
+                        timeout=300.0  # 5 minutes timeout
+                    )
+                    logger.info("✅ [TRADING_LOOP] Trading graph execution completed")
+                except asyncio.TimeoutError:
+                    logger.error("❌ [TRADING_LOOP] Analysis timed out after 5 minutes!")
+                    logger.error("This usually means LLM calls are hanging. Check Ollama/LLM provider.")
+                    logger.error("Skipping this analysis cycle, will retry in 60 seconds...")
+                    await asyncio.sleep(60)
+                    continue
                 
                 # Log decision - handle both dict and AgentState
                 if isinstance(result, dict):
@@ -304,19 +335,32 @@ class TradingService:
                         logger.info(f"Take Profit: {result.take_profit}")
                 
                 logger.info("=" * 60)
-                logger.info(f"Next analysis in 60 seconds...")
+                logger.info(f"✅ [LOOP #{loop_count}] Analysis completed successfully")
+                logger.info(f"⏳ Next analysis in 60 seconds...")
                 logger.info("=" * 60)
                 
-                # Wait 60 seconds before next analysis
-                await asyncio.sleep(60)
+                # Wait 60 seconds before next analysis (with heartbeat every 10 seconds)
+                for i in range(6):
+                    await asyncio.sleep(10)
+                    if not self.running or self.shutdown_requested:
+                        break
+                    if i < 5:  # Don't log on last iteration (will log at start of next loop)
+                        logger.info(f"⏳ [LOOP #{loop_count}] Waiting... ({60 - (i+1)*10} seconds remaining)")
                 
             except asyncio.CancelledError:
-                logger.info("Trading loop cancelled")
+                logger.info("🛑 Trading loop cancelled")
                 break
             except Exception as e:
-                logger.error(f"Error in trading loop: {e}", exc_info=True)
-                logger.info("Retrying in 60 seconds...")
-                await asyncio.sleep(60)  # Wait before retry
+                logger.error(f"❌ [LOOP #{loop_count}] Error in trading loop: {e}", exc_info=True)
+                logger.error(f"❌ [LOOP #{loop_count}] Full error details:", exc_info=True)
+                logger.info(f"⏳ [LOOP #{loop_count}] Retrying in 60 seconds...")
+                # Wait 60 seconds with heartbeat
+                for i in range(6):
+                    await asyncio.sleep(10)
+                    if not self.running or self.shutdown_requested:
+                        break
+                    if i < 5:
+                        logger.info(f"⏳ [LOOP #{loop_count}] Error recovery wait... ({60 - (i+1)*10} seconds remaining)")
     
     async def stop(self):
         """Stop the trading service gracefully."""

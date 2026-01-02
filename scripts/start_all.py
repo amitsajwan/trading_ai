@@ -8,6 +8,12 @@ import time
 import socket
 from pathlib import Path
 
+# Fix Windows encoding issues
+if sys.platform == "win32":
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -29,7 +35,7 @@ def get_python_path():
 
 def configure_instrument(instrument: str):
     """Configure instrument before starting."""
-    print(f"📋 Step 1: Configuring for {instrument}...")
+    print(f"Configuring for {instrument}...")
     python_path = get_python_path()
     result = subprocess.run(
         [python_path, "scripts/configure_instrument.py", instrument],
@@ -38,9 +44,9 @@ def configure_instrument(instrument: str):
     )
     print(result.stdout)
     if result.returncode != 0:
-        print("❌ ERROR:", result.stderr)
+        print("[ERROR]", result.stderr)
         return False
-    print("✅ Configuration complete")
+    print("[OK] Configuration complete")
     return True
 
 def verify_dashboard(max_wait=10):
@@ -53,13 +59,13 @@ def verify_dashboard(max_wait=10):
             result = sock.connect_ex(('127.0.0.1', 8888))
             sock.close()
             if result == 0:
-                print("   ✅ Dashboard is accessible")
+                print("   [OK] Dashboard is accessible")
                 return True
         except Exception:
             pass
         if attempt < max_wait - 1:
             time.sleep(1)
-    print("   ⚠️  Dashboard not responding (may still be starting)")
+    print("   [WARNING] Dashboard not responding (may still be starting)")
     return False
 
 def verify_data_feed(instrument, max_wait=10):
@@ -116,15 +122,15 @@ except Exception as e:
                 output = result.stdout.strip()
                 if 'PRICE_FOUND' in output:
                     price = output.split()[-1]
-                    print(f"   ✅ Data feed active - Price: ${float(price):,.2f}")
+                    print(f"   [OK] Data feed active - Price: ${float(price):,.2f}")
                     return True
                 elif 'TICKS_FOUND' in output:
                     count = output.split()[-1]
-                    print(f"   ✅ Data feed active - Receiving ticks ({count} ticks)")
+                    print(f"   [OK] Data feed active - Receiving ticks ({count} ticks)")
                     return True
             elif 'REDIS_UNAVAILABLE' in result.stdout:
                 if attempt == 0:
-                    print(f"   ⚠️  Redis not available - skipping verification")
+                    print(f"   [WARNING] Redis not available - skipping verification")
                     return False
         except subprocess.TimeoutExpired:
             # Timeout is expected if Redis is slow - continue checking
@@ -138,8 +144,8 @@ except Exception as e:
             if (attempt + 1) % 3 == 0:  # Show progress every 6 seconds
                 print(f"   ... checking (attempt {attempt+1}/{max_wait})...")
     
-    print("   ⚠️  Data feed verification timeout - feed may still be connecting")
-    print("   💡 The system will continue - check dashboard in a few seconds")
+    print("   [WARNING] Data feed verification timeout - feed may still be connecting")
+    print("   [INFO] The system will continue - check dashboard in a few seconds")
     return False
 
 def verify_trading_service(process, max_wait=5):
@@ -148,27 +154,26 @@ def verify_trading_service(process, max_wait=5):
     for attempt in range(max_wait):
         # Check if process is still alive
         if process.poll() is None:
-            print("   ✅ Trading service process is running")
+            print("   [OK] Trading service process is running")
             return True
         else:
             # Process exited, check stderr for errors
             try:
                 stderr = process.stderr.read().decode('utf-8', errors='ignore')
                 if stderr:
-                    print(f"   ⚠️  Trading service error: {stderr[:200]}")
+                    print(f"   [WARNING] Trading service error: {stderr[:200]}")
             except:
                 pass
         
         if attempt < max_wait - 1:
             time.sleep(1)
     
-    print("   ⚠️  Trading service may have exited - check logs")
+    print("   [WARNING] Trading service may have exited - check logs")
     return False
 
 def start_dashboard():
     """Start the monitoring dashboard."""
     python_path = get_python_path()
-    print("🚀 Step 2: Starting dashboard on http://localhost:8888...")
     # Use uvicorn to run FastAPI app properly
     # Don't capture output so errors are visible in terminal
     process = subprocess.Popen(
@@ -179,10 +184,190 @@ def start_dashboard():
     time.sleep(2)  # Give it a moment to start
     return process
 
+def check_llm_provider():
+    """Check LLM provider availability - prioritize local Ollama."""
+    print("Checking LLM Provider...")
+    python_path = get_python_path()
+    
+    try:
+        result = subprocess.run(
+            [python_path, "scripts/check_llm.py"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=Path(__file__).parent.parent
+        )
+        output = result.stdout.strip()
+        stderr_output = result.stderr.strip() if result.stderr else ""
+        
+        if result.returncode == 0:
+            if 'OLLAMA_OK' in output:
+                model_count = output.split()[-1]
+                print(f"   [OK] Ollama running with {model_count} model(s)")
+                return True
+            elif 'CLOUD_OK' in output:
+                provider = output.split()[-1]
+                print(f"   [OK] Cloud LLM provider configured: {provider}")
+                return True
+        else:
+            # Show stderr if available for debugging
+            if stderr_output and 'Traceback' in stderr_output:
+                print(f"   [DEBUG] Error details: {stderr_output[:200]}")
+            if 'OLLAMA_NO_MODELS' in output:
+                print("   [FAIL] Ollama running but no models found")
+                print("   Fix: Run 'ollama pull llama3.1:8b'")
+                return False
+            elif 'OLLAMA_ERROR' in output or 'OLLAMA_HTTPX_MISSING' in output:
+                if 'OLLAMA_HTTPX_MISSING' in output:
+                    print("   [FAIL] httpx module missing for Ollama check")
+                    print("   Fix: pip install httpx")
+                else:
+                    error = output.split('OLLAMA_ERROR')[-1].strip() if 'OLLAMA_ERROR' in output else 'Not running'
+                    print(f"   [WARNING] Ollama not running: {error}")
+                    print("   Fix: Start Ollama manually with 'ollama serve'")
+                    print("   Or: The trading service may start it automatically")
+                # Allow to continue - user can start Ollama manually or it might auto-start
+                return True
+            elif 'UNKNOWN_PROVIDER' in output:
+                provider = output.split()[-1] if len(output.split()) > 1 else 'unknown'
+                print(f"   [WARNING] Unknown LLM provider configured: {provider}")
+                print("   Fix: Set LLM_PROVIDER=ollama in .env for local LLM")
+                print("   Note: Will try to use Ollama anyway")
+                return True  # Allow to continue
+            else:
+                print(f"   [WARNING] LLM provider check incomplete: {output}")
+                print("   Note: Will attempt to use Ollama when trading service starts")
+                return True  # Allow to continue
+    except Exception as e:
+        print(f"   [FAIL] Error checking LLM: {str(e)[:50]}")
+        print("   [INFO] System will attempt to start Ollama automatically")
+        return True  # Allow to continue
+
+def check_redis():
+    """Check Redis connection."""
+    print("Checking Redis...")
+    python_path = get_python_path()
+    
+    try:
+        result = subprocess.run(
+            [python_path, "scripts/check_redis.py"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            cwd=Path(__file__).parent.parent
+        )
+        output = result.stdout.strip()
+        stderr_output = result.stderr.strip() if result.stderr else ""
+        
+        if result.returncode == 0 and 'REDIS_OK' in output:
+            print("   [OK] Redis is running and accessible")
+            return True
+        else:
+            if 'REDIS_MODULE_MISSING' in output:
+                print("   [FAIL] Redis Python module not installed")
+                print("   Fix: pip install redis")
+            else:
+                print("   [FAIL] Redis not accessible")
+                print("   Fix: Start Redis with 'redis-server' or Docker")
+            if stderr_output:
+                print(f"   [DEBUG] {stderr_output[:100]}")
+            return False
+    except Exception as e:
+        print(f"   [FAIL] Error checking Redis: {str(e)[:50]}")
+        return False
+
+def check_mongodb():
+    """Check MongoDB connection."""
+    print("Checking MongoDB...")
+    python_path = get_python_path()
+    
+    try:
+        result = subprocess.run(
+            [python_path, "scripts/check_mongodb.py"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            cwd=Path(__file__).parent.parent
+        )
+        output = result.stdout.strip()
+        stderr_output = result.stderr.strip() if result.stderr else ""
+        
+        if result.returncode == 0 and 'MONGODB_OK' in output:
+            print("   [OK] MongoDB is running and accessible")
+            return True
+        else:
+            if 'MONGODB_MODULE_MISSING' in output:
+                print("   [FAIL] MongoDB Python module not installed")
+                print("   Fix: pip install pymongo")
+            else:
+                print("   [FAIL] MongoDB not accessible")
+                print("   Fix: Start MongoDB with 'mongod' or Docker")
+            if stderr_output:
+                print(f"   [DEBUG] {stderr_output[:100]}")
+            return False
+    except Exception as e:
+        print(f"   [FAIL] Error checking MongoDB: {str(e)[:50]}")
+        return False
+
+def check_data_feed_connectivity(instrument: str):
+    """Check data feed connectivity before starting."""
+    print(f"Checking {instrument} data feed connectivity...")
+    python_path = get_python_path()
+    
+    if instrument == "BTC":
+        check_script_path = "scripts/check_binance.py"
+    else:
+        check_script_path = "scripts/check_zerodha.py"
+    
+    try:
+        result = subprocess.run(
+            [python_path, check_script_path],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            cwd=Path(__file__).parent.parent
+        )
+        output = result.stdout.strip()
+        if result.returncode == 0:
+            if 'BINANCE_OK' in output:
+                price = output.split()[-1] if len(output.split()) > 1 else 'N/A'
+                print(f"   [OK] Binance API accessible (BTC Price: ${float(price):,.2f})")
+                return True
+            elif 'ZERODHA_OK' in output:
+                user = output.split()[-1] if len(output.split()) > 1 else 'Unknown'
+                print(f"   [OK] Zerodha credentials valid (User: {user})")
+                return True
+        else:
+            if 'BINANCE_ERROR' in output:
+                error = output.split('BINANCE_ERROR')[-1].strip()
+                print(f"   [FAIL] Binance API error: {error}")
+                print("   Fix: Check internet connection and Binance API availability")
+            elif 'ZERODHA_NO_CREDENTIALS' in output:
+                print("   [FAIL] Zerodha credentials.json not found")
+                print("   Fix: Run 'python auto_login.py' to authenticate")
+            elif 'ZERODHA_NO_TOKEN' in output:
+                print("   [FAIL] Zerodha access token missing")
+                print("   Fix: Run 'python auto_login.py' to refresh token")
+            elif 'ZERODHA_ERROR' in output:
+                error = output.split('ZERODHA_ERROR')[-1].strip()
+                print(f"   [FAIL] Zerodha connection error: {error}")
+            elif 'MODULE_MISSING' in output:
+                print("   [FAIL] Required module missing (websockets)")
+                print("   Fix: pip install websockets")
+            else:
+                print(f"   [FAIL] Data feed check failed: {output}")
+            return False
+    except subprocess.TimeoutExpired:
+        print("   [FAIL] Data feed connectivity check timed out")
+        return False
+    except Exception as e:
+        print(f"   [FAIL] Error checking data feed: {str(e)[:50]}")
+        return False
+
 def start_trading_service():
     """Start the trading service."""
     python_path = get_python_path()
-    print("🚀 Step 3: Starting trading service (includes data feed)...")
+    print("Starting trading service (includes data feed)...")
     process = subprocess.Popen(
         [python_path, "-m", "services.trading_service"],
         stdout=subprocess.PIPE,
@@ -216,20 +401,62 @@ def main():
         sys.exit(1)
     
     print("=" * 70)
-    print(f"🚀 Starting Trading System for {instrument}")
+    print(f"Starting Trading System for {instrument}")
     print("=" * 70)
     print()
     
     # Step 1: Configure instrument
     if not configure_instrument(instrument):
-        print("\n❌ ERROR: Failed to configure instrument")
+        print("\n[ERROR] Failed to configure instrument")
         sys.exit(1)
+    print()
+    
+    # Step 2: Run all pre-flight checks
+    print("=" * 70)
+    print("Pre-Flight Checks")
+    print("=" * 70)
+    print()
+    
+    checks_passed = True
+    
+    # Check LLM Provider
+    if not check_llm_provider():
+        checks_passed = False
+    print()
+    
+    # Check Redis
+    if not check_redis():
+        checks_passed = False
+    print()
+    
+    # Check MongoDB
+    if not check_mongodb():
+        checks_passed = False
+    print()
+    
+    # Check Data Feed Connectivity
+    if not check_data_feed_connectivity(instrument):
+        checks_passed = False
+    print()
+    
+    # Summary
+    print("=" * 70)
+    if checks_passed:
+        print("[OK] All checks passed! Starting services...")
+    else:
+        print("[WARNING] Some checks failed. System may not work correctly.")
+        print("Please fix the issues above before continuing.")
+        response = input("\nContinue anyway? (y/N): ").strip().lower()
+        if response != 'y':
+            print("Aborted by user.")
+            sys.exit(1)
+    print("=" * 70)
     print()
     
     # Check if virtual environment exists
     venv_path = Path(".venv")
     if not venv_path.exists():
-        print("⚠️  Virtual environment not found!")
+        print("[WARNING] Virtual environment not found!")
         print("Setting up virtual environment...")
         python_path = get_python_path()
         subprocess.run([python_path, "scripts/setup_venv.py"], check=True)
@@ -238,18 +465,19 @@ def main():
     processes = []
     
     try:
-        # Step 2: Start dashboard
+        # Step 3: Start dashboard
+        print("Step 1: Starting dashboard on http://localhost:8888...")
         dashboard_process = start_dashboard()
         processes.append(("Dashboard", dashboard_process))
         
         # Verify dashboard
         if verify_dashboard():
-            print("✅ Dashboard verified and ready")
+            print("[OK] Dashboard verified and ready")
         else:
-            print("⚠️  Dashboard started but verification timeout - check manually")
+            print("[WARNING] Dashboard started but verification timeout - check manually")
         print()
         
-        # Step 3: Start trading service (includes data feed)
+        # Step 4: Start trading service (includes data feed)
         trading_process = start_trading_service()
         processes.append(("Trading Service", trading_process))
         
@@ -262,33 +490,34 @@ def main():
         
         # Verify data feed (non-blocking, won't hang)
         print()
+        print("Step 2: Verifying data feed...")
         # For crypto, give more attempts since WebSocket needs time to connect and receive data
         max_attempts = 12 if instrument == "BTC" else 8
         data_feed_verified = verify_data_feed(instrument, max_wait=max_attempts)
         if data_feed_verified:
-            print("✅ Data feed verified and receiving data")
+            print("[OK] Data feed verified and receiving data")
         else:
-            print("⚠️  Data feed started but verification incomplete")
+            print("[WARNING] Data feed started but verification incomplete")
             print("   This is normal - WebSocket connections can take 10-20 seconds")
             print("   Check the dashboard in a few seconds to see live data")
         print()
         
         # Verify trading service
         if verify_trading_service(trading_process):
-            print("✅ Trading service verified")
+            print("[OK] Trading service verified")
         else:
-            print("⚠️  Trading service may have issues - check terminal output")
+            print("[WARNING] Trading service may have issues - check terminal output")
         print()
         
         print("=" * 70)
-        print("✅ SYSTEM STARTED SUCCESSFULLY!")
+        print("[SUCCESS] SYSTEM STARTED SUCCESSFULLY!")
         print("=" * 70)
         print(f"Instrument: {instrument}")
         print("Dashboard: http://localhost:8888")
         print("\nComponents:")
-        print("  ✅ Dashboard - Running")
-        print("  ✅ Data Feed - Running")
-        print("  ✅ Trading Service - Running")
+        print("  [OK] Dashboard - Running")
+        print("  [OK] Data Feed - Running")
+        print("  [OK] Trading Service - Running")
         print("\nPress Ctrl+C to stop all services")
         print("=" * 70)
         
@@ -297,7 +526,7 @@ def main():
             for name, process in processes:
                 process.wait()
         except KeyboardInterrupt:
-            print("\n\n🛑 Stopping all services...")
+            print("\n\n[STOP] Stopping all services...")
             for name, process in processes:
                 print(f"   Stopping {name}...")
                 if sys.platform == "win32":
@@ -308,10 +537,10 @@ def main():
                     process.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     process.kill()
-            print("✅ All services stopped")
+            print("[OK] All services stopped")
     
     except Exception as e:
-        print(f"\n❌ ERROR: {e}")
+        print(f"\n[ERROR] {e}")
         # Cleanup
         for name, process in processes:
             try:
