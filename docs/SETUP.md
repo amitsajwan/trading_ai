@@ -7,137 +7,85 @@ Complete setup instructions for the GenAI Trading System.
 - **Python**: 3.9 or higher
 - **MongoDB**: 4.4 or higher (local or remote)
 - **Redis**: 6.0 or higher (optional but recommended)
-- **Zerodha Kite Connect**: Active account with API access
-- **LLM Provider**: OpenAI, Azure OpenAI, Groq, Ollama, Hugging Face, Together AI, or Google Gemini
+- **LLM Provider**: Ollama (local) OR cloud API key (Groq, Gemini, etc.)
 
-## Installation Steps
+## Quick Start
 
-### 1. Clone Repository
-
-```bash
-git clone <repository-url>
-cd zerodha
-```
-
-### 2. Install Dependencies
+### 1. Install Dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 3. Set Up Databases
+### 2. Setup LLM Provider
 
-#### MongoDB
+**Option A: Ollama (Recommended - FREE, No Rate Limits)**
 
-**Local Installation**:
 ```bash
-# Windows (using MongoDB installer)
-# Download from https://www.mongodb.com/try/download/community
+# Install Ollama
+curl -fsSL https://ollama.com/install.sh | sh
 
-# Linux
-sudo apt-get install mongodb
+# Pull a model
+ollama pull llama3.1:8b
 
-# macOS
-brew install mongodb-community
-
-# Start MongoDB
-mongod
+# Start Ollama (runs in background)
+ollama serve
 ```
 
-**Docker**:
-```bash
-docker run -d -p 27017:27017 --name mongodb mongo:latest
-```
+**Option B: Cloud Provider (Free Tiers Available)**
 
-#### Redis (Optional but Recommended)
+Get a free API key from one of:
+- **Groq**: [console.groq.com](https://console.groq.com) - 100K tokens/day free
+- **Google Gemini**: [aistudio.google.com](https://aistudio.google.com/app/apikey) - 1500 req/day free
+- **OpenRouter**: [openrouter.ai](https://openrouter.ai) - Limited free tier
 
-**Local Installation**:
-```bash
-# Windows (using WSL or installer)
-# Download from https://redis.io/download
-
-# Linux
-sudo apt-get install redis-server
-
-# macOS
-brew install redis
-
-# Start Redis
-redis-server
-```
-
-**Docker**:
-```bash
-docker run -d -p 6379:6379 --name redis redis:latest
-```
-
-**Note**: System works without Redis but with reduced performance. Redis is used for hot data caching.
-
-### 4. Configure Environment Variables
+### 3. Configure Environment
 
 Create `.env` file in project root:
 
 ```bash
-cp .env.example .env
-```
+# LLM Configuration (choose one)
+LLM_PROVIDER=ollama
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=llama3.1:8b
 
-Edit `.env` with your configuration:
+# OR use cloud provider:
+# LLM_PROVIDER=groq
+# GROQ_API_KEY=your_key_here
 
-```env
-# Zerodha Kite Connect (Required)
-KITE_API_KEY=your_api_key
-KITE_API_SECRET=your_api_secret
+# Instrument Configuration
+INSTRUMENT_SYMBOL=BTC-USD       # BTC-USD, NIFTY BANK, NIFTY 50
+INSTRUMENT_NAME=Bitcoin         # Bitcoin, Bank Nifty, Nifty 50
+DATA_SOURCE=CRYPTO              # CRYPTO or ZERODHA
+MARKET_24_7=true                # true for crypto, false for stocks
 
-# MongoDB (Required)
+# Database
 MONGODB_URI=mongodb://localhost:27017/
-MONGODH_DB_NAME=zerodha_trading
-
-# Redis (Optional)
+MONGODB_DB_NAME=crypto_trading
 REDIS_HOST=localhost
 REDIS_PORT=6379
-REDIS_DB=0
 
-# LLM Provider (Required - choose one)
-LLM_PROVIDER=groq  # Options: groq, openai, azure, ollama, huggingface, together, gemini
-LLM_MODEL=llama-3.3-70b-versatile  # Model name varies by provider
+# Trading (always start in paper mode!)
+PAPER_TRADING_MODE=true
+```
 
-# Groq (if using Groq)
-GROQ_API_KEY=your_groq_api_key
+### 4. Setup Databases
 
-# OpenAI (if using OpenAI)
-OPENAI_API_KEY=your_openai_api_key
+**MongoDB:**
+```bash
+# Docker (easiest)
+docker run -d -p 27017:27017 --name mongodb mongo:latest
 
-# Azure OpenAI (if using Azure)
-AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com
-AZURE_OPENAI_API_KEY=your_azure_api_key
-AZURE_OPENAI_API_VERSION=2024-02-15-preview
+# Or install locally: https://www.mongodb.com/try/download/community
+```
 
-# Ollama (if using Ollama - local)
-OLLAMA_BASE_URL=http://localhost:11434
+**Redis (Optional):**
+```bash
+# Docker
+docker run -d -p 6379:6379 --name redis redis:latest
 
-# Hugging Face (if using Hugging Face)
-HUGGINGFACE_API_KEY=your_huggingface_api_key
-
-# Together AI (if using Together AI)
-TOGETHER_API_KEY=your_together_api_key
-
-# Google Gemini (if using Gemini)
-GOOGLE_API_KEY=your_google_api_key
-
-# News API (Optional - for news collection)
-NEWS_API_KEY=your_news_api_key
-NEWS_UPDATE_INTERVAL_MINUTES=5
-
-# Trading Configuration
-PAPER_TRADING_MODE=true  # Start in paper trading mode
-MARKET_OPEN_TIME=09:15:00
-MARKET_CLOSE_TIME=15:30:00
-
-# Risk Management
-MAX_POSITION_SIZE_PCT=5.0
-MAX_LEVERAGE=2.0
-DEFAULT_STOP_LOSS_PCT=1.5
-DEFAULT_TAKE_PROFIT_PCT=3.0
+# Or install locally
+# System works without Redis but with reduced performance
 ```
 
 ### 5. Initialize MongoDB Schema
@@ -146,214 +94,167 @@ DEFAULT_TAKE_PROFIT_PCT=3.0
 python mongodb_schema.py
 ```
 
-This creates all required collections and indexes.
-
-### 6. Authenticate with Zerodha
+### 6. Verify Setup
 
 ```bash
-python auto_login.py
-```
-
-This will:
-1. Open browser for Zerodha login
-2. Generate access token
-3. Save credentials to `credentials.json`
-
-**Note**: Access token expires daily. You may need to re-authenticate.
-
-### 7. Verify Setup
-
-```bash
-python scripts/verify_setup.py
+python scripts/diagnose_llm_system.py
 ```
 
 This checks:
-- MongoDB connection
-- Redis connection (if configured)
-- Zerodha credentials
-- LLM provider configuration
-- Environment variables
+- ✅ LLM provider availability
+- ✅ Environment configuration
+- ✅ Database connections
+- ✅ Instrument configuration
 
-## Running the System
-
-### Option 1: Unified Trading Service (Recommended)
-
-Starts all components in a single process:
-
-```bash
-python -m services.trading_service
-```
-
-Or:
-
-```bash
-python start_trading_system.py
-```
-
-This starts:
-- Data ingestion (Zerodha WebSocket)
-- Trading graph (60-second analysis cycle)
-- Position monitoring
-- All agents
-
-### Option 2: Start All Services Script
+### 7. Start the System
 
 ```bash
 python scripts/start_all.py
 ```
 
-This starts:
-- Monitoring dashboard
-- Data feed
-- Trading service
+Access dashboard at: http://localhost:8888
 
-### Option 3: Separate Components
+## Instrument Configuration
 
-**Start Data Ingestion**:
+### Bitcoin (Crypto)
+
 ```bash
-python -m data.run_ingestion
+python scripts/configure_instrument.py BTC
 ```
 
-**Start Trading Graph**:
+Or manually set in `.env`:
 ```bash
-python -m trading_orchestration.main
+INSTRUMENT_SYMBOL=BTC-USD
+INSTRUMENT_NAME=Bitcoin
+DATA_SOURCE=CRYPTO
+MARKET_24_7=true
+MACRO_DATA_ENABLED=false
 ```
 
-**Start Monitoring Dashboard**:
+### Bank Nifty (Indian Stocks)
+
+Requires Zerodha Kite Connect credentials.
+
 ```bash
+python scripts/configure_instrument.py BANKNIFTY
+```
+
+Or manually set in `.env`:
+```bash
+INSTRUMENT_SYMBOL=NIFTY BANK
+INSTRUMENT_NAME=Bank Nifty
+DATA_SOURCE=ZERODHA
+MARKET_24_7=false
+MACRO_DATA_ENABLED=true
+KITE_API_KEY=your_key
+KITE_API_SECRET=your_secret
+```
+
+Then authenticate:
+```bash
+python auto_login.py
+```
+
+## Running the System
+
+### Option 1: All-in-One (Recommended)
+
+```bash
+python scripts/start_all.py
+```
+
+### Option 2: Separate Components
+
+```bash
+# Terminal 1: Dashboard
 python -m monitoring.dashboard
+
+# Terminal 2: Trading Service
+python -m services.trading_service
 ```
 
-Access dashboard at `http://localhost:8888`
+### Option 3: Docker
 
-## Configuration Details
+```bash
+docker-compose up -d
+```
 
-### LLM Provider Setup
+## Configuration Reference
 
-See [LLM_PROVIDER_GUIDE.md](../LLM_PROVIDER_GUIDE.md) for detailed setup instructions for each provider.
+### LLM Providers
 
-**Quick Setup**:
-- **Groq**: Free tier available, fast responses
-- **OpenAI**: Paid, high quality
-- **Ollama**: Local, free, requires model download
-- **Together AI**: Free tier available
-- **Hugging Face**: Free tier available
+| Provider | Env Variable | Notes |
+|----------|--------------|-------|
+| Ollama | `LLM_PROVIDER=ollama` | Local, free, no limits |
+| Groq | `GROQ_API_KEY` | Fast, 100K tokens/day free |
+| Gemini | `GOOGLE_API_KEY` | 1500 req/day free |
+| OpenRouter | `OPENROUTER_API_KEY` | Multiple free models |
+| Together AI | `TOGETHER_API_KEY` | $25 free credits |
+| OpenAI | `OPENAI_API_KEY` | Paid only |
 
-### Paper Trading Mode
+The system automatically falls back between providers if one fails.
 
-System starts in paper trading mode by default (`PAPER_TRADING_MODE=true`). Trades are simulated without real money.
+### Trading Parameters
 
-To switch to live trading:
-1. Set `PAPER_TRADING_MODE=false` in `.env`
-2. Ensure sufficient capital in Zerodha account
-3. Start with small position sizes
-4. Monitor closely
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `PAPER_TRADING_MODE` | `true` | Simulate trades without real money |
+| `MAX_POSITION_SIZE_PCT` | `5.0` | Max position as % of portfolio |
+| `MAX_LEVERAGE` | `2.0` | Maximum leverage allowed |
+| `DEFAULT_STOP_LOSS_PCT` | `1.5` | Default stop loss percentage |
+| `DEFAULT_TAKE_PROFIT_PCT` | `3.0` | Default take profit percentage |
 
 ### Market Hours
 
-Default: 09:15:00 to 15:30:00 IST (Indian Standard Time)
-
-Configure in `.env`:
-```env
-MARKET_OPEN_TIME=09:15:00
-MARKET_CLOSE_TIME=15:30:00
-```
-
-System runs analysis every 60 seconds during market hours.
+| Instrument | Hours | Config |
+|------------|-------|--------|
+| Crypto | 24/7 | `MARKET_24_7=true` |
+| Bank Nifty | 9:15-15:30 IST | `MARKET_24_7=false` |
 
 ## Troubleshooting
 
+### No LLM Provider Available
+
+```bash
+# Run diagnostics
+python scripts/diagnose_llm_system.py
+
+# Check if Ollama is running
+curl http://localhost:11434/api/tags
+
+# Start Ollama if not running
+ollama serve
+```
+
 ### MongoDB Connection Issues
 
-**Error**: `Connection refused`
+```bash
+# Check MongoDB is running
+mongod --version
 
-**Solution**:
-1. Check if MongoDB is running: `mongod --version`
-2. Check MongoDB port: Default is 27017
-3. Verify connection string in `.env`
+# Start with Docker if needed
+docker run -d -p 27017:27017 --name mongodb mongo:latest
+```
 
-### Redis Connection Issues
+### Rate Limit Errors
 
-**Error**: `Redis not available`
+The system automatically falls back between LLM providers. If all are rate-limited:
 
-**Solution**:
-1. System works without Redis (fallback mode)
-2. To use Redis: Install and start Redis server
-3. Check Redis port: Default is 6379
+1. Add more API keys to `.env`
+2. Use Ollama (local, no limits)
+3. Wait for rate limit reset
 
-### Zerodha Authentication Issues
+### No Price Data
 
-**Error**: `credentials.json not found`
-
-**Solution**:
-1. Run `python auto_login.py`
-2. Complete browser login
-3. Verify `credentials.json` exists
-
-**Error**: `Access token expired`
-
-**Solution**:
-1. Re-run `python auto_login.py`
-2. Access tokens expire daily
-
-### LLM Provider Issues
-
-**Error**: `API key not configured`
-
-**Solution**:
-1. Check `.env` file has correct API key
-2. Verify provider name matches (e.g., `LLM_PROVIDER=groq`)
-3. Test API key with provider's test endpoint
-
-**Error**: `Rate limit exceeded`
-
-**Solution**:
-1. Switch to different LLM provider
-2. See [FREE_LLM_GUIDE.md](../FREE_LLM_GUIDE.md) for free alternatives
-3. Use `scripts/switch_llm_provider.py` to switch providers
-
-### Data Feed Issues
-
-**Error**: `No current price available`
-
-**Solution**:
-1. Check Zerodha WebSocket connection
-2. Verify instrument token is correct
-3. Check market is open
-4. Review logs for WebSocket errors
-
-### Agent Analysis Issues
-
-**Error**: `No analysis available`
-
-**Solution**:
-1. Check LLM provider is working
-2. Verify agents are receiving data
-3. Check MongoDB for stored analysis
-4. Review agent logs
-
-## Next Steps
-
-After setup:
-
-1. **Monitor Dashboard**: Check `http://localhost:8888` for system status
-2. **Review Agent Analysis**: Check dashboard for agent outputs
-3. **Paper Trading**: Test system in paper trading mode
-4. **Review Trades**: Check MongoDB `trades` collection
-5. **Adjust Configuration**: Tune risk parameters, thresholds, etc.
+1. Check `DATA_SOURCE` matches your instrument
+2. For crypto: Binance WebSocket connects automatically
+3. For stocks: Run `python auto_login.py` first
 
 ## Production Deployment
 
-For production deployment:
-
-1. Use environment variables (not `.env` file)
-2. Set up proper logging (file-based)
-3. Use production MongoDB (MongoDB Atlas, etc.)
-4. Use production Redis (AWS ElastiCache, etc.)
-5. Set up monitoring and alerts
-6. Use process manager (systemd, PM2, etc.)
-7. Enable SSL/TLS for API connections
-8. Set up backup strategy
-
-See [DEPLOYMENT.md](../DEPLOYMENT.md) for production deployment guide.
-
+See [DEPLOYMENT.md](DEPLOYMENT.md) for:
+- Docker deployment
+- AWS EC2 setup
+- MongoDB Atlas configuration
+- Security best practices
+- Monitoring and alerting

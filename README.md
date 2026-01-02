@@ -1,230 +1,171 @@
-# GenAI-Powered Algo Trading System for Bank Nifty
+# GenAI Trading System
 
-A fully autonomous multi-agent LLM trading system for Bank Nifty using LangGraph orchestration, real-time data ingestion, and self-improving capabilities.
+A fully autonomous multi-agent LLM trading system supporting **multiple instruments** (Bitcoin, Bank Nifty, Nifty 50) with LangGraph orchestration, real-time data ingestion, and self-improving capabilities.
 
-## Architecture Overview
+## Quick Start
 
-```
-Market Data → Data Ingestion → Redis (Memory) → LangGraph Agents → Portfolio Manager → Execution → MongoDB (Logs) → Learning Agent
-```
+### 1. Install Dependencies
 
-### Multi-Agent System
-
-The system consists of 10+ specialized agents:
-
-1. **Technical Analysis Agent** - Chart patterns, momentum indicators, support/resistance
-2. **Fundamental Analysis Agent** - Banking sector strength, RBI policy, credit quality
-3. **Sentiment Analysis Agent** - Market sentiment from news and social media
-4. **Macro Analysis Agent** - Macro regime detection, RBI cycle, liquidity conditions
-5. **Bull Researcher Agent** - Constructs bullish thesis and stress-tests bear case
-6. **Bear Researcher Agent** - Constructs bearish thesis and stress-tests bull case
-7. **Risk Management Agents** (3 perspectives) - Aggressive, Conservative, Neutral risk assessment
-8. **Portfolio Manager Agent** - Synthesizes all analyses and makes final decisions
-9. **Execution Agent** - Order placement via Zerodha Kite API
-10. **Learning Agent** - Post-trade analysis and prompt refinement
-
-## Features
-
-- **Zero Human Intervention** - Fully autonomous operation during market hours
-- **Multi-Agent Reasoning** - Specialized agents with LLM-powered analysis
-- **Real-time Data Ingestion** - WebSocket-based market data collection
-- **Self-Improving** - Learning agent refines prompts based on trade outcomes
-- **Risk Management** - Multiple risk perspectives with automatic circuit breakers
-- **Paper Trading Mode** - Test strategies before going live
-- **Monitoring Dashboard** - Real-time metrics and observability
-
-## Setup
-
-### Prerequisites
-
-- Python 3.9+
-- MongoDB (local or remote)
-- Redis (local or remote)
-- Zerodha Kite Connect API credentials
-- OpenAI API key (or Azure OpenAI)
-
-### Installation
-
-1. Clone the repository:
-```bash
-git clone <repository-url>
-cd zerodha
-```
-
-2. Install dependencies:
 ```bash
 pip install -r requirements.txt
 ```
 
-3. Set up environment variables:
+### 2. Configure Environment
+
+Copy the sample configuration and edit:
+
 ```bash
-cp .env.example .env
-# Edit .env with your API keys and configuration
+cp .env.example .env  # If .env.example exists
+# OR create .env with required settings (see Configuration below)
 ```
 
-4. Set up MongoDB and Redis:
-```bash
-# MongoDB
-mongod
+### 3. Setup LLM Provider
 
-# Redis
-redis-server
+**Option A: Local LLM (Recommended - FREE)**
+```bash
+# Install Ollama
+curl -fsSL https://ollama.com/install.sh | sh
+
+# Pull a model
+ollama pull llama3.1:8b
+
+# Start Ollama
+ollama serve
 ```
 
-5. Initialize MongoDB schema:
+**Option B: Cloud Provider**
+Add one of these API keys to `.env`:
+- `GROQ_API_KEY` - [Get free key](https://console.groq.com)
+- `GOOGLE_API_KEY` - [Get free key](https://aistudio.google.com/app/apikey)
+- `OPENROUTER_API_KEY` - [Get free key](https://openrouter.ai)
+
+### 4. Start Services
+
 ```bash
-python mongodb_schema.py
+# Start MongoDB and Redis
+mongod &
+redis-server &
+
+# Run the trading system
+python scripts/start_all.py
 ```
 
-6. Authenticate with Zerodha:
-```bash
-python auto_login.py
-```
+### 5. Access Dashboard
+
+Open http://localhost:8888
 
 ## Configuration
 
-Key configuration in `.env`:
-
-- `KITE_API_KEY` - Zerodha Kite API key
-- `KITE_API_SECRET` - Zerodha Kite API secret
-- `LLM_PROVIDER` - LLM provider (groq, openai, azure, ollama, huggingface, together, gemini)
-- `GROQ_API_KEY` - Groq API key (or other LLM provider key)
-- `MONGODB_URI` - MongoDB connection string
-- `REDIS_HOST` - Redis host
-- `PAPER_TRADING_MODE=true` - Start in paper trading mode
-
-See `.env.example` for all configuration options.
-
-## Usage
-
-### Running the Trading System
-
-#### Option 1: Unified Trading Service (Recommended)
-
-Run the unified trading service that integrates all components:
-```bash
-python -m services.trading_service
-```
-
-This starts:
-- Data ingestion (Zerodha WebSocket)
-- Trading graph (60-second analysis cycle)
-- Position monitoring (auto-exit on SL/target)
-- All running in a single process
-
-#### Option 2: Docker Deployment
+All configuration is in a single `.env` file:
 
 ```bash
-# Start all services with Docker Compose
-docker-compose up -d
+# LLM Configuration
+LLM_PROVIDER=ollama          # ollama, groq, gemini, openai, together
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=llama3.1:8b
 
-# View logs
-docker-compose logs -f trading-bot
+# Instrument Configuration
+INSTRUMENT_SYMBOL=BTC-USD    # BTC-USD, NIFTY BANK, NIFTY 50
+INSTRUMENT_NAME=Bitcoin      # Bitcoin, Bank Nifty, Nifty 50
+DATA_SOURCE=CRYPTO           # CRYPTO, ZERODHA
+MARKET_24_7=true             # true for crypto, false for stocks
+
+# Database
+MONGODB_URI=mongodb://localhost:27017/
+REDIS_HOST=localhost
+
+# Trading (start in paper mode!)
+PAPER_TRADING_MODE=true
 ```
 
-#### Option 3: Separate Components
+See [docs/SETUP.md](docs/SETUP.md) for complete configuration options.
 
-1. Start data ingestion:
+## Supported Instruments
+
+| Instrument | Symbol | Data Source | Market Hours |
+|------------|--------|-------------|--------------|
+| Bitcoin | BTC-USD | Binance WebSocket | 24/7 |
+| Bank Nifty | NIFTY BANK | Zerodha Kite | 9:15-15:30 IST |
+| Nifty 50 | NIFTY 50 | Zerodha Kite | 9:15-15:30 IST |
+
+Switch instruments:
 ```bash
-python -m data.run_ingestion
+python scripts/configure_instrument.py BTC      # Bitcoin
+python scripts/configure_instrument.py BANKNIFTY  # Bank Nifty
+python scripts/configure_instrument.py NIFTY     # Nifty 50
 ```
 
-2. Run the trading graph:
-```bash
-python -m trading_orchestration.main
+## Architecture
+
+```
+Market Data → Data Ingestion → Redis (Memory) → LangGraph Agents → Portfolio Manager → Execution
+                                                       ↓
+                                              MongoDB (Logs) → Learning Agent
 ```
 
-### Monitoring Dashboard
+### Multi-Agent System
 
-Start the monitoring dashboard:
-```bash
-python -m monitoring.dashboard
-```
-
-Access at `http://localhost:8000`
-
-Endpoints:
-- `/metrics/trading` - Trading performance metrics
-- `/metrics/agents` - Agent performance metrics
-- `/health` - System health check
-
-### Paper Trading
-
-The system starts in paper trading mode by default. Trades are simulated without real money. Monitor performance before switching to live trading.
+| Agent | Role |
+|-------|------|
+| **Technical** | Chart patterns, RSI, MACD, support/resistance |
+| **Fundamental** | Asset fundamentals, market health |
+| **Sentiment** | News sentiment, market mood |
+| **Macro** | Economic conditions, risk regime |
+| **Bull Researcher** | Constructs bullish thesis |
+| **Bear Researcher** | Constructs bearish thesis |
+| **Risk Management** | Multi-perspective risk assessment |
+| **Portfolio Manager** | Final decision synthesis |
+| **Execution** | Order placement |
+| **Learning** | Post-trade analysis, prompt refinement |
 
 ## Project Structure
 
 ```
-zerodha/
 ├── agents/              # All agent implementations
-│   ├── base_agent.py
-│   ├── technical_agent.py
-│   ├── fundamental_agent.py
-│   ├── sentiment_agent.py
-│   ├── macro_agent.py
-│   ├── bull_researcher.py
-│   ├── bear_researcher.py
-│   ├── risk_agents.py
-│   ├── portfolio_manager.py
-│   ├── execution_agent.py
-│   ├── learning_agent.py
-│   └── state.py
-├── data/                # Data ingestion and storage
-│   ├── ingestion_service.py
-│   ├── market_memory.py
-│   ├── news_collector.py
-│   └── macro_collector.py
 ├── config/              # Configuration and prompts
-│   ├── settings.py
-│   ├── prompt_manager.py
-│   └── prompts/
+│   ├── settings.py      # Environment configuration
+│   └── prompts/         # Agent prompt templates
+├── data/                # Data ingestion and storage
+├── docs/                # Documentation
+├── monitoring/          # Dashboard, alerts, health checks
+├── scripts/             # Utility scripts
+├── services/            # Unified trading service
+├── tests/               # Test suites
 ├── trading_orchestration/  # LangGraph orchestration
-│   ├── trading_graph.py
-│   ├── state_manager.py
-│   └── main.py
-├── monitoring/           # Observability
-│   ├── circuit_breakers.py
-│   ├── dashboard.py
-│   ├── alerts.py
-│   ├── position_monitor.py  # Continuous position monitoring
-│   ├── system_health.py     # System health checks
-│   └── daily_reporter.py    # Automated daily reports
-├── services/             # Unified services
-│   ├── trading_service.py   # Main unified trading service
-│   └── learning_scheduler.py # Weekly learning agent scheduler
-├── utils/               # Utilities
-│   ├── paper_trading.py
-│   └── backtest_engine.py   # Enhanced with metrics & visualization
-└── tests/               # Test suites
-    └── test_integration_full.py  # Full integration tests
+└── utils/               # Utilities (backtesting, paper trading)
 ```
+
+## Diagnostics
+
+Check system health:
+```bash
+python scripts/diagnose_llm_system.py
+```
+
+This checks:
+- LLM provider availability (Ollama, cloud APIs)
+- Environment configuration
+- Database connections (MongoDB, Redis)
+- Instrument configuration
 
 ## Safety Features
 
-- **Circuit Breakers** - Automatic trading halt on:
-  - Daily loss limit exceeded
-  - Consecutive losses (5+)
-  - Data feed down
-  - API rate limits
-  - High volatility (VIX > 25)
-  - Over-leveraged positions
+- **Paper Trading Mode** - Test without real money (default: enabled)
+- **Circuit Breakers** - Auto-halt on losses, volatility, API issues
+- **Position Limits** - Max position size, leverage controls
+- **Stop Losses** - Automatic on all trades
+- **Daily Reporting** - Automated P&L reports
 
-- **Paper Trading** - Test strategies before live trading
-- **Position Limits** - Max position size, leverage, concurrent trades
-- **Stop Losses** - Automatic stop-loss on all trades
-- **Position Monitoring** - Continuous monitoring with auto-exit on SL/target
-- **Bracket Orders** - Automatic SL and target management via Zerodha
-- **Daily Reporting** - Automated daily P&L and metrics reports
-- **Learning Agent** - Weekly analysis and prompt optimization
+## Documentation
 
-## Performance Metrics
-
-Track:
-- Sharpe ratio (target: > 1.0)
-- Win rate (target: > 55%)
-- Max drawdown (limit: < 15%)
-- Agent accuracy scores
-- System latency
+| Document | Description |
+|----------|-------------|
+| [docs/SETUP.md](docs/SETUP.md) | Complete setup instructions |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System design |
+| [docs/AGENTS.md](docs/AGENTS.md) | Agent documentation |
+| [docs/DATA_FLOW.md](docs/DATA_FLOW.md) | Data pipeline |
+| [docs/API.md](docs/API.md) | API reference |
+| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Production deployment |
 
 ## Development
 
@@ -241,18 +182,12 @@ pytest tests/
 3. Add to `TradingGraph` in `trading_orchestration/trading_graph.py`
 4. Add system prompt in `config/prompts/`
 
-## Documentation
+## Requirements
 
-Comprehensive documentation is available in the `docs/` directory:
-
-- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** - System architecture and design
-- **[docs/DATA_FLOW.md](docs/DATA_FLOW.md)** - Complete data flow documentation
-- **[docs/SETUP.md](docs/SETUP.md)** - Detailed setup instructions
-- **[docs/CURRENT_ISSUES.md](docs/CURRENT_ISSUES.md)** - Known issues and limitations
-- **[docs/AGENTS.md](docs/AGENTS.md)** - Agent documentation
-- **[docs/API.md](docs/API.md)** - API reference
-
-See [docs/README.md](docs/README.md) for documentation index.
+- Python 3.9+
+- MongoDB
+- Redis
+- LLM Provider (Ollama local OR cloud API key)
 
 ## License
 
