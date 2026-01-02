@@ -12,12 +12,21 @@ pip install -r requirements.txt
 
 ### 2. Configure Environment
 
-Copy the sample configuration and edit:
+**⚡ For optimal performance, use the optimized configuration:**
 
 ```bash
-cp .env.example .env  # If .env.example exists
-# OR create .env with required settings (see Configuration below)
+cp .env.optimized .env
+# Edit .env and add your API keys
 ```
+
+**Or use the standard template:**
+
+```bash
+cp .env.example .env
+# Edit .env and add your API keys
+```
+
+**📖 See [Quick Fix Guide](docs/QUICK_FIX_GUIDE.md) for 5-minute setup with faster models**
 
 ### 3. Setup LLM Provider
 
@@ -166,14 +175,32 @@ This checks:
 
 ## Documentation
 
+### 🚀 Getting Started
 | Document | Description |
 |----------|-------------|
+| [docs/QUICK_FIX_GUIDE.md](docs/QUICK_FIX_GUIDE.md) | ⚡ **5-minute setup** - Get agents running fast |
+| [docs/MODEL_RECOMMENDATIONS.md](docs/MODEL_RECOMMENDATIONS.md) | Choose the right LLM model |
 | [docs/SETUP.md](docs/SETUP.md) | Complete setup instructions |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System design |
-| [docs/AGENTS.md](docs/AGENTS.md) | Agent documentation |
+
+### 🏗️ System Design
+| Document | Description |
+|----------|-------------|
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System design overview |
+| [docs/AGENTS.md](docs/AGENTS.md) | AI agents documentation |
 | [docs/DATA_FLOW.md](docs/DATA_FLOW.md) | Data pipeline |
 | [docs/API.md](docs/API.md) | API reference |
-| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Production deployment |
+
+### 🔧 Troubleshooting
+| Document | Description |
+|----------|-------------|
+| [docs/AGENT_ISSUES_ANALYSIS.md](docs/AGENT_ISSUES_ANALYSIS.md) | Why agents might not run (root causes) |
+| [docs/CODE_CHANGES_SUMMARY.md](docs/CODE_CHANGES_SUMMARY.md) | Recent performance optimizations |
+| [docs/CURRENT_ISSUES.md](docs/CURRENT_ISSUES.md) | Known limitations |
+
+### 🚀 Deployment
+| Document | Description |
+|----------|-------------|
+| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Production deployment guide |
 
 ## Development
 

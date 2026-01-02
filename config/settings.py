@@ -47,7 +47,7 @@ class TradingConfig(BaseModel):
     
     # Agent Configuration
     llm_provider: str = Field(default="groq")  # "groq", "openai", "azure", "ollama", "huggingface", "together", "gemini"
-    llm_model: str = Field(default="llama-3.3-70b-versatile")  # Model name varies by provider
+    llm_model: str = Field(default="llama-3.1-8b-instant")  # OPTIMIZED: Faster model (was llama-3.3-70b-versatile)
     llm_temperature: float = Field(default=0.3)  # Lower temperature for more deterministic outputs
     max_tokens: int = Field(default=2000)
     
@@ -131,7 +131,7 @@ class TradingConfig(BaseModel):
             
             # Agent Configuration
             llm_provider=os.getenv("LLM_PROVIDER", "groq"),
-            llm_model=os.getenv("LLM_MODEL", "llama-3.3-70b-versatile"),
+            llm_model=os.getenv("LLM_MODEL", "llama-3.1-8b-instant"),  # OPTIMIZED: Faster model
             llm_temperature=float(os.getenv("LLM_TEMPERATURE", "0.3")),
             max_tokens=int(os.getenv("MAX_TOKENS", "2000")),
             
