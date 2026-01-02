@@ -828,15 +828,19 @@ async def get_recent_trades(limit: int = 10) -> List[Dict[str, Any]]:
 
 @app.get("/api/latest-analysis")
 async def get_latest_analysis() -> Dict[str, Any]:
-    """Get latest agent analysis."""
+    """Get latest agent analysis for the current instrument."""
     try:
         mongo_client = get_mongo_client()
         db = mongo_client[settings.mongodb_db_name]
         analysis_collection = get_collection(db, "agent_decisions")
         trades_collection = get_collection(db, "trades_executed")
         
+        # Filter by current instrument to avoid showing old data from other instruments
+        instrument_filter = {"instrument": settings.instrument_symbol}
+        
         # First, try to get from agent_decisions collection (has all analysis runs)
         latest_analysis = analysis_collection.find_one(
+            instrument_filter,
             sort=[("timestamp", -1)]
         )
         

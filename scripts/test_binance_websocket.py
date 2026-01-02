@@ -57,3 +57,4 @@ if __name__ == "__main__":
     result = asyncio.run(test_binance_websocket())
     exit(0 if result else 1)
 
+
