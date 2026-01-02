@@ -20,12 +20,7 @@ class FundamentalAnalysisAgent(BaseAgent):
     
     def _get_default_prompt(self) -> str:
         """Get default system prompt."""
-        instrument_name = settings.instrument_name
-        if settings.macro_data_enabled:
-            return f"""You are the Fundamental Analysis Agent for a {instrument_name} trading system.
-Analyze banking sector fundamentals, RBI policy, and credit quality trends."""
-        else:
-            return f"""You are the Fundamental Analysis Agent for a {instrument_name} trading system.
+        return """You are the Fundamental Analysis Agent for a {instrument_name} trading system.
 Analyze fundamental factors affecting {instrument_name} performance."""
     
     def process(self, state: AgentState) -> AgentState:
@@ -56,18 +51,20 @@ Analyze fundamental factors affecting {instrument_name} performance."""
                 for item in latest_news
             ]) if latest_news else "No recent news available"
             
+            # Get instrument name from settings
+            from config.settings import settings
+            instrument_name = settings.instrument_name
+            
             prompt = f"""
-Latest Banking Sector News:
+Latest News for {instrument_name}:
 {news_summary}
 
-RBI Policy Context:
-- Current Repo Rate: {rbi_rate if rbi_rate else 'Unknown'}
+Market Context:
+- Policy Rate: {rbi_rate if rbi_rate else 'Unknown'}
+- Market Health Indicator: {npa_ratio if npa_ratio else 'Unknown'}
 
-Banking Sector Metrics:
-- NPA Ratio: {npa_ratio if npa_ratio else 'Unknown'}
-
-Analyze the fundamental strength of the banking sector and provide your assessment.
-Focus on factors that directly impact Bank Nifty performance.
+Analyze the fundamental strength of {instrument_name} and provide your assessment.
+Focus on factors that directly impact {instrument_name} performance.
 """
             
             response_format = {

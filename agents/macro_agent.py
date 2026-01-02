@@ -20,12 +20,7 @@ class MacroAnalysisAgent(BaseAgent):
     
     def _get_default_prompt(self) -> str:
         """Get default system prompt."""
-        instrument_name = settings.instrument_name
-        if settings.macro_data_enabled:
-            return f"""You are the Macro Analysis Agent for a {instrument_name} trading system.
-Analyze macro economic conditions, RBI policy, and banking sector health."""
-        else:
-            return f"""You are the Macro Analysis Agent for a {instrument_name} trading system.
+        return """You are the Macro Analysis Agent for a {instrument_name} trading system.
 Analyze macro economic conditions and market regime."""
     
     def process(self, state: AgentState) -> AgentState:
@@ -50,13 +45,17 @@ Analyze macro economic conditions and market regime."""
             inflation_rate = state.inflation_rate
             npa_ratio = state.npa_ratio
             
+            # Get instrument name from settings
+            from config.settings import settings
+            instrument_name = settings.instrument_name
+            
             prompt = f"""
 Macro Economic Context:
-- RBI Repo Rate: {rbi_rate if rbi_rate else 'Unknown'}
-- Inflation Rate (CPI): {inflation_rate if inflation_rate else 'Unknown'}
-- Banking Sector NPA Ratio: {npa_ratio if npa_ratio else 'Unknown'}
+- Interest Rate: {rbi_rate if rbi_rate else 'Unknown'}
+- Inflation Rate: {inflation_rate if inflation_rate else 'Unknown'}
+- Market Health Indicator: {npa_ratio if npa_ratio else 'Unknown'}
 
-Analyze the macro regime and its impact on Bank Nifty.
+Analyze the macro regime and its impact on {instrument_name}.
 """
             
             response_format = {

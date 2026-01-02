@@ -20,7 +20,7 @@ class BullResearcherAgent(BaseAgent):
     
     def _get_default_prompt(self) -> str:
         """Get default system prompt."""
-        return """You are the Bull Researcher Agent for Bank Nifty trading.
+        return """You are the Bull Researcher Agent for {instrument_name} trading.
 Construct the strongest bull case for BUY signals."""
     
     def process(self, state: AgentState) -> AgentState:
@@ -76,7 +76,7 @@ Current Price: {current_price}
 Upside Target: {target:.2f} (+3%)
 Stop Loss: {stop_loss:.2f} (-1.5%)
 
-Build the strongest BULL CASE for why Bank Nifty should go UP from here.
+Build the strongest BULL CASE for why the price should go UP from here.
 """
             
             response_format = {

@@ -22,7 +22,7 @@ class TechnicalAnalysisAgent(BaseAgent):
     
     def _get_default_prompt(self) -> str:
         """Get default system prompt."""
-        return """You are the Technical Analysis Agent for a Bank Nifty trading system.
+        return """You are the Technical Analysis Agent for a {instrument_name} trading system.
 Your role: Extract chart patterns and momentum signals from market data.
 Analyze OHLC data and provide structured technical analysis."""
     

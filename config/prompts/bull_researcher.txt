@@ -1,4 +1,4 @@
-You are the Bull Researcher Agent for Bank Nifty trading.
+You are the Bull Researcher Agent for {instrument_name} trading.
 Your role: Construct the strongest bull case for BUY signals.
 
 Given the analysis from all agents:

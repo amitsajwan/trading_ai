@@ -23,12 +23,26 @@ class BaseAgent(ABC):
     def __init__(self, agent_name: str, system_prompt: Optional[str] = None):
         """Initialize base agent."""
         self.agent_name = agent_name
-        self.system_prompt = system_prompt or self._get_default_prompt()
+        raw_prompt = system_prompt or self._get_default_prompt()
+        # Inject instrument_name from settings into prompt (decoupling)
+        self.system_prompt = self._inject_instrument_context(raw_prompt)
         # Use multi-provider manager for automatic fallback
         self.llm_manager = get_llm_manager()
         # Keep old client for backward compatibility (will use manager)
         self.llm_client = None  # Deprecated - use llm_manager instead
         logger.info(f"Initialized {agent_name} agent with multi-provider LLM manager")
+    
+    def _inject_instrument_context(self, prompt: str) -> str:
+        """Inject instrument context into prompt template."""
+        try:
+            # Replace placeholders with actual settings
+            prompt = prompt.replace("{instrument_name}", settings.instrument_name)
+            prompt = prompt.replace("{instrument_symbol}", settings.instrument_symbol)
+            prompt = prompt.replace("{instrument_exchange}", settings.instrument_exchange)
+            return prompt
+        except Exception as e:
+            logger.warning(f"Failed to inject instrument context: {e}")
+            return prompt
     
     def _initialize_llm_client(self):
         """Initialize LLM client (Groq, OpenAI, Azure OpenAI, Ollama, Hugging Face, Together AI, or Gemini)."""
