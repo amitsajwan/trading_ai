@@ -101,10 +101,12 @@ class HistoricalDataFetcher:
     def store_candles(self, candles: List[Dict[str, Any]], timeframe: str):
         """Store candles in Redis and MongoDB."""
         stored_count = 0
+        # Get instrument key from settings
+        instrument_key = settings.instrument_symbol.replace("-", "").replace(" ", "").upper()
         for candle in candles:
             try:
                 # Store in Redis
-                self.market_memory.store_ohlc("BANKNIFTY", timeframe, candle)
+                self.market_memory.store_ohlc(instrument_key, timeframe, candle)
                 
                 # Store in MongoDB
                 self.ohlc_collection.insert_one(candle)

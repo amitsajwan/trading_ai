@@ -76,7 +76,8 @@ class PositionMonitor:
             # Get current price
             current_price = None
             if self.market_memory:
-                current_price = self.market_memory.get_current_price("BANKNIFTY")
+                instrument_key = settings.instrument_symbol.replace("-", "").replace(" ", "").upper()
+                current_price = self.market_memory.get_current_price(instrument_key)
             
             if not current_price:
                 # Try to get from Kite if available

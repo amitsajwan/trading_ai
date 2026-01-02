@@ -144,8 +144,10 @@ class LTPDataCollector:
     
     def _finalize_candle(self, timeframe: str, candle: Dict[str, Any]):
         """Finalize and store a completed candle."""
+        # Get instrument key from settings
+        instrument_key = settings.instrument_symbol.replace("-", "").replace(" ", "").upper()
         # Store in Redis
-        self.market_memory.store_ohlc("BANKNIFTY", timeframe, candle)
+        self.market_memory.store_ohlc(instrument_key, timeframe, candle)
         
         # Store in MongoDB
         try:
@@ -170,12 +172,13 @@ class LTPDataCollector:
                     timestamp = datetime.now()
                     
                     # Store tick
+                    instrument_key = settings.instrument_symbol.replace("-", "").replace(" ", "").upper()
                     tick_data = {
                         "instrument_token": instrument_token,
                         "last_price": price,
                         "timestamp": timestamp.isoformat()
                     }
-                    self.market_memory.store_tick("BANKNIFTY", tick_data)
+                    self.market_memory.store_tick(instrument_key, tick_data)
                     
                     # Update OHLC
                     self.update_ohlc_from_price(price, timestamp)
