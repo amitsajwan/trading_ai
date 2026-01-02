@@ -91,8 +91,15 @@ Build the strongest BULL CASE for why the price should go UP from here.
             
             analysis = self._call_llm_structured(prompt, response_format)
             
+            # Validate LLM response - ensure thesis is not empty
+            bull_thesis = analysis.get("bull_thesis", "").strip()
+            if not bull_thesis or bull_thesis.lower() in ["null", "none", "n/a", ""]:
+                logger.warning("LLM returned empty bull thesis, using default")
+                analysis = default_analysis
+                bull_thesis = default_analysis["bull_thesis"]
+            
             # Update state
-            state.bull_thesis = analysis.get("bull_thesis", "")
+            state.bull_thesis = bull_thesis
             state.bull_confidence = analysis.get("conviction_score", 0.5)
             
             explanation = f"Bull thesis: {analysis.get('conviction_score', 0.5):.2f} conviction, "
@@ -104,14 +111,16 @@ Build the strongest BULL CASE for why the price should go UP from here.
             # Check if it's a rate limit error - if so, log but don't use defaults immediately
             error_str = str(e)
             is_rate_limit = "429" in error_str or "rate limit" in error_str.lower() or "Rate limit" in error_str
+            is_timeout = "timeout" in error_str.lower() or "Timeout" in error_str
             
             if is_rate_limit:
                 logger.warning(f"Bull research rate limited, will retry with fallback: {e}")
                 # Don't use defaults for rate limits - let LLM manager try other providers
                 raise
             
-            # Only use defaults for actual errors (not rate limits)
+            # For timeouts or other errors, use defaults
             logger.warning(f"Bull research failed (using defaults): {e}")
+            state.bull_thesis = default_analysis['bull_thesis']  # Ensure thesis is set
             state.bull_confidence = default_analysis['conviction_score']
             explanation = f"Bull thesis: {default_analysis['conviction_score']:.2f} conviction (default - LLM unavailable), "
             explanation += f"upside prob: {default_analysis['upside_probability']:.2f}"

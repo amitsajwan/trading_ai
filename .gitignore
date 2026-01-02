@@ -8,6 +8,8 @@ ENV/
 .env
 .env.local
 .env.*.local
+# Allow .env.example to be committed (template file)
+!.env.example
 
 # Python
 __pycache__/

@@ -127,19 +127,26 @@ class BaseAgent(ABC):
         Uses multi-provider manager with automatic fallback.
         Returns the response text.
         """
+        import asyncio
+        import concurrent.futures
+        
         if temperature is None:
             temperature = settings.llm_temperature
         
         try:
+            import time
+            start_time = time.time()
             logger.info(f"🔵 [{self.agent_name}] Calling LLM...")
             # Use multi-provider manager for automatic fallback
+            # Timeout is handled in llm_provider_manager (60 seconds per call)
             response = self.llm_manager.call_llm(
                 system_prompt=self.system_prompt,
                 user_message=user_message,
                 temperature=temperature,
                 max_tokens=settings.max_tokens
             )
-            logger.info(f"✅ [{self.agent_name}] LLM response received ({len(response)} chars)")
+            elapsed = time.time() - start_time
+            logger.info(f"✅ [{self.agent_name}] LLM response received ({len(response)} chars) in {elapsed:.1f}s")
             return response
             
         except Exception as e:
@@ -147,6 +154,8 @@ class BaseAgent(ABC):
             # Check if all providers failed - if so, log and re-raise
             if "All LLM providers failed" in error_str:
                 logger.error(f"❌ [{self.agent_name}] All LLM providers failed: {e}")
+            elif isinstance(e, TimeoutError):
+                logger.error(f"❌ [{self.agent_name}] LLM call timed out: {e}")
             else:
                 logger.warning(f"⚠️ [{self.agent_name}] LLM call failed, will retry with fallback: {e}")
             # Re-raise to let caller handle (agents will use defaults if needed)

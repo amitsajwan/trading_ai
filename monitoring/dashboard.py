@@ -836,13 +836,30 @@ async def get_latest_analysis() -> Dict[str, Any]:
         trades_collection = get_collection(db, "trades_executed")
         
         # Filter by current instrument to avoid showing old data from other instruments
-        instrument_filter = {"instrument": settings.instrument_symbol}
+        # Try multiple filter patterns since instrument field might be stored differently
+        instrument_symbol = settings.instrument_symbol
+        instrument_filters = [
+            {"instrument": instrument_symbol},
+            {"instrument_symbol": instrument_symbol},
+            {"current_price": {"$exists": True}}  # Fallback: any analysis with price
+        ]
         
         # First, try to get from agent_decisions collection (has all analysis runs)
-        latest_analysis = analysis_collection.find_one(
-            instrument_filter,
-            sort=[("timestamp", -1)]
-        )
+        latest_analysis = None
+        for filter_query in instrument_filters:
+            latest_analysis = analysis_collection.find_one(
+                filter_query,
+                sort=[("timestamp", -1)]
+            )
+            if latest_analysis:
+                break
+        
+        # If still no analysis found, try without filter (get most recent)
+        if not latest_analysis:
+            latest_analysis = analysis_collection.find_one(
+                {},
+                sort=[("timestamp", -1)]
+            )
         
         if latest_analysis and latest_analysis.get("agent_decisions"):
             # Get portfolio manager output for scores
@@ -899,7 +916,44 @@ async def get_latest_analysis() -> Dict[str, Any]:
                 "trend_signal": latest_trade.get("trend_signal", "NEUTRAL")
             }
         
-        return {"agents": {}, "message": "No analysis available yet. Agents are running every 60 seconds."}
+        # Check if there's ANY analysis in the database (for debugging)
+        any_analysis = analysis_collection.find_one({}, sort=[("timestamp", -1)])
+        if any_analysis:
+            logger.warning(f"Found analysis but filtered out. Latest analysis timestamp: {any_analysis.get('timestamp')}, instrument filter: {instrument_symbol}")
+            logger.warning(f"Analysis document keys: {list(any_analysis.keys())}")
+            # Return the most recent analysis anyway (for debugging)
+            portfolio_output = any_analysis.get("agent_decisions", {}).get("portfolio_manager", {})
+            bullish_score = portfolio_output.get("bullish_score")
+            bearish_score = portfolio_output.get("bearish_score")
+            try:
+                if bullish_score is not None:
+                    bullish_score = float(bullish_score)
+                if bearish_score is not None:
+                    bearish_score = float(bearish_score)
+            except (ValueError, TypeError):
+                pass
+            
+            return {
+                "agents": any_analysis.get("agent_decisions", {}),
+                "timestamp": any_analysis.get("timestamp"),
+                "final_signal": any_analysis.get("final_signal", "HOLD"),
+                "trend_signal": any_analysis.get("trend_signal", "NEUTRAL"),
+                "current_price": any_analysis.get("current_price"),
+                "bullish_score": bullish_score,
+                "bearish_score": bearish_score,
+                "agent_explanations": any_analysis.get("agent_explanations", []),
+                "message": f"Showing most recent analysis (may be from different instrument). Filtered by: {instrument_symbol}"
+            }
+        
+        return {
+            "agents": {}, 
+            "message": "No analysis available yet. Agents are running every 60 seconds.",
+            "debug": {
+                "instrument_filter": instrument_symbol,
+                "collection_count": analysis_collection.count_documents({}),
+                "tip": "Make sure TradingService is running and agents have completed at least one analysis cycle"
+            }
+        }
     except Exception as e:
         logger.error(f"Error getting latest analysis: {e}", exc_info=True)
         return {"agents": {}, "error": str(e)}

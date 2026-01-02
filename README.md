@@ -58,25 +58,33 @@ Open http://localhost:8888
 
 All configuration is in a single `.env` file:
 
-```bash
-# LLM Configuration
-LLM_PROVIDER=ollama          # ollama, groq, gemini, openai, together
-OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=llama3.1:8b
+1. **Copy the template file:**
+   ```bash
+   cp .env.example .env
+   ```
 
-# Instrument Configuration
-INSTRUMENT_SYMBOL=BTC-USD    # BTC-USD, NIFTY BANK, NIFTY 50
-INSTRUMENT_NAME=Bitcoin      # Bitcoin, Bank Nifty, Nifty 50
-DATA_SOURCE=CRYPTO           # CRYPTO, ZERODHA
-MARKET_24_7=true             # true for crypto, false for stocks
+2. **Edit `.env` and fill in your actual credentials:**
+   ```bash
+   # LLM Configuration
+   LLM_PROVIDER=ollama          # ollama, groq, gemini, openai, together
+   OLLAMA_BASE_URL=http://localhost:11434
+   OLLAMA_MODEL=llama3.1:8b
 
-# Database
-MONGODB_URI=mongodb://localhost:27017/
-REDIS_HOST=localhost
+   # Instrument Configuration
+   INSTRUMENT_SYMBOL=BTC-USD    # BTC-USD, NIFTY BANK, NIFTY 50
+   INSTRUMENT_NAME=Bitcoin      # Bitcoin, Bank Nifty, Nifty 50
+   DATA_SOURCE=CRYPTO           # CRYPTO, ZERODHA
+   MARKET_24_7=true             # true for crypto, false for stocks
 
-# Trading (start in paper mode!)
-PAPER_TRADING_MODE=true
-```
+   # Database
+   MONGODB_URI=mongodb://localhost:27017/
+   REDIS_HOST=localhost
+
+   # Trading (start in paper mode!)
+   PAPER_TRADING_MODE=true
+   ```
+
+**Note:** `.env.example` is a template file that can be safely committed to version control. Your actual `.env` file (with real credentials) is ignored by git and should never be committed.
 
 See [docs/SETUP.md](docs/SETUP.md) for complete configuration options.
 

@@ -408,6 +408,8 @@ class TradingGraph:
             # Store analysis document
             analysis_doc = {
                 "timestamp": datetime.now().isoformat(),
+                "instrument": settings.instrument_symbol,  # Add instrument for filtering
+                "instrument_name": settings.instrument_name,
                 "current_price": state.current_price,
                 "final_signal": signal_str,
                 "trend_signal": trend_signal_str,  # BULLISH, BEARISH, or NEUTRAL

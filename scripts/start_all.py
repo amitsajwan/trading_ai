@@ -188,10 +188,11 @@ def check_llm_provider():
     """Check LLM provider availability - prioritize local Ollama."""
     print("Checking LLM Provider...")
     python_path = get_python_path()
+    script_path = Path(__file__).parent.parent / "scripts" / "check_llm.py"
     
     try:
         result = subprocess.run(
-            [python_path, "scripts/check_llm.py"],
+            [python_path, str(script_path)],
             capture_output=True,
             text=True,
             timeout=5,
@@ -212,34 +213,49 @@ def check_llm_provider():
         else:
             # Show stderr if available for debugging
             if stderr_output and 'Traceback' in stderr_output:
-                print(f"   [DEBUG] Error details: {stderr_output[:200]}")
+                print(f"   [DEBUG] Error details: {stderr_output[:300]}")
             if 'OLLAMA_NO_MODELS' in output:
                 print("   [FAIL] Ollama running but no models found")
                 print("   Fix: Run 'ollama pull llama3.1:8b'")
                 return False
-            elif 'OLLAMA_ERROR' in output or 'OLLAMA_HTTPX_MISSING' in output:
-                if 'OLLAMA_HTTPX_MISSING' in output:
-                    print("   [FAIL] httpx module missing for Ollama check")
-                    print("   Fix: pip install httpx")
-                else:
-                    error = output.split('OLLAMA_ERROR')[-1].strip() if 'OLLAMA_ERROR' in output else 'Not running'
-                    print(f"   [WARNING] Ollama not running: {error}")
-                    print("   Fix: Start Ollama manually with 'ollama serve'")
-                    print("   Or: The trading service may start it automatically")
+            elif 'OLLAMA_HTTPX_MISSING' in output:
+                print("   [FAIL] httpx module missing for Ollama check")
+                print("   Fix: pip install httpx")
+                return False
+            elif 'OLLAMA_ERROR' in output:
+                error = output.replace('OLLAMA_ERROR', '').strip()
+                print(f"   [WARNING] Ollama not running: {error}")
+                print("   Fix: Start Ollama manually with 'ollama serve'")
+                print("   Or: The trading service may start it automatically")
                 # Allow to continue - user can start Ollama manually or it might auto-start
                 return True
             elif 'UNKNOWN_PROVIDER' in output:
-                provider = output.split()[-1] if len(output.split()) > 1 else 'unknown'
+                provider = output.replace('UNKNOWN_PROVIDER', '').strip()
+                if not provider:
+                    provider = 'unknown'
                 print(f"   [WARNING] Unknown LLM provider configured: {provider}")
                 print("   Fix: Set LLM_PROVIDER=ollama in .env for local LLM")
                 print("   Note: Will try to use Ollama anyway")
                 return True  # Allow to continue
-            else:
-                print(f"   [WARNING] LLM provider check incomplete: {output}")
+            elif 'ERROR' in output:
+                error_msg = output.replace('ERROR', '').strip()
+                print(f"   [WARNING] LLM check error: {error_msg}")
                 print("   Note: Will attempt to use Ollama when trading service starts")
                 return True  # Allow to continue
+            else:
+                print(f"   [WARNING] LLM provider check incomplete: {output}")
+                if stderr_output:
+                    print(f"   [DEBUG] stderr: {stderr_output[:200]}")
+                print("   Note: Will attempt to use Ollama when trading service starts")
+                return True  # Allow to continue
+    except subprocess.TimeoutExpired:
+        print("   [WARNING] LLM check timed out (exceeded 5 seconds)")
+        print("   Note: Will attempt to use Ollama when trading service starts")
+        return True  # Allow to continue
     except Exception as e:
-        print(f"   [FAIL] Error checking LLM: {str(e)[:50]}")
+        print(f"   [WARNING] Error checking LLM: {str(e)}")
+        import traceback
+        print(f"   [DEBUG] Full error: {traceback.format_exc()[:300]}")
         print("   [INFO] System will attempt to start Ollama automatically")
         return True  # Allow to continue
 
@@ -247,10 +263,11 @@ def check_redis():
     """Check Redis connection."""
     print("Checking Redis...")
     python_path = get_python_path()
+    script_path = Path(__file__).parent.parent / "scripts" / "check_redis.py"
     
     try:
         result = subprocess.run(
-            [python_path, "scripts/check_redis.py"],
+            [python_path, str(script_path)],
             capture_output=True,
             text=True,
             timeout=3,
@@ -266,24 +283,37 @@ def check_redis():
             if 'REDIS_MODULE_MISSING' in output:
                 print("   [FAIL] Redis Python module not installed")
                 print("   Fix: pip install redis")
+            elif 'REDIS_ERROR' in output:
+                error_msg = output.replace('REDIS_ERROR', '').strip()
+                print(f"   [FAIL] Redis connection error: {error_msg}")
+                print("   Fix: Start Redis with 'redis-server' or Docker")
             else:
                 print("   [FAIL] Redis not accessible")
                 print("   Fix: Start Redis with 'redis-server' or Docker")
             if stderr_output:
-                print(f"   [DEBUG] {stderr_output[:100]}")
+                print(f"   [DEBUG] stderr: {stderr_output[:200]}")
+            if output and 'REDIS_OK' not in output:
+                print(f"   [DEBUG] stdout: {output[:200]}")
             return False
+    except subprocess.TimeoutExpired:
+        print("   [FAIL] Redis check timed out (exceeded 3 seconds)")
+        print("   Fix: Check if Redis is running and accessible")
+        return False
     except Exception as e:
-        print(f"   [FAIL] Error checking Redis: {str(e)[:50]}")
+        print(f"   [FAIL] Error checking Redis: {str(e)}")
+        import traceback
+        print(f"   [DEBUG] Full error: {traceback.format_exc()[:300]}")
         return False
 
 def check_mongodb():
     """Check MongoDB connection."""
     print("Checking MongoDB...")
     python_path = get_python_path()
+    script_path = Path(__file__).parent.parent / "scripts" / "check_mongodb.py"
     
     try:
         result = subprocess.run(
-            [python_path, "scripts/check_mongodb.py"],
+            [python_path, str(script_path)],
             capture_output=True,
             text=True,
             timeout=3,
@@ -299,14 +329,169 @@ def check_mongodb():
             if 'MONGODB_MODULE_MISSING' in output:
                 print("   [FAIL] MongoDB Python module not installed")
                 print("   Fix: pip install pymongo")
+            elif 'MONGODB_ERROR' in output:
+                error_msg = output.replace('MONGODB_ERROR', '').strip()
+                print(f"   [FAIL] MongoDB connection error: {error_msg}")
+                print("   Fix: Start MongoDB with 'mongod' or Docker")
             else:
                 print("   [FAIL] MongoDB not accessible")
                 print("   Fix: Start MongoDB with 'mongod' or Docker")
             if stderr_output:
-                print(f"   [DEBUG] {stderr_output[:100]}")
+                print(f"   [DEBUG] stderr: {stderr_output[:200]}")
+            if output and 'MONGODB_OK' not in output:
+                print(f"   [DEBUG] stdout: {output[:200]}")
             return False
+    except subprocess.TimeoutExpired:
+        print("   [FAIL] MongoDB check timed out (exceeded 3 seconds)")
+        print("   Fix: Check if MongoDB is running and accessible")
+        return False
     except Exception as e:
-        print(f"   [FAIL] Error checking MongoDB: {str(e)[:50]}")
+        print(f"   [FAIL] Error checking MongoDB: {str(e)}")
+        import traceback
+        print(f"   [DEBUG] Full error: {traceback.format_exc()[:300]}")
+        return False
+
+def test_agent_analysis():
+    """Test that agents can produce analysis before starting system."""
+    print("Testing Agent Analysis (Pre-Flight)...")
+    python_path = get_python_path()
+    script_path = Path(__file__).parent.parent / "scripts" / "test_agent_analysis.py"
+    
+    try:
+        result = subprocess.run(
+            [python_path, str(script_path)],
+            capture_output=True,
+            text=True,
+            timeout=150,  # 2.5 minutes max
+            cwd=Path(__file__).parent.parent
+        )
+        output = result.stdout.strip()
+        stderr_output = result.stderr.strip() if result.stderr else ""
+        
+        if result.returncode == 0 and 'AGENT_TEST_OK' in output:
+            # Parse the success message
+            lines = output.split('\n')
+            for line in lines:
+                if 'Signal:' in line:
+                    print(f"   [OK] {line.strip()}")
+                    break
+            return True
+        else:
+            if 'AGENT_TEST_TIMEOUT' in output:
+                print("   [FAIL] Agent analysis test timed out (exceeded 2 minutes)")
+                print("   Fix: Check LLM provider (Ollama/API) is responding")
+                print("   Fix: Check network connectivity for cloud LLM")
+            elif 'AGENT_TEST_MISSING_AGENTS' in output:
+                error_msg = output.split('\n')[1] if '\n' in output else output
+                print(f"   [FAIL] {error_msg}")
+                print("   Fix: Check agent initialization in trading graph")
+            elif 'AGENT_TEST_EMPTY_AGENTS' in output:
+                error_msg = output.split('\n')[1] if '\n' in output else output
+                print(f"   [FAIL] {error_msg}")
+                print("   Fix: Check LLM provider and agent prompts")
+                print("   Fix: Verify LLM is responding with meaningful content")
+            elif 'AGENT_TEST_NO_RESULTS' in output:
+                print("   [FAIL] Analysis completed but no results stored")
+                print("   Fix: Check MongoDB connection and write permissions")
+            elif 'AGENT_TEST_MODULE_MISSING' in output:
+                error_msg = output.split('\n')[1] if '\n' in output else output
+                print(f"   [FAIL] {error_msg}")
+            elif 'AGENT_TEST_INIT_ERROR' in output:
+                error_msg = output.split('\n')[1] if '\n' in output else output
+                print(f"   [FAIL] {error_msg}")
+            elif 'AGENT_TEST_ERROR' in output:
+                error_msg = output.split('\n')[1] if '\n' in output else output
+                print(f"   [FAIL] {error_msg}")
+            else:
+                print("   [FAIL] Agent analysis test failed")
+                if stderr_output:
+                    print(f"   [DEBUG] stderr: {stderr_output[:300]}")
+                if output:
+                    print(f"   [DEBUG] stdout: {output[:300]}")
+            return False
+    except subprocess.TimeoutExpired:
+        print("   [FAIL] Agent analysis test timed out (exceeded 2.5 minutes)")
+        print("   Fix: Check LLM provider is responding")
+        return False
+    except Exception as e:
+        print(f"   [FAIL] Error running agent test: {str(e)}")
+        import traceback
+        print(f"   [DEBUG] Full error: {traceback.format_exc()[:300]}")
+        return False
+
+def check_agent_analysis():
+    """Check if agents are producing analysis."""
+    print("Checking Agent Analysis...")
+    python_path = get_python_path()
+    script_path = Path(__file__).parent.parent / "scripts" / "check_agent_analysis.py"
+    
+    try:
+        result = subprocess.run(
+            [python_path, str(script_path)],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=Path(__file__).parent.parent
+        )
+        output = result.stdout.strip()
+        stderr_output = result.stderr.strip() if result.stderr else ""
+        
+        if result.returncode == 0 and 'AGENT_ANALYSIS_OK' in output:
+            # Parse the success message
+            lines = output.split('\n')
+            if len(lines) > 1:
+                details = lines[1]
+                print(f"   [OK] {details}")
+            else:
+                print("   [OK] Agents are producing analysis")
+            return True
+        else:
+            if 'AGENT_ANALYSIS_NOT_FOUND' in output:
+                print("   [WARNING] No agent analysis found yet")
+                print("   Note: Agents run every 60 seconds - analysis will appear shortly")
+                return False  # Not a critical failure, but should be noted
+            elif 'AGENT_ANALYSIS_STALE' in output:
+                error_msg = output.split('\n')[1] if '\n' in output else output
+                print(f"   [FAIL] {error_msg}")
+                print("   Fix: Check if trading service is running and agents are executing")
+                return False
+            elif 'AGENT_ANALYSIS_MISSING_AGENTS' in output:
+                error_msg = output.split('\n')[1] if '\n' in output else output
+                print(f"   [FAIL] {error_msg}")
+                print("   Fix: Check agent initialization in trading graph")
+                return False
+            elif 'AGENT_ANALYSIS_EMPTY_AGENTS' in output:
+                error_msg = output.split('\n')[1] if '\n' in output else output
+                print(f"   [FAIL] {error_msg}")
+                print("   Fix: Check LLM provider and agent prompts")
+                return False
+            elif 'AGENT_ANALYSIS_NO_CONTENT' in output:
+                print("   [FAIL] Agent analysis exists but contains no meaningful content")
+                print("   Fix: Check LLM responses and data feed")
+                return False
+            elif 'AGENT_ANALYSIS_MODULE_MISSING' in output:
+                error_msg = output.split('\n')[1] if '\n' in output else output
+                print(f"   [FAIL] {error_msg}")
+                return False
+            elif 'AGENT_ANALYSIS_ERROR' in output:
+                error_msg = output.split('\n')[1] if '\n' in output else output
+                print(f"   [FAIL] {error_msg}")
+                return False
+            else:
+                print("   [FAIL] Agent analysis check failed")
+                if stderr_output:
+                    print(f"   [DEBUG] stderr: {stderr_output[:200]}")
+                if output:
+                    print(f"   [DEBUG] stdout: {output[:200]}")
+                return False
+    except subprocess.TimeoutExpired:
+        print("   [FAIL] Agent analysis check timed out (exceeded 5 seconds)")
+        print("   Fix: Check MongoDB connection and agent execution")
+        return False
+    except Exception as e:
+        print(f"   [FAIL] Error checking agent analysis: {str(e)}")
+        import traceback
+        print(f"   [DEBUG] Full error: {traceback.format_exc()[:300]}")
         return False
 
 def check_data_feed_connectivity(instrument: str):
@@ -315,31 +500,39 @@ def check_data_feed_connectivity(instrument: str):
     python_path = get_python_path()
     
     if instrument == "BTC":
-        check_script_path = "scripts/check_binance.py"
+        check_script_path = Path(__file__).parent.parent / "scripts" / "check_binance.py"
     else:
-        check_script_path = "scripts/check_zerodha.py"
+        check_script_path = Path(__file__).parent.parent / "scripts" / "check_zerodha.py"
     
     try:
         result = subprocess.run(
-            [python_path, check_script_path],
+            [python_path, str(check_script_path)],
             capture_output=True,
             text=True,
             timeout=10,
             cwd=Path(__file__).parent.parent
         )
         output = result.stdout.strip()
+        stderr_output = result.stderr.strip() if result.stderr else ""
+        
         if result.returncode == 0:
             if 'BINANCE_OK' in output:
-                price = output.split()[-1] if len(output.split()) > 1 else 'N/A'
-                print(f"   [OK] Binance API accessible (BTC Price: ${float(price):,.2f})")
+                price = output.replace('BINANCE_OK', '').strip()
+                try:
+                    price_float = float(price) if price else 0.0
+                    print(f"   [OK] Binance API accessible (BTC Price: ${price_float:,.2f})")
+                except ValueError:
+                    print(f"   [OK] Binance API accessible (Price: {price})")
                 return True
             elif 'ZERODHA_OK' in output:
-                user = output.split()[-1] if len(output.split()) > 1 else 'Unknown'
+                user = output.replace('ZERODHA_OK', '').strip()
+                if not user:
+                    user = 'Unknown'
                 print(f"   [OK] Zerodha credentials valid (User: {user})")
                 return True
         else:
             if 'BINANCE_ERROR' in output:
-                error = output.split('BINANCE_ERROR')[-1].strip()
+                error = output.replace('BINANCE_ERROR', '').strip()
                 print(f"   [FAIL] Binance API error: {error}")
                 print("   Fix: Check internet connection and Binance API availability")
             elif 'ZERODHA_NO_CREDENTIALS' in output:
@@ -349,19 +542,24 @@ def check_data_feed_connectivity(instrument: str):
                 print("   [FAIL] Zerodha access token missing")
                 print("   Fix: Run 'python auto_login.py' to refresh token")
             elif 'ZERODHA_ERROR' in output:
-                error = output.split('ZERODHA_ERROR')[-1].strip()
+                error = output.replace('ZERODHA_ERROR', '').strip()
                 print(f"   [FAIL] Zerodha connection error: {error}")
             elif 'MODULE_MISSING' in output:
                 print("   [FAIL] Required module missing (websockets)")
                 print("   Fix: pip install websockets")
             else:
                 print(f"   [FAIL] Data feed check failed: {output}")
+            if stderr_output:
+                print(f"   [DEBUG] stderr: {stderr_output[:200]}")
             return False
     except subprocess.TimeoutExpired:
-        print("   [FAIL] Data feed connectivity check timed out")
+        print("   [FAIL] Data feed connectivity check timed out (exceeded 10 seconds)")
+        print("   Fix: Check internet connection and API availability")
         return False
     except Exception as e:
-        print(f"   [FAIL] Error checking data feed: {str(e)[:50]}")
+        print(f"   [FAIL] Error checking data feed: {str(e)}")
+        import traceback
+        print(f"   [DEBUG] Full error: {traceback.format_exc()[:300]}")
         return False
 
 def start_trading_service():
@@ -411,41 +609,41 @@ def main():
         sys.exit(1)
     print()
     
-    # Step 2: Run all pre-flight checks
+    # Step 2: Run comprehensive component verification
     print("=" * 70)
-    print("Pre-Flight Checks")
+    print("COMPREHENSIVE COMPONENT VERIFICATION")
     print("=" * 70)
+    print("Verifying each component individually with detailed notes...")
     print()
     
-    checks_passed = True
+    python_path = get_python_path()
+    verify_script_path = Path(__file__).parent.parent / "scripts" / "verify_all_components.py"
     
-    # Check LLM Provider
-    if not check_llm_provider():
+    try:
+        result = subprocess.run(
+            [python_path, str(verify_script_path), instrument],
+            capture_output=False,  # Let it print directly
+            text=True,
+            timeout=180,  # 3 minutes max
+            cwd=Path(__file__).parent.parent
+        )
+        checks_passed = (result.returncode == 0)
+    except subprocess.TimeoutExpired:
+        print("\n[FAIL] Component verification timed out (exceeded 3 minutes)")
+        print("This usually indicates a serious issue with LLM or system components.")
         checks_passed = False
-    print()
-    
-    # Check Redis
-    if not check_redis():
+    except Exception as e:
+        print(f"\n[FAIL] Error running component verification: {str(e)}")
         checks_passed = False
-    print()
     
-    # Check MongoDB
-    if not check_mongodb():
-        checks_passed = False
     print()
-    
-    # Check Data Feed Connectivity
-    if not check_data_feed_connectivity(instrument):
-        checks_passed = False
-    print()
-    
-    # Summary
     print("=" * 70)
     if checks_passed:
-        print("[OK] All checks passed! Starting services...")
+        print("[OK] All critical components verified! Starting services...")
     else:
-        print("[WARNING] Some checks failed. System may not work correctly.")
-        print("Please fix the issues above before continuing.")
+        print("[CRITICAL] Component verification failed!")
+        print("The system cannot start without working components.")
+        print("Please review the verification report above and fix all critical issues.")
         response = input("\nContinue anyway? (y/N): ").strip().lower()
         if response != 'y':
             print("Aborted by user.")
@@ -509,6 +707,33 @@ def main():
             print("[WARNING] Trading service may have issues - check terminal output")
         print()
         
+        # Step 3: Verify agent analysis (agents run every 60 seconds)
+        print("Step 3: Verifying agent analysis...")
+        print("   Waiting for agents to complete first analysis cycle (up to 90 seconds)...")
+        print("   (Agents run every 60 seconds, first cycle may take longer)")
+        
+        agent_analysis_verified = False
+        max_wait_attempts = 15  # 15 attempts * 6 seconds = 90 seconds max
+        for attempt in range(1, max_wait_attempts + 1):
+            time.sleep(6)  # Check every 6 seconds
+            if check_agent_analysis():
+                agent_analysis_verified = True
+                print()
+                print("[OK] Agent analysis verified - agents are working correctly!")
+                break
+            elif attempt < max_wait_attempts:
+                print(f"   Attempt {attempt}/{max_wait_attempts}: Waiting for agent analysis...")
+        
+        if not agent_analysis_verified:
+            print()
+            print("[WARNING] Agent analysis not verified after 90 seconds")
+            print("   This may be normal if:")
+            print("   - Agents are still initializing")
+            print("   - First analysis cycle is taking longer")
+            print("   - Check dashboard and logs for agent activity")
+            print("   - Agents should produce analysis within 60-120 seconds")
+        print()
+        
         print("=" * 70)
         print("[SUCCESS] SYSTEM STARTED SUCCESSFULLY!")
         print("=" * 70)
@@ -518,6 +743,10 @@ def main():
         print("  [OK] Dashboard - Running")
         print("  [OK] Data Feed - Running")
         print("  [OK] Trading Service - Running")
+        if agent_analysis_verified:
+            print("  [OK] Agent Analysis - Verified")
+        else:
+            print("  [WARNING] Agent Analysis - Not yet verified (check dashboard)")
         print("\nPress Ctrl+C to stop all services")
         print("=" * 70)
         

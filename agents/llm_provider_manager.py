@@ -3,6 +3,7 @@
 import os
 import logging
 import time
+import concurrent.futures
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List, Tuple
 from enum import Enum
@@ -54,69 +55,139 @@ class LLMProviderManager:
         self.providers: Dict[str, ProviderConfig] = {}
         self.current_provider: Optional[str] = None
         self.provider_clients: Dict[str, Any] = {}
+        # Semaphore to limit parallel Ollama calls (Ollama doesn't handle parallel well)
+        self._ollama_semaphore = None
         self._initialize_providers()
         self._select_best_provider()
     
     def _initialize_providers(self):
         """Initialize all available providers."""
-        # Groq Cloud
+        # Ollama (Local LLM - initialize FIRST for highest priority)
+        ollama_base_url = settings.ollama_base_url or "http://localhost:11434"
+        ollama_model = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
+        # Check if Ollama is available (no API key needed)
+        try:
+            import httpx
+            response = httpx.get(f"{ollama_base_url}/api/tags", timeout=1.0)  # Fast timeout - don't block
+            if response.status_code == 200:
+                models_data = response.json().get('models', [])
+                available_models = [m.get('name', '') for m in models_data]
+                
+                # Verify the configured model exists
+                if ollama_model not in available_models:
+                    logger.warning(f"⚠️ Ollama model '{ollama_model}' not found. Available models: {', '.join(available_models[:5])}")
+                    # Try to use the first available model as fallback
+                    if available_models:
+                        ollama_model = available_models[0]
+                        logger.info(f"Using fallback model: {ollama_model}")
+                    else:
+                        logger.warning("No Ollama models available, skipping Ollama provider")
+                        return  # Skip Ollama initialization if no models
+                
+                # Initialize Ollama provider (with original or fallback model)
+                # Lower priority than cloud providers (cloud is faster and more reliable)
+                self.providers["ollama"] = ProviderConfig(
+                    name="ollama",
+                    api_key="ollama",  # Not used but required
+                    base_url=ollama_base_url,
+                    model=ollama_model,
+                    priority=10,  # Lower priority - cloud providers preferred (faster, more reliable)
+                    rate_limit_per_minute=1000,  # Very high (local)
+                    rate_limit_per_day=10000000,  # Very high (local)
+                    cost_per_1k_tokens=0.0  # Free (local)
+                )
+                try:
+                    from openai import OpenAI
+                    import httpx
+                    # Ollama OpenAI-compatible API requires /v1 endpoint
+                    ollama_api_url = f"{ollama_base_url}/v1" if not ollama_base_url.endswith("/v1") else ollama_base_url
+                    # Set 60 second timeout for Ollama (can be slow on first call)
+                    self.provider_clients["ollama"] = OpenAI(
+                        api_key="ollama",  # Not used by Ollama but required by OpenAI client
+                        base_url=ollama_api_url,
+                        timeout=httpx.Timeout(60.0, connect=10.0)  # 60s total, 10s connect
+                    )
+                    logger.info(f"✅ Ollama provider initialized FIRST (model: {ollama_model}, base_url: {ollama_api_url})")
+                except Exception as e:
+                    logger.warning(f"Failed to initialize Ollama client: {e}")
+                    self.providers["ollama"].status = ProviderStatus.UNAVAILABLE
+            else:
+                logger.debug(f"Ollama not available at {ollama_base_url} (status: {response.status_code})")
+        except Exception as e:
+            logger.debug(f"Ollama not available: {e}")
+        
+        # Groq Cloud - FASTEST free provider
         if settings.groq_api_key:
+            # Use fastest Groq model (llama-3.1-8b-instant is faster than 70b)
+            groq_model = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")  # Fastest Groq model
             self.providers["groq"] = ProviderConfig(
                 name="groq",
                 api_key=settings.groq_api_key,
-                model="llama-3.3-70b-versatile",
-                priority=1,  # High priority (fast, free tier)
+                model=groq_model,
+                priority=0,  # HIGHEST priority - fastest free provider
                 rate_limit_per_minute=30,
                 rate_limit_per_day=100000,
                 cost_per_1k_tokens=0.0
             )
             try:
                 from groq import Groq
+                # Groq client doesn't directly support timeout, but we'll handle it in the call
                 self.provider_clients["groq"] = Groq(api_key=settings.groq_api_key)
                 logger.info("✅ Groq provider initialized")
             except Exception as e:
                 logger.warning(f"Failed to initialize Groq: {e}")
                 self.providers["groq"].status = ProviderStatus.UNAVAILABLE
         
-        # Google Gemini
+        # Google Gemini (only if API key exists AND module is available)
         if settings.google_api_key:
-            self.providers["gemini"] = ProviderConfig(
-                name="gemini",
-                api_key=settings.google_api_key,
-                model="gemini-flash-latest",  # Use latest flash model (works with free tier)
-                priority=2,  # High priority (free tier)
-                rate_limit_per_minute=60,
-                rate_limit_per_day=15000000,  # Very high limit
-                cost_per_1k_tokens=0.0
-            )
             try:
+                # Quick check if module exists before trying to initialize
+                import importlib
+                importlib.import_module("google.generativeai")
+                
+                self.providers["gemini"] = ProviderConfig(
+                    name="gemini",
+                    api_key=settings.google_api_key,
+                    model="gemini-flash-latest",  # Use latest flash model (works with free tier)
+                    priority=1,  # Second highest priority (fast, free tier)
+                    rate_limit_per_minute=60,
+                    rate_limit_per_day=15000000,  # Very high limit
+                    cost_per_1k_tokens=0.0
+                )
                 import google.generativeai as genai
                 genai.configure(api_key=settings.google_api_key)
                 self.provider_clients["gemini"] = genai
                 logger.info("✅ Google Gemini provider initialized")
+            except ImportError:
+                # Module not installed - skip silently (don't spam warnings)
+                logger.debug("Google Gemini module not installed, skipping")
             except Exception as e:
                 logger.warning(f"Failed to initialize Gemini: {e}")
-                self.providers["gemini"].status = ProviderStatus.UNAVAILABLE
+                # Don't create provider if initialization fails
         
         # OpenRouter
         openrouter_key = getattr(settings, 'openrouter_api_key', None) or os.getenv("OPENROUTER_API_KEY")
         if openrouter_key:
             # Use a reliable free model - try meta-llama/llama-3.2-3b-instruct:free or mistralai/mistral-7b-instruct:free
+            # Use fastest free model on OpenRouter
+            openrouter_model = os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.2-3b-instruct:free")
             self.providers["openrouter"] = ProviderConfig(
                 name="openrouter",
                 api_key=openrouter_key,
                 base_url="https://openrouter.ai/api/v1",
-                model="meta-llama/llama-3.2-3b-instruct:free",  # Free model - verified working
-                priority=3,  # Medium priority
+                model=openrouter_model,  # Free model - verified working
+                priority=2,  # Third priority (free tier)
                 rate_limit_per_minute=50,
                 rate_limit_per_day=50000,
                 cost_per_1k_tokens=0.0
             )
             try:
                 from openai import OpenAI
+                import httpx
                 self.provider_clients["openrouter"] = OpenAI(
                     api_key=openrouter_key,
-                    base_url="https://openrouter.ai/api/v1"
+                    base_url="https://openrouter.ai/api/v1",
+                    timeout=httpx.Timeout(60.0, connect=10.0)
                 )
                 logger.info("✅ OpenRouter provider initialized")
             except Exception as e:
@@ -125,59 +196,30 @@ class LLMProviderManager:
         
         # Together AI (if configured)
         if settings.together_api_key:
+            # Use faster model if available
+            together_model = os.getenv("TOGETHER_MODEL", "mistralai/Mixtral-8x7B-Instruct-v0.1")
             self.providers["together"] = ProviderConfig(
                 name="together",
                 api_key=settings.together_api_key,
                 base_url="https://api.together.xyz/v1",
-                model="mistralai/Mixtral-8x7B-Instruct-v0.1",
-                priority=4,
+                model=together_model,
+                priority=3,  # Fourth priority
                 rate_limit_per_minute=40,
                 rate_limit_per_day=100000,
                 cost_per_1k_tokens=0.0
             )
             try:
                 from openai import OpenAI
+                import httpx
                 self.provider_clients["together"] = OpenAI(
                     api_key=settings.together_api_key,
-                    base_url="https://api.together.xyz/v1"
+                    base_url="https://api.together.xyz/v1",
+                    timeout=httpx.Timeout(60.0, connect=10.0)
                 )
                 logger.info("✅ Together AI provider initialized")
             except Exception as e:
                 logger.warning(f"Failed to initialize Together AI: {e}")
                 self.providers["together"].status = ProviderStatus.UNAVAILABLE
-        
-        # Ollama (Local LLM - if configured)
-        ollama_base_url = settings.ollama_base_url or "http://localhost:11434"
-        ollama_model = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
-        # Check if Ollama is available (no API key needed)
-        try:
-            import httpx
-            response = httpx.get(f"{ollama_base_url}/api/tags", timeout=2)
-            if response.status_code == 200:
-                self.providers["ollama"] = ProviderConfig(
-                    name="ollama",
-                    api_key="ollama",  # Not used but required
-                    base_url=ollama_base_url,
-                    model=ollama_model,
-                    priority=0,  # Highest priority (local, no rate limits)
-                    rate_limit_per_minute=1000,  # Very high (local)
-                    rate_limit_per_day=10000000,  # Very high (local)
-                    cost_per_1k_tokens=0.0  # Free (local)
-                )
-                try:
-                    from openai import OpenAI
-                    self.provider_clients["ollama"] = OpenAI(
-                        api_key="ollama",
-                        base_url=ollama_base_url
-                    )
-                    logger.info(f"✅ Ollama provider initialized (model: {ollama_model})")
-                except Exception as e:
-                    logger.warning(f"Failed to initialize Ollama client: {e}")
-                    self.providers["ollama"].status = ProviderStatus.UNAVAILABLE
-            else:
-                logger.debug(f"Ollama not available at {ollama_base_url}")
-        except Exception as e:
-            logger.debug(f"Ollama not available: {e}")
         
         # OpenAI (if configured)
         if settings.openai_api_key:
@@ -192,7 +234,11 @@ class LLMProviderManager:
             )
             try:
                 from openai import OpenAI
-                self.provider_clients["openai"] = OpenAI(api_key=settings.openai_api_key)
+                import httpx
+                self.provider_clients["openai"] = OpenAI(
+                    api_key=settings.openai_api_key,
+                    timeout=httpx.Timeout(60.0, connect=10.0)
+                )
                 logger.info("✅ OpenAI provider initialized")
             except Exception as e:
                 logger.warning(f"Failed to initialize OpenAI: {e}")
@@ -225,8 +271,8 @@ class LLMProviderManager:
             return None
         
         # Sort by priority (lower = better)
-        # Prioritize Gemini when others are rate limited (priority 2)
-        available_providers.sort(key=lambda x: (x[1].priority, x[0] != "gemini"))
+        # Ollama (priority 0) should always be selected first if available
+        available_providers.sort(key=lambda x: x[1].priority)
         
         best_provider = available_providers[0][0]
         self.current_provider = best_provider
@@ -460,44 +506,82 @@ class LLMProviderManager:
                 
                 # Use specified model or provider default
                 model_name = model or config.model
+                import time
+                call_start_time = time.time()
                 logger.info(f"🔄 Attempt {attempt + 1}/{max_retries}: Trying {provider} (model: {model_name})")
                 
                 # Call appropriate API based on provider
+                # Wrap calls without native timeout support with ThreadPoolExecutor
                 if provider == "gemini":
                     # client is the genai module, already configured
-                    genai_model = client.GenerativeModel(model_name)
-                    prompt = f"{system_prompt}\n\n{user_message}"
-                    response = genai_model.generate_content(
-                        prompt,
-                        generation_config={
-                            "temperature": temperature,
-                            "max_output_tokens": max_tokens
-                        }
-                    )
-                    result = response.text
+                    # Gemini doesn't support timeout, wrap with ThreadPoolExecutor
+                    def _call_gemini():
+                        genai_model = client.GenerativeModel(model_name)
+                        prompt = f"{system_prompt}\n\n{user_message}"
+                        response = genai_model.generate_content(
+                            prompt,
+                            generation_config={
+                                "temperature": temperature,
+                                "max_output_tokens": max_tokens
+                            }
+                        )
+                        return response.text
+                    
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                        future = executor.submit(_call_gemini)
+                        result = future.result(timeout=60.0)
                 elif provider == "groq":
-                    response = client.chat.completions.create(
-                        model=model_name,
-                        messages=[
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": user_message}
-                        ],
-                        temperature=temperature,
-                        max_tokens=max_tokens
-                    )
-                    result = response.choices[0].message.content
+                    # Groq doesn't support timeout in client, wrap with ThreadPoolExecutor
+                    def _call_groq():
+                        return client.chat.completions.create(
+                            model=model_name,
+                            messages=[
+                                {"role": "system", "content": system_prompt},
+                                {"role": "user", "content": user_message}
+                            ],
+                            temperature=temperature,
+                            max_tokens=max_tokens
+                        )
+                    
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                        future = executor.submit(_call_groq)
+                        response = future.result(timeout=60.0)
+                        result = response.choices[0].message.content
                 elif provider == "ollama":
                     # Ollama uses OpenAI-compatible API
-                    response = client.chat.completions.create(
-                        model=model_name,
-                        messages=[
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": user_message}
-                        ],
-                        temperature=temperature,
-                        max_tokens=max_tokens
-                    )
-                    result = response.choices[0].message.content
+                    # Always use Ollama's configured model, not the generic model from settings
+                    ollama_model = config.model  # Use the model configured for Ollama specifically
+                    logger.debug(f"Using Ollama model: {ollama_model} (requested: {model_name})")
+                    
+                    # Ollama doesn't handle parallel requests well - limit concurrency
+                    # Initialize semaphore if not exists (limit to 2 concurrent calls)
+                    if self._ollama_semaphore is None:
+                        import threading
+                        self._ollama_semaphore = threading.Semaphore(2)  # Max 2 parallel Ollama calls
+                    
+                    def _call_ollama():
+                        # Acquire semaphore to limit parallel calls
+                        with self._ollama_semaphore:
+                            logger.debug(f"Ollama call starting (semaphore acquired)")
+                            return client.chat.completions.create(
+                                model=ollama_model,  # Use Ollama-specific model, not settings.llm_model
+                                messages=[
+                                    {"role": "system", "content": system_prompt},
+                                    {"role": "user", "content": user_message}
+                                ],
+                                temperature=temperature,
+                                max_tokens=max_tokens
+                            )
+                    
+                    # Use ThreadPoolExecutor timeout for Ollama (handles hangs better)
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                        future = executor.submit(_call_ollama)
+                        try:
+                            response = future.result(timeout=60.0)  # 60 second timeout
+                            result = response.choices[0].message.content
+                        except concurrent.futures.TimeoutError:
+                            logger.error(f"❌ Ollama call timed out after 60 seconds")
+                            raise TimeoutError("Ollama call timed out after 60 seconds")
                 elif provider in ["openrouter", "together", "openai"]:
                     response = client.chat.completions.create(
                         model=model_name,
@@ -515,9 +599,30 @@ class LLMProviderManager:
                 # Update rate limit
                 self._update_rate_limit(provider)
                 
-                logger.info(f"✅ LLM call successful via {provider} (model: {model_name})")
+                call_elapsed = time.time() - call_start_time
+                logger.info(f"✅ LLM call successful via {provider} (model: {model_name}) in {call_elapsed:.1f}s")
                 return result
                 
+            except concurrent.futures.TimeoutError as e:
+                last_error = e
+                error_msg = f"Timeout after 60 seconds"
+                current_provider = provider if 'provider' in locals() else (provider_name or "unknown")
+                logger.error(f"❌ Provider {current_provider} timed out after 60 seconds")
+                # Mark as error and try next provider
+                if current_provider in self.providers:
+                    self._handle_provider_error(current_provider, e)
+                # Try next provider
+                provider_name = None
+                if attempt < max_retries - 1:
+                    next_provider = self._select_best_provider()
+                    if next_provider and next_provider != current_provider:
+                        logger.info(f"🔄 Switching to provider: {next_provider} after timeout")
+                        continue
+                    else:
+                        logger.error(f"No alternative provider available after timeout.")
+                        break
+                else:
+                    break
             except Exception as e:
                 last_error = e
                 error_msg = str(e)
