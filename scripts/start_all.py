@@ -6,6 +6,7 @@ import subprocess
 import signal
 import time
 import socket
+import argparse
 from pathlib import Path
 
 # Fix Windows encoding issues
@@ -13,6 +14,19 @@ if sys.platform == "win32":
     import io
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+
+# Parse command line arguments
+parser = argparse.ArgumentParser(description='Start trading system components')
+parser.add_argument('--skip-data-verification', action='store_true',
+                   help='Skip real-time data verification (allows starting without live market data)')
+parser.add_argument('--instrument', type=str, default='BTC',
+                   help='Trading instrument (default: BTC)')
+# Backwards compatibility: allow providing the instrument as a positional arg
+parser.add_argument('instrument_pos', nargs='?', help='Positional instrument name (optional, for backward compatibility)')
+args = parser.parse_args()
+if getattr(args, 'instrument_pos', None):
+    # If a positional instrument was provided, prefer it over the --instrument flag
+    args.instrument = args.instrument_pos
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -49,23 +63,23 @@ def configure_instrument(instrument: str):
     print("[OK] Configuration complete")
     return True
 
-def verify_dashboard(max_wait=10):
+def verify_dashboard(max_wait=10, port=8888):
     """Verify dashboard is accessible."""
-    print("   Checking dashboard accessibility...")
+    print(f"   Checking dashboard accessibility on port {port}...")
     for attempt in range(max_wait):
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(1)
-            result = sock.connect_ex(('127.0.0.1', 8888))
+            result = sock.connect_ex(('127.0.0.1', port))
             sock.close()
             if result == 0:
-                print("   [OK] Dashboard is accessible")
+                print(f"   [OK] Dashboard is accessible on port {port}")
                 return True
         except Exception:
             pass
         if attempt < max_wait - 1:
             time.sleep(1)
-    print("   [WARNING] Dashboard not responding (may still be starting)")
+    print(f"   [WARNING] Dashboard not responding on port {port} (may still be starting)")
     return False
 
 def verify_data_feed(instrument, max_wait=10):
@@ -171,18 +185,48 @@ def verify_trading_service(process, max_wait=5):
     print("   [WARNING] Trading service may have exited - check logs")
     return False
 
+def check_port_available(port: int) -> bool:
+    """Check if a port is available."""
+    import socket
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(('0.0.0.0', port))
+            return True
+    except OSError:
+        return False
+
+def find_available_port(start_port: int = 8888, max_attempts: int = 10) -> int:
+    """Find an available port starting from start_port."""
+    for port in range(start_port, start_port + max_attempts):
+        if check_port_available(port):
+            return port
+    raise RuntimeError(f"Could not find available port in range {start_port}-{start_port + max_attempts}")
+
 def start_dashboard():
     """Start the monitoring dashboard."""
     python_path = get_python_path()
+    
+    # Check if port 8888 is available, if not find another
+    dashboard_port = 8888
+    if not check_port_available(dashboard_port):
+        print(f"⚠️  Port {dashboard_port} is already in use, finding alternative...")
+        try:
+            dashboard_port = find_available_port(8888)
+            print(f"   Using port {dashboard_port} instead")
+        except RuntimeError as e:
+            print(f"❌ {e}")
+            print("   Please free up a port or stop the existing dashboard")
+            return None
+    
     # Use uvicorn to run FastAPI app properly
     # Don't capture output so errors are visible in terminal
     process = subprocess.Popen(
-        [python_path, "-m", "uvicorn", "monitoring.dashboard:app", "--host", "0.0.0.0", "--port", "8888"],
+        [python_path, "-m", "uvicorn", "dashboard_pro:app", "--host", "0.0.0.0", "--port", str(dashboard_port)],
         cwd=Path(__file__).parent.parent
         # No stdout/stderr capture - let uvicorn output go to terminal
     )
     time.sleep(2)  # Give it a moment to start
-    return process
+    return process, dashboard_port
 
 def check_llm_provider():
     """Check LLM provider availability - prioritize local Ollama."""
@@ -566,36 +610,206 @@ def start_trading_service():
     """Start the trading service."""
     python_path = get_python_path()
     print("Starting trading service (includes data feed)...")
+    print("   [INFO] Trading service logs will appear below:")
+    print("   [INFO] Look for '[OK] Connected to Binance WebSocket' and '[TICK #]' messages")
+    print()
+    # Don't capture output - let logs show in terminal so we can see WebSocket connection
     process = subprocess.Popen(
         [python_path, "-m", "services.trading_service"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        # stdout and stderr NOT captured - logs will show in terminal
         cwd=Path(__file__).parent.parent
     )
     time.sleep(3)  # Give it a moment to initialize
     return process
 
+def check_existing_processes():
+    """Check for existing trading service processes and warn user."""
+    try:
+        import psutil
+        # Get current process PID to exclude it
+        current_pid = os.getpid()
+        
+        existing = []
+        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+            try:
+                # Skip current process (the start_all.py script itself)
+                if proc.info['pid'] == current_pid:
+                    continue
+                    
+                cmdline = ' '.join(proc.info['cmdline'] or [])
+                
+                # Only check for actual trading service processes, NOT start_all.py
+                # start_all.py is the launcher - we don't want to detect ourselves
+                if 'start_all.py' in cmdline:
+                    continue  # Skip start_all.py processes (they're launchers, not services)
+                
+                # Check for actual trading service processes
+                if any(x in cmdline for x in ['trading_service', 'services.trading_service', '-m services.trading_service']):
+                    existing.append({
+                        'pid': proc.info['pid'],
+                        'cmdline': cmdline[:80]
+                    })
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        
+        if len(existing) > 0:
+            print("=" * 70)
+            print("WARNING: Existing Trading Service Processes Found!")
+            print("=" * 70)
+            print(f"Found {len(existing)} existing process(es):")
+            for proc in existing:
+                print(f"  PID {proc['pid']}: {proc['cmdline']}")
+            print("\nMultiple processes can cause:")
+            print("  - Resource conflicts")
+            print("  - Inconsistent analysis timing")
+            print("  - Database locks")
+            print("\n[OPTIONS]")
+            print("  1. Kill existing processes automatically (recommended)")
+            print("  2. Continue anyway (not recommended)")
+            print("  3. Abort and stop manually")
+            print("=" * 70)
+            response = input("\nChoose option (1/2/3) [default: 1]: ").strip().lower()
+            
+            if response == '3':
+                print("\nAborted. Please stop existing processes manually:")
+                print("  taskkill /F /IM python.exe  (Windows)")
+                sys.exit(1)
+            elif response == '1' or response == '':
+                # Auto-kill existing processes - improved with verification
+                print("\nKilling existing processes...")
+                killed_count = 0
+                failed_pids = []
+                
+                for proc in existing:
+                    pid = proc['pid']
+                    killed = False
+                    
+                    # Try psutil first (graceful)
+                    try:
+                        import psutil
+                        p = psutil.Process(pid)
+                        p.terminate()
+                        try:
+                            p.wait(timeout=2)
+                            killed = True
+                            print(f"  ✓ Killed PID {pid} (graceful)")
+                        except psutil.TimeoutExpired:
+                            p.kill()
+                            p.wait(timeout=1)
+                            killed = True
+                            print(f"  ✓ Killed PID {pid} (force)")
+                    except psutil.NoSuchProcess:
+                        # Already dead
+                        killed = True
+                        print(f"  ✓ PID {pid} already terminated")
+                    except Exception as e:
+                        # psutil failed, try taskkill
+                        pass
+                    
+                    # Fallback to taskkill (more reliable on Windows)
+                    if not killed and sys.platform == "win32":
+                        try:
+                            result = subprocess.run(
+                                ["taskkill", "/F", "/PID", str(pid)], 
+                                capture_output=True, 
+                                timeout=5,
+                                text=True
+                            )
+                            if result.returncode == 0 or "SUCCESS" in result.stdout:
+                                killed = True
+                                print(f"  ✓ Killed PID {pid} (via taskkill)")
+                            else:
+                                # Check if process doesn't exist
+                                if "not found" in result.stdout.lower() or "does not exist" in result.stdout.lower():
+                                    killed = True
+                                    print(f"  ✓ PID {pid} not found (already dead)")
+                        except Exception as e:
+                            pass
+                    
+                    # Verify process is actually dead
+                    if killed:
+                        # Double-check it's actually gone
+                        try:
+                            import psutil
+                            psutil.Process(pid)
+                            # Still exists - try harder
+                            if sys.platform == "win32":
+                                subprocess.run(["taskkill", "/F", "/PID", str(pid)], 
+                                             capture_output=True, timeout=3)
+                            time.sleep(0.5)
+                            try:
+                                psutil.Process(pid)
+                                failed_pids.append(pid)
+                                print(f"  ✗ PID {pid} still running after kill attempt")
+                            except psutil.NoSuchProcess:
+                                killed_count += 1
+                        except psutil.NoSuchProcess:
+                            killed_count += 1
+                        except:
+                            # Can't verify, assume killed
+                            killed_count += 1
+                    else:
+                        failed_pids.append(pid)
+                        print(f"  ✗ Failed to kill PID {pid}")
+                
+                # Wait for processes to fully terminate
+                if killed_count > 0:
+                    print(f"\n✓ Killed {killed_count} process(es). Waiting 3 seconds for cleanup...")
+                    time.sleep(3)
+                    
+                    # Final verification
+                    if failed_pids:
+                        print(f"\n⚠ Warning: {len(failed_pids)} process(es) may still be running: {failed_pids}")
+                        print("You may need to kill them manually:")
+                        for pid in failed_pids:
+                            print(f"  taskkill /F /PID {pid}")
+                        response2 = input("\nContinue anyway? (y/N): ").strip().lower()
+                        if response2 != 'y':
+                            print("Aborted.")
+                            sys.exit(1)
+                    else:
+                        print("✓ All processes terminated. Continuing with startup...\n")
+                else:
+                    print("\n⚠ Could not kill any processes.")
+                    response2 = input("Continue anyway? (y/N): ").strip().lower()
+                    if response2 != 'y':
+                        print("Aborted.")
+                        sys.exit(1)
+                    print("Continuing anyway...\n")
+            else:
+                print("Continuing with existing processes...\n")
+    except ImportError:
+        # psutil not installed - skip check
+        pass
+    except Exception as e:
+        # Error checking - continue anyway
+        pass
+
 def main():
     """Main entry point."""
-    # Get instrument from command line or environment
-    if len(sys.argv) > 1:
-        instrument = sys.argv[1].upper()
-    else:
-        instrument = os.getenv("TRADING_INSTRUMENT", "BANKNIFTY").upper()
+    # Check for existing processes first
+    check_existing_processes()
+    
+    # Get instrument from command line arguments
+    instrument = args.instrument.upper()
     
     valid_instruments = ["BTC", "BANKNIFTY", "NIFTY"]
     if instrument not in valid_instruments:
         print("=" * 70)
         print("Invalid instrument!")
         print("=" * 70)
-        print("\nUsage: python scripts/start_all.py <INSTRUMENT>")
+        print("\nUsage: python scripts/start_all.py [--instrument <INSTRUMENT>] [--skip-data-verification]")
         print("\nValid instruments:")
         print("  BTC        - Bitcoin (Crypto)")
         print("  BANKNIFTY  - Bank Nifty (Indian Market)")
         print("  NIFTY      - Nifty 50 (Indian Market)")
-        print("\nExample:")
-        print("  python scripts/start_all.py BTC")
-        print("  python scripts/start_all.py BANKNIFTY")
+        print("\nOptions:")
+        print("  --instrument <INSTRUMENT>          Trading instrument (default: BTC)")
+        print("  --skip-data-verification           Skip real-time data verification")
+        print("\nExamples:")
+        print("  python scripts/start_all.py")
+        print("  python scripts/start_all.py --instrument BTC")
+        print("  python scripts/start_all.py --instrument BANKNIFTY --skip-data-verification")
         sys.exit(1)
     
     print("=" * 70)
@@ -617,7 +831,7 @@ def main():
     print()
     
     python_path = get_python_path()
-    verify_script_path = Path(__file__).parent.parent / "scripts" / "verify_all_components.py"
+    verify_script_path = Path(__file__).parent.parent / "scripts" / "monitor" / "verify_all_components.py"
     
     try:
         result = subprocess.run(
@@ -664,18 +878,39 @@ def main():
     
     try:
         # Step 3: Start dashboard
-        print("Step 1: Starting dashboard on http://localhost:8888...")
-        dashboard_process = start_dashboard()
+        print("Step 1: Starting dashboard...")
+        dashboard_result = start_dashboard()
+        if dashboard_result is None:
+            print("[ERROR] Could not start dashboard - port conflict")
+            sys.exit(1)
+        dashboard_process, dashboard_port = dashboard_result
         processes.append(("Dashboard", dashboard_process))
         
-        # Verify dashboard
-        if verify_dashboard():
-            print("[OK] Dashboard verified and ready")
+        print(f"   Dashboard starting on http://localhost:{dashboard_port}...")
+        
+        # Verify dashboard (update port)
+        if verify_dashboard(max_wait=10, port=dashboard_port):
+            print(f"[OK] Dashboard verified and ready on port {dashboard_port}")
         else:
-            print("[WARNING] Dashboard started but verification timeout - check manually")
+            print(f"[WARNING] Dashboard started but verification timeout - check manually at http://localhost:{dashboard_port}")
         print()
         
-        # Step 4: Start trading service (includes data feed)
+        # Step 4: Check data feed connectivity before starting trading service
+        print("Step 2: Checking data feed connectivity...")
+        if not check_data_feed_connectivity(instrument):
+            print("[CRITICAL] Data feed connectivity check failed!")
+            print("Cannot start trading service without data feed access.")
+            print("Stopping dashboard...")
+            dashboard_process.terminate()
+            try:
+                dashboard_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                dashboard_process.kill()
+            sys.exit(1)
+        print("[OK] Data feed connectivity verified")
+        print()
+        
+        # Step 3: Start trading service (includes data feed)
         trading_process = start_trading_service()
         processes.append(("Trading Service", trading_process))
         
@@ -686,29 +921,54 @@ def main():
         print("   (Crypto WebSocket connections can take 10-15 seconds)")
         time.sleep(wait_time)
         
-        # Verify data feed (non-blocking, won't hang)
+        # Step 4: Verify real-time tick data (optional with --skip-data-verification)
         print()
-        print("Step 2: Verifying data feed...")
-        # For crypto, give more attempts since WebSocket needs time to connect and receive data
-        max_attempts = 12 if instrument == "BTC" else 8
-        data_feed_verified = verify_data_feed(instrument, max_wait=max_attempts)
-        if data_feed_verified:
-            print("[OK] Data feed verified and receiving data")
+        if args.skip_data_verification:
+            print("Step 4: Skipping real-time tick data verification (--skip-data-verification)")
+            print("   [WARNING] System starting without live market data verification")
+            print("   [INFO] Dashboard may show stale or no data until market feed connects")
+            data_feed_verified = True
         else:
-            print("[WARNING] Data feed started but verification incomplete")
-            print("   This is normal - WebSocket connections can take 10-20 seconds")
-            print("   Check the dashboard in a few seconds to see live data")
+            print("Step 4: Verifying real-time tick data...")
+            # For crypto, give more attempts since WebSocket needs time to connect and receive data
+            max_attempts = 12 if instrument == "BTC" else 8
+            data_feed_verified = verify_data_feed(instrument, max_wait=max_attempts)
+            if not data_feed_verified:
+                print("[CRITICAL] Real-time tick data verification failed!")
+                print("The system cannot start without live market data.")
+                print("Please check:")
+                if instrument == "BTC":
+                    print("  - Internet connection")
+                    print("  - Binance WebSocket connectivity")
+                else:
+                    print("  - Kite WebSocket connection")
+                    print("  - Zerodha session validity")
+                print("\nStopping services...")
+                # Stop trading service
+                trading_process.terminate()
+                try:
+                    trading_process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    trading_process.kill()
+            # Stop dashboard
+            dashboard_process.terminate()
+            try:
+                dashboard_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                dashboard_process.kill()
+            sys.exit(1)
+        print("[OK] Real-time tick data verified")
         print()
         
-        # Verify trading service
+        # Step 5: Verify trading service
         if verify_trading_service(trading_process):
             print("[OK] Trading service verified")
         else:
             print("[WARNING] Trading service may have issues - check terminal output")
         print()
         
-        # Step 3: Verify agent analysis (agents run every 60 seconds)
-        print("Step 3: Verifying agent analysis...")
+        # Step 6: Verify agent analysis (agents run every 60 seconds)
+        print("Step 6: Verifying agent analysis...")
         print("   Waiting for agents to complete first analysis cycle (up to 90 seconds)...")
         print("   (Agents run every 60 seconds, first cycle may take longer)")
         
@@ -738,7 +998,14 @@ def main():
         print("[SUCCESS] SYSTEM STARTED SUCCESSFULLY!")
         print("=" * 70)
         print(f"Instrument: {instrument}")
-        print("Dashboard: http://localhost:8888")
+        # Get dashboard port from processes (stored as tuple)
+        dashboard_port = 8888  # Default
+        for name, proc_info in processes:
+            if name == "Dashboard":
+                if isinstance(proc_info, tuple):
+                    _, dashboard_port = proc_info
+                break
+        print(f"Dashboard: http://localhost:{dashboard_port}")
         print("\nComponents:")
         print("  [OK] Dashboard - Running")
         print("  [OK] Data Feed - Running")

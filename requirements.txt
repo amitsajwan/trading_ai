@@ -13,7 +13,7 @@ uvicorn>=0.24.0
 kiteconnect>=4.0.0
 
 # Storage
-redis>=5.0.0
+redis>=5.0.0  # Includes async support (redis.asyncio)
 pymongo>=4.6.0
 
 # Data Processing
@@ -35,6 +35,7 @@ httpx>=0.25.0
 aiohttp>=3.9.0
 python-dateutil>=2.8.0
 matplotlib>=3.7.0  # For backtest visualization
+psutil>=5.9.0  # Process management (optional, used by start scripts)
 
 # Web Scraping
 beautifulsoup4>=4.12.0

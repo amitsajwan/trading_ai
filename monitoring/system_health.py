@@ -16,6 +16,10 @@ class SystemHealthChecker:
     def __init__(self):
         """Initialize health checker."""
         self.market_memory = MarketMemory()
+        # Circuit breaker state for endpoints
+        self._endpoint_circuits = {}
+        self.failure_threshold = 2
+        self.cooldown_seconds = 30
     
     def check_all(self) -> Dict[str, Any]:
         """Check health of all components."""
@@ -235,6 +239,42 @@ class SystemHealthChecker:
                 "message": f"Agent check failed: {e}"
             }
     
+    def check_endpoint(self, url: str, timeout: int = 3, max_retries: int = 2) -> Dict[str, Any]:
+        """Check an external HTTP endpoint using retries and a circuit breaker.
+
+        Returns a dict with status: healthy/degraded/unhealthy and details.
+        """
+        import requests
+        from datetime import datetime, timedelta
+
+        # Circuit open? skip
+        state = self._endpoint_circuits.get(url, {'count': 0})
+        if state.get('open_until') and state['open_until'] > datetime.now().timestamp():
+            return {'status': 'degraded', 'message': 'circuit_open'}
+
+        last_exc = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                r = requests.get(url, timeout=timeout)
+                r.raise_for_status()
+                # reset state on success
+                if url in self._endpoint_circuits:
+                    self._endpoint_circuits.pop(url, None)
+                return {'status': 'healthy', 'status_code': r.status_code}
+            except Exception as e:
+                last_exc = e
+                # backoff
+                import time
+                time.sleep(0.1 * (2 ** (attempt - 1)))
+                continue
+
+        # mark failure and possibly open circuit
+        state['count'] = state.get('count', 0) + 1
+        if state['count'] >= self.failure_threshold:
+            state['open_until'] = (datetime.now() + timedelta(seconds=self.cooldown_seconds)).timestamp()
+        self._endpoint_circuits[url] = state
+        return {'status': 'unhealthy', 'error': str(last_exc)}
+
     def _check_data_feed(self) -> Dict[str, Any]:
         """Check data feed status - supports Zerodha and Crypto."""
         try:
@@ -242,8 +282,7 @@ class SystemHealthChecker:
             from pathlib import Path
             
             # Get instrument key for data lookup
-            instrument_key = settings.instrument_symbol.replace("-", "").replace(" ", "").upper()
-            
+            instrument_key = settings.instrument_symbol.replace("-", "").replace(" ", "").upper()            
             # Check data source configuration
             data_source = settings.data_source or "UNKNOWN"
             zerodha_configured = Path("credentials.json").exists()
@@ -310,7 +349,53 @@ class SystemHealthChecker:
                 "FINNHUB": "Finnhub"
             }
             source_name = data_source_map.get(data_source, data_source)
-            
+
+            # Example: allow external endpoint check via circuit breaker helper
+            # (used for checking external API endpoints if configured)
+            def _check_endpoint_with_circuit(url: str, timeout: int = 3) -> Dict[str, Any]:
+                import requests
+                from datetime import datetime, timedelta
+                state = self._endpoint_circuits.get(url, {'count': 0})
+                if state.get('open_until') and state['open_until'] > datetime.now().timestamp():
+                    return {'status': 'degraded', 'message': 'circuit_open'}
+
+                last_exc = None
+                for attempt in range(1, 3):
+                    try:
+                        r = requests.get(url, timeout=timeout)
+                        r.raise_for_status()
+                        # on success reset failure count
+                        if url in self._endpoint_circuits:
+                            self._endpoint_circuits.pop(url, None)
+                        return {'status': 'healthy', 'status_code': r.status_code}
+                    except Exception as e:
+                        last_exc = e
+                        # backoff
+                        import time
+                        time.sleep(0.1 * (2 ** (attempt - 1)))
+                        continue
+
+                # mark failure
+                state['count'] = state.get('count', 0) + 1
+                if state['count'] >= self.failure_threshold:
+                    state['open_until'] = (datetime.now() + timedelta(seconds=self.cooldown_seconds)).timestamp()
+                self._endpoint_circuits[url] = state
+                return {'status': 'unhealthy', 'error': str(last_exc)}
+
+            # Optionally use _check_endpoint_with_circuit for external data source checks if available
+            # e.g., check an API endpoint from settings.api_health_check_url
+            api_check_url = getattr(settings, 'api_health_check_url', None)
+            if api_check_url:
+                endpoint_status = self.check_endpoint(api_check_url)
+                if endpoint_status.get('status') != 'healthy':
+                    return {
+                        'status': 'degraded',
+                        'source': source_name,
+                        'configured': True,
+                        'receiving_data': False,
+                        'market_open': market_open,
+                        'message': f"{source_name} configured but external endpoint check failed: {endpoint_status}"
+                    }            
             # Check configuration based on data source
             if data_source == "CRYPTO":
                 # Crypto doesn't need credentials.json

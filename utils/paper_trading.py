@@ -32,7 +32,8 @@ class PaperTrading:
         take_profit: float
     ) -> Dict[str, Any]:
         """Place a paper trade order."""
-        trade_id = f"PAPER_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        # Include microseconds to ensure uniqueness across rapid test runs
+        trade_id = f"PAPER_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
         
         # Calculate required capital
         required_capital = quantity * price

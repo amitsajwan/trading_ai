@@ -40,6 +40,12 @@ class TradingService:
         self.trading_loop_task: Optional[asyncio.Task] = None
         self.position_monitor_task: Optional[asyncio.Task] = None
         
+        # Analysis control
+        self.last_analysis_price: Optional[float] = None
+        self.last_analysis_time: Optional[datetime] = None
+        self.price_change_threshold = 0.005  # 0.5% price change threshold
+        self.min_analysis_interval = 300  # Minimum 5 minutes between analyses
+        
         # Setup signal handlers for graceful shutdown
         self.shutdown_requested = False
         signal.signal(signal.SIGINT, self._signal_handler)
@@ -73,6 +79,75 @@ class TradingService:
             return False
         
         return open_time <= current_time <= close_time
+    
+    async def _should_run_analysis(self) -> bool:
+        """Check if analysis should run based on market conditions."""
+        try:
+            # Always run analysis if it's the first time
+            if self.last_analysis_time is None:
+                logger.info("📊 First analysis run - executing")
+                return True
+            
+            # Check minimum time interval
+            time_since_last = (datetime.now() - self.last_analysis_time).total_seconds()
+            if time_since_last < self.min_analysis_interval:
+                logger.info(f"⏰ Too soon since last analysis ({time_since_last:.0f}s < {self.min_analysis_interval}s)")
+                return False
+            
+            # Get current price
+            current_price = None
+            if self.market_memory:
+                instrument_key = settings.instrument_symbol.replace('-', '').replace(' ', '').upper()
+                price_data = self.market_memory.get_price_data(instrument_key)
+                if price_data:
+                    current_price = price_data.get('price')
+            
+            if current_price is None:
+                # If no price data, run analysis to get baseline
+                logger.info("💰 No current price data - running analysis")
+                return True
+            
+            # Check for significant price change
+            if self.last_analysis_price:
+                price_change_pct = abs(current_price - self.last_analysis_price) / self.last_analysis_price
+                if price_change_pct >= self.price_change_threshold:
+                    logger.info(f"📈 Significant price change: {price_change_pct:.1%} >= {self.price_change_threshold:.1%}")
+                    return True
+            
+            # Check for new news (if news collector exists)
+            if hasattr(self, 'news_collector') and self.news_collector:
+                try:
+                    # Check if there are recent news items since last analysis
+                    recent_news = await self.news_collector.get_recent_news(hours=1)
+                    if recent_news and len(recent_news) > 0:
+                        logger.info(f"📰 New news items detected: {len(recent_news)}")
+                        return True
+                except Exception as e:
+                    logger.debug(f"Error checking news: {e}")
+            
+            # Check for volume spikes (if futures data available)
+            if self.market_memory:
+                instrument_key = settings.instrument_symbol.replace('-', '').replace(' ', '').upper()
+                futures_data = self.market_memory.get_futures_data(instrument_key)
+                if futures_data:
+                    volume = futures_data.get('volume', 0)
+                    # Simple volume spike detection - could be enhanced
+                    if volume > 1000000:  # Arbitrary threshold for BTC volume
+                        logger.info(f"📊 High volume detected: {volume:,.0f}")
+                        return True
+            
+            # Force analysis every 15 minutes regardless of conditions
+            if time_since_last >= 900:  # 15 minutes
+                logger.info("⏰ Force analysis - 15 minutes elapsed")
+                return True
+            
+            logger.info("⏭️ No significant changes - skipping analysis")
+            return False
+            
+        except Exception as e:
+            logger.error(f"Error checking analysis conditions: {e}")
+            # On error, run analysis to be safe
+            return True
     
     async def initialize(self):
         """Initialize all components."""
@@ -165,7 +240,18 @@ class TradingService:
                 # Use crypto data feed (Binance WebSocket - free)
                 from data.crypto_data_feed import CryptoDataFeed
                 self.crypto_feed = CryptoDataFeed(self.market_memory)
-                self.crypto_feed_task = asyncio.create_task(self.crypto_feed.start())
+                
+                # Start crypto feed task with error handling
+                async def run_crypto_feed_with_error_handling():
+                    """Run crypto feed with proper error handling."""
+                    try:
+                        await self.crypto_feed.start()
+                    except Exception as e:
+                        logger.error(f"CRITICAL: Crypto feed task crashed: {e}", exc_info=True)
+                        logger.error("Crypto feed will attempt to restart...")
+                        # Don't re-raise - let the reconnection loop handle it
+                
+                self.crypto_feed_task = asyncio.create_task(run_crypto_feed_with_error_handling())
                 logger.info("✅ Crypto data feed (Binance WebSocket) task started")
                 logger.info("⏳ Waiting for WebSocket connection to Binance...")
                 
@@ -173,16 +259,32 @@ class TradingService:
                 await asyncio.sleep(2)
                 
                 # Give it a few more seconds to connect and receive first data
-                max_wait = 10
+                max_wait = 15  # Increased wait time
+                connected = False
                 for i in range(max_wait):
+                    # Check if task is still running
+                    if self.crypto_feed_task.done():
+                        try:
+                            await self.crypto_feed_task  # This will raise if there was an error
+                        except Exception as e:
+                            logger.error(f"Crypto feed task error: {e}")
+                            # Task crashed - restart it
+                            self.crypto_feed_task = asyncio.create_task(run_crypto_feed_with_error_handling())
+                            await asyncio.sleep(2)
+                            continue
+                    
                     if self.crypto_feed.connected:
                         logger.info(f"✅ Crypto data feed connected to Binance WebSocket")
+                        connected = True
                         break
                     await asyncio.sleep(1)
-                else:
-                    logger.warning("⚠️  Crypto data feed connection still establishing... (may take longer)")
+                
+                if not connected:
+                    logger.warning("⚠️  Crypto data feed connection still establishing...")
+                    logger.warning("Check logs for connection errors. Feed will keep trying to connect.")
                 
                 logger.info(f"✅ Crypto data feed initialized - receiving live market data for {settings.instrument_name}...")
+                logger.info("💡 Monitor logs for '[TICK #]' messages to confirm ticks are being received")
             elif self.data_ingestion:
                 # Use Zerodha WebSocket
                 self.data_ingestion.start()
@@ -209,8 +311,9 @@ class TradingService:
                 logger.info("⏭️  Macro data fetcher skipped (not needed for crypto)")
             
             # Start trading loop (run immediately, then check market status in loop)
+            interval_minutes = settings.trading_loop_interval_seconds / 60
             logger.info("=" * 60)
-            logger.info("🚀 Starting trading loop (will run analysis immediately, then every 60 seconds)...")
+            logger.info(f"🚀 Starting trading loop (will run analysis immediately, then every {interval_minutes:.0f} minutes)...")
             logger.info("=" * 60)
             self.trading_loop_task = asyncio.create_task(self._trading_loop())
             logger.info("✅ Trading loop task created - waiting for first iteration...")
@@ -258,31 +361,81 @@ class TradingService:
             await asyncio.sleep(60)  # Check every minute
     
     async def _trading_loop(self):
-        """Main trading loop that runs every 60 seconds."""
+        """Main trading loop that runs every 5 minutes - Agent discussions inform trading decisions."""
         logger.info("=" * 60)
         logger.info("🚀 Trading Loop Started - This message confirms the loop is running!")
         logger.info("=" * 60)
         
-        # Run first analysis immediately
-        first_run = True
-        
         loop_count = 0
+        last_cycle_start = None
+        
+        # Monitor crypto feed task if running
+        async def monitor_crypto_feed():
+            """Monitor and restart crypto feed if it crashes."""
+            if not hasattr(self, 'crypto_feed') or not self.crypto_feed:
+                return
+            
+            while self.running and not self.shutdown_requested:
+                await asyncio.sleep(30)  # Check every 30 seconds
+                
+                if hasattr(self, 'crypto_feed_task') and self.crypto_feed_task:
+                    if self.crypto_feed_task.done():
+                        try:
+                            await self.crypto_feed_task  # Check for errors
+                        except Exception as e:
+                            logger.error(f"CRITICAL: Crypto feed task crashed: {e}", exc_info=True)
+                            logger.info("Restarting crypto feed task...")
+                            
+                            # Restart task - need to reset running flag first
+                            self.crypto_feed.running = False
+                            self.crypto_feed.connected = False
+                            
+                            async def run_crypto_feed_with_error_handling():
+                                try:
+                                    await self.crypto_feed.start()
+                                except Exception as e:
+                                    logger.error(f"CRITICAL: Crypto feed task crashed again: {e}", exc_info=True)
+                            
+                            self.crypto_feed_task = asyncio.create_task(run_crypto_feed_with_error_handling())
+                            await asyncio.sleep(2)
+        
+        # Start crypto feed monitor if crypto feed exists
+        if hasattr(self, 'crypto_feed') and self.crypto_feed:
+            monitor_task = asyncio.create_task(monitor_crypto_feed())
+        
         while self.running and not self.shutdown_requested:
-            # Log that we're entering the loop iteration
-            logger.info(f"🔄 [LOOP ITERATION] Entering loop iteration #{loop_count + 1}")
+            cycle_start_time = asyncio.get_event_loop().time()
+            loop_count += 1
+            
+            # Calculate time since last cycle
+            if last_cycle_start:
+                actual_gap = cycle_start_time - last_cycle_start
+                target_seconds = settings.trading_loop_interval_seconds
+                target_minutes = target_seconds / 60
+                logger.info(f"🔄 [LOOP #{loop_count}] Starting cycle (gap: {actual_gap:.1f}s, target: {target_seconds}s / {target_minutes:.0f}min)")
+            else:
+                logger.info(f"🔄 [LOOP #{loop_count}] Starting initial cycle")
+            
+            last_cycle_start = cycle_start_time
+            
+            # Check if analysis is needed based on market conditions
+            analysis_needed = await self._should_run_analysis()
+            
+            if not analysis_needed:
+                logger.info(f"⏭️ [LOOP #{loop_count}] Skipping analysis - no significant market changes")
+                # Still wait for the full interval
+                wait_time = float(settings.trading_loop_interval_seconds)
+                await asyncio.sleep(wait_time)
+                continue
+            
+            # Run analysis in background task (don't wait for completion)
+            analysis_task = None
             try:
-                loop_count += 1
                 market_open = self._is_market_open()
                 
-                if first_run:
-                    logger.info(f"🔄 [LOOP #{loop_count}] Running initial trading analysis...")
-                    first_run = False
-                else:
-                    if not market_open:
-                        logger.info(f"🔄 [LOOP #{loop_count}] Market is closed - running analysis anyway (for testing/monitoring)")
-                    logger.info(f"🔄 [LOOP #{loop_count}] Running trading analysis... (Last analysis was {loop_count * 60} seconds ago)")
+                if not market_open:
+                    logger.info(f"🔄 [LOOP #{loop_count}] Market is closed - running analysis anyway (for testing/monitoring)")
                 
-                # Run trading graph (runs all agents)
                 logger.info("=" * 60)
                 logger.info("🎯 [TRADING_LOOP] Executing Agent Analysis Pipeline...")
                 logger.info("=" * 60)
@@ -292,75 +445,87 @@ class TradingService:
                     raise RuntimeError("Trading graph not initialized")
                 
                 logger.info("🔄 [TRADING_LOOP] Calling trading_graph.arun()...")
-                # Add timeout protection - analysis should complete within 5 minutes
-                try:
-                    result = await asyncio.wait_for(
-                        self.trading_graph.arun(),
-                        timeout=300.0  # 5 minutes timeout
-                    )
-                    logger.info("✅ [TRADING_LOOP] Trading graph execution completed")
-                except asyncio.TimeoutError:
-                    logger.error("❌ [TRADING_LOOP] Analysis timed out after 5 minutes!")
-                    logger.error("This usually means LLM calls are hanging. Check Ollama/LLM provider.")
-                    logger.error("Skipping this analysis cycle, will retry in 60 seconds...")
-                    await asyncio.sleep(60)
-                    continue
                 
-                # Log decision - handle both dict and AgentState
-                if isinstance(result, dict):
-                    signal_str = result.get('final_signal', 'HOLD')
-                    if hasattr(signal_str, 'value'):
-                        signal_str = signal_str.value
-                    logger.info("=" * 60)
-                    logger.info(f"TRADING DECISION: {signal_str}")
-                    logger.info("=" * 60)
-                    
-                    if signal_str in ["BUY", "SELL"]:
-                        logger.info(f"Signal: {signal_str}")
-                        logger.info(f"Position Size: {result.get('position_size', 0)}")
-                        logger.info(f"Entry Price: {result.get('entry_price', 0)}")
-                        logger.info(f"Stop Loss: {result.get('stop_loss', 0)}")
-                        logger.info(f"Take Profit: {result.get('take_profit', 0)}")
-                else:
-                    signal_str = result.final_signal.value if hasattr(result.final_signal, 'value') else str(result.final_signal)
-                    logger.info("=" * 60)
-                    logger.info(f"TRADING DECISION: {signal_str}")
-                    logger.info("=" * 60)
-                    
-                    if signal_str in ["BUY", "SELL"]:
-                        logger.info(f"Signal: {signal_str}")
-                        logger.info(f"Position Size: {result.position_size}")
-                        logger.info(f"Entry Price: {result.entry_price}")
-                        logger.info(f"Stop Loss: {result.stop_loss}")
-                        logger.info(f"Take Profit: {result.take_profit}")
+                # Create analysis task with timeout
+                # Timeout slightly longer than loop interval to allow analysis to complete
+                timeout_seconds = settings.trading_loop_interval_seconds + 60  # Loop interval + 1 minute buffer
                 
-                logger.info("=" * 60)
-                logger.info(f"✅ [LOOP #{loop_count}] Analysis completed successfully")
-                logger.info(f"⏳ Next analysis in 60 seconds...")
-                logger.info("=" * 60)
+                async def run_analysis():
+                    try:
+                        result = await asyncio.wait_for(
+                            self.trading_graph.arun(),
+                            timeout=timeout_seconds
+                        )
+                        
+                        # Log decision
+                        if isinstance(result, dict):
+                            signal_str = result.get('final_signal', 'HOLD')
+                            if hasattr(signal_str, 'value'):
+                                signal_str = signal_str.value
+                        else:
+                            signal_str = result.final_signal.value if hasattr(result.final_signal, 'value') else str(result.final_signal)
+                        
+                        elapsed = asyncio.get_event_loop().time() - cycle_start_time
+                        logger.info("=" * 60)
+                        logger.info(f"✅ [LOOP #{loop_count}] Analysis completed in {elapsed:.1f}s")
+                        logger.info(f"TRADING DECISION: {signal_str}")
+                        logger.info("=" * 60)
+                        
+                        if signal_str in ["BUY", "SELL"]:
+                            if isinstance(result, dict):
+                                logger.info(f"Signal: {signal_str}")
+                                logger.info(f"Position Size: {result.get('position_size', 0)}")
+                                logger.info(f"Entry Price: {result.get('entry_price', 0)}")
+                            else:
+                                logger.info(f"Signal: {signal_str}")
+                                logger.info(f"Position Size: {result.position_size}")
+                                logger.info(f"Entry Price: {result.entry_price}")
+                        
+                        # Update analysis tracking
+                        self.last_analysis_time = datetime.now()
+                        if isinstance(result, dict):
+                            self.last_analysis_price = result.get('current_price')
+                        else:
+                            self.last_analysis_price = result.current_price
+                        
+                        return result
+                    except asyncio.TimeoutError:
+                        elapsed = asyncio.get_event_loop().time() - cycle_start_time
+                        timeout_minutes = timeout_seconds / 60
+                        logger.error(f"❌ [LOOP #{loop_count}] Analysis timed out after {elapsed:.1f}s (timeout: {timeout_seconds}s / {timeout_minutes:.1f}min)!")
+                        logger.error("This usually means LLM calls are hanging. Check LLM provider.")
+                        return None
+                    except Exception as e:
+                        elapsed = asyncio.get_event_loop().time() - cycle_start_time
+                        logger.error(f"❌ [LOOP #{loop_count}] Analysis error after {elapsed:.1f}s: {e}", exc_info=True)
+                        return None
                 
-                # Wait 60 seconds before next analysis (with heartbeat every 10 seconds)
-                for i in range(6):
-                    await asyncio.sleep(10)
-                    if not self.running or self.shutdown_requested:
-                        break
-                    if i < 5:  # Don't log on last iteration (will log at start of next loop)
-                        logger.info(f"⏳ [LOOP #{loop_count}] Waiting... ({60 - (i+1)*10} seconds remaining)")
+                # Start analysis task (don't await - let it run in background)
+                analysis_task = asyncio.create_task(run_analysis())
                 
-            except asyncio.CancelledError:
-                logger.info("🛑 Trading loop cancelled")
-                break
             except Exception as e:
-                logger.error(f"❌ [LOOP #{loop_count}] Error in trading loop: {e}", exc_info=True)
-                logger.error(f"❌ [LOOP #{loop_count}] Full error details:", exc_info=True)
-                logger.info(f"⏳ [LOOP #{loop_count}] Retrying in 60 seconds...")
-                # Wait 60 seconds with heartbeat
-                for i in range(6):
-                    await asyncio.sleep(10)
-                    if not self.running or self.shutdown_requested:
-                        break
-                    if i < 5:
-                        logger.info(f"⏳ [LOOP #{loop_count}] Error recovery wait... ({60 - (i+1)*10} seconds remaining)")
+                logger.error(f"❌ [LOOP #{loop_count}] Error starting analysis: {e}", exc_info=True)
+            
+            # Wait for configured interval before next cycle (regardless of analysis completion)
+            # This ensures consistent timing - agent discussions inform trading decisions
+            wait_start = asyncio.get_event_loop().time()
+            wait_time = float(settings.trading_loop_interval_seconds)  # Default: 5 minutes (300s)
+            
+            # Heartbeat every 30 seconds (for 5-minute cycle)
+            heartbeat_interval = 30.0
+            while wait_time > 0 and self.running and not self.shutdown_requested:
+                sleep_time = min(heartbeat_interval, wait_time)
+                await asyncio.sleep(sleep_time)
+                wait_time -= sleep_time
+                
+                if wait_time > 0:
+                    wait_minutes = wait_time / 60
+                    logger.info(f"⏳ [LOOP #{loop_count}] Next cycle in {wait_time:.0f}s ({wait_minutes:.1f}min)...")
+            
+            # Check if analysis is still running
+            if analysis_task and not analysis_task.done():
+                logger.warning(f"⚠️ [LOOP #{loop_count}] Previous analysis still running (took >5min)")
+                # Don't cancel - let it finish, but start next cycle anyway
     
     async def stop(self):
         """Stop the trading service gracefully."""

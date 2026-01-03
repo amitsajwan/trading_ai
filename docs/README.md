@@ -32,6 +32,13 @@ Welcome to the GenAI Trading System documentation.
 - **[Main README](../README.md)** - Project overview and quick start
 - **[Diagnostic Script](../scripts/diagnose_llm_system.py)** - Check system health
 
+## Archived Documents (Removed)
+
+A set of historical or draft documents were archived and later **removed** from the top-level docs directory on 2026-01-03 to reduce clutter. The compressed backups were permanently deleted on 2026-01-03 and are no longer available in the repository; contact maintainers to request restores.
+
+If you need a specific archived document, extract the zip or contact the repository maintainers to restore it to `docs/`.
+
+
 ## Getting Started
 
 1. **New Users**: Start with [SETUP.md](SETUP.md)

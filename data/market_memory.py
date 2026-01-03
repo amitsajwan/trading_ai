@@ -46,9 +46,10 @@ class MarketMemory:
                 self._redis_available = False
     
     def store_tick(self, instrument: str, tick_data: Dict[str, Any]) -> None:
-        """Store a single tick data point."""
+        """Store a single tick data point - FIXED: ensures latest price key is always set."""
         if not self._redis_available:
-            return  # Silently skip if Redis not available
+            logger.warning("Redis not available - tick not stored")
+            return
         
         try:
             # Store tick with timestamp
@@ -62,16 +63,30 @@ class MarketMemory:
                 json.dumps(tick_data)
             )
             
-            # Also store latest price in a simple key for quick access
+            # CRITICAL: Always store latest price in a simple key for quick access
+            # This is used by agents and dashboard
             price = tick_data.get("last_price") or tick_data.get("price")
             if price:
-                latest_key = f"price:{instrument}:latest"
-                ttl_minutes = int(timedelta(minutes=5).total_seconds())
-                self.redis_client.setex(
-                    latest_key,
-                    ttl_minutes,
-                    str(float(price))  # Ensure it's a valid number string
-                )
+                try:
+                    price_float = float(price)
+                    latest_key = f"price:{instrument}:latest"
+                    ttl_seconds_latest = int(timedelta(minutes=5).total_seconds())
+                    self.redis_client.setex(
+                        latest_key,
+                        ttl_seconds_latest,
+                        str(price_float)  # Ensure it's a valid number string
+                    )
+                    # Also store timestamp of last update
+                    latest_ts_key = f"price:{instrument}:latest_ts"
+                    self.redis_client.setex(
+                        latest_ts_key,
+                        ttl_seconds_latest,
+                        timestamp
+                    )
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Invalid price value in tick data: {price} ({e})")
+            else:
+                logger.warning(f"No price found in tick data: {tick_data}")
         except Exception as e:
             logger.error(f"Error storing tick: {e}", exc_info=True)
     
@@ -194,6 +209,51 @@ class MarketMemory:
             timedelta(hours=24).total_seconds(),
             json.dumps(data)
         )
+    
+    def store_futures_data(self, instrument: str, futures_data: Dict[str, Any]) -> None:
+        """
+        Store futures data (funding rate, OI, etc.) in Redis.
+        
+        Args:
+            instrument: Instrument key (e.g., "BTCUSD")
+            futures_data: Dictionary with futures_price, funding_rate, open_interest, etc.
+        """
+        if not self._redis_available:
+            return
+        
+        try:
+            key = f"futures:{instrument}:latest"
+            ttl_seconds = int(timedelta(minutes=5).total_seconds())
+            self.redis_client.setex(
+                key,
+                ttl_seconds,
+                json.dumps(futures_data)
+            )
+        except Exception as e:
+            logger.warning(f"Could not store futures data: {e}")
+    
+    def get_futures_data(self, instrument: str) -> Optional[Dict[str, Any]]:
+        """
+        Get latest futures data from Redis.
+        
+        Args:
+            instrument: Instrument key (e.g., "BTCUSD")
+        
+        Returns:
+            Dictionary with futures data or None if not available
+        """
+        if not self._redis_available:
+            return None
+        
+        try:
+            key = f"futures:{instrument}:latest"
+            data_str = self.redis_client.get(key)
+            if data_str:
+                return json.loads(data_str)
+        except Exception as e:
+            logger.debug(f"Could not get futures data: {e}")
+        
+        return None
     
     def get_current_price(self, instrument: str) -> Optional[float]:
         """Get current price from latest tick or OHLC data."""
