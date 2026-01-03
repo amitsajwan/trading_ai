@@ -177,8 +177,15 @@ Analyze OHLC data and provide structured technical analysis."""
             if not ohlc_data:
                 logger.warning("No OHLC data available for technical analysis")
                 output = {
-                    "error": "INSUFFICIENT_DATA",
-                    "confidence_score": 0.0
+                    "note": "INSUFFICIENT_DATA",
+                    "confidence_score": 0.0,
+                    "rsi": 0.0,
+                    "macd": 0.0,
+                    "atr": 0.0,
+                    "support_level": 0.0,
+                    "resistance_level": 0.0,
+                    "trend_direction": "UNKNOWN",
+                    "trend_strength": 0.0
                 }
                 self.update_state(state, output, "No OHLC data available")
                 return state
@@ -195,9 +202,16 @@ Analyze OHLC data and provide structured technical analysis."""
                 logger.debug(f"Available columns: {list(df.columns)}")
                 logger.debug(f"Sample data: {df.head() if not df.empty else 'Empty DataFrame'}")
                 output = {
-                    "error": f"INVALID_DATA_FORMAT: Missing columns {missing_columns}",
+                    "note": f"INVALID_DATA_FORMAT: Missing columns {missing_columns}",
                     "confidence_score": 0.0,
-                    "available_columns": list(df.columns)
+                    "available_columns": list(df.columns),
+                    "rsi": 0.0,
+                    "macd": 0.0,
+                    "atr": 0.0,
+                    "support_level": 0.0,
+                    "resistance_level": 0.0,
+                    "trend_direction": "UNKNOWN",
+                    "trend_strength": 0.0
                 }
                 self.update_state(state, output, f"Invalid OHLC data format: missing {missing_columns}")
                 return state
@@ -217,10 +231,17 @@ Analyze OHLC data and provide structured technical analysis."""
             if df.empty:
                 logger.warning("OHLC DataFrame is empty after cleaning")
                 output = {
-                    "error": "INSUFFICIENT_DATA",
-                    "confidence_score": 0.0
+                    "note": "INSUFFICIENT_DATA",
+                    "confidence_score": 0.0,
+                    "rsi": 0.0,
+                    "macd": 0.0,
+                    "atr": 0.0,
+                    "support_level": 0.0,
+                    "resistance_level": 0.0,
+                    "trend_direction": "UNKNOWN",
+                    "trend_strength": 0.0
                 }
-                self.update_state(state, output, "OHLC data is empty after cleaning")
+                self.update_state(state, output, "OHLC data is empty after cleaning (skipping indicators)")
                 return state
             
             logger.info(f"Processing {len(df)} OHLC candles for technical analysis")
@@ -240,13 +261,20 @@ Analyze OHLC data and provide structured technical analysis."""
                 logger.warning(f"Failed to calculate any indicators. DataFrame shape: {df.shape}, columns: {list(df.columns)}")
                 logger.debug(f"First few rows:\n{df.head()}")
                 output = {
-                    "error": "INDICATOR_CALCULATION_FAILED",
+                    "note": "INDICATOR_CALCULATION_FAILED",
                     "confidence_score": 0.0,
                     "data_shape": df.shape,
                     "data_columns": list(df.columns),
-                    "data_length": len(df)
+                    "data_length": len(df),
+                    "rsi": 0.0,
+                    "macd": 0.0,
+                    "atr": 0.0,
+                    "support_level": 0.0,
+                    "resistance_level": 0.0,
+                    "trend_direction": "UNKNOWN",
+                    "trend_strength": 0.0
                 }
-                self.update_state(state, output, f"Failed to calculate technical indicators (only {len(df)} candles available)")
+                self.update_state(state, output, f"Skipped indicator calculation (only {len(df)} candles available)")
                 return state
             
             # Log what we calculated
@@ -305,10 +333,45 @@ Analyze the technical patterns and provide your assessment.
                 # Use calculated indicators only
                 output["confidence_score"] = 0.7  # Default confidence for calculated indicators
             
-            explanation = f"Technical analysis: {output.get('trend_direction', 'UNKNOWN')} trend, "
-            explanation += f"RSI {output.get('rsi_status', 'NEUTRAL')}, "
-            explanation += f"confidence {output.get('confidence_score', 0.0):.2f}"
+            # Build human-readable explanation with points and reasoning
+            trend_dir = output.get('trend_direction', 'UNKNOWN')
+            trend_strength = output.get('trend_strength', 0)
+            rsi_status = output.get('rsi_status', 'NEUTRAL')
+            rsi_value = output.get('rsi')
+            macd_status = output.get('macd_status', 'NEUTRAL')
+            volatility = output.get('volatility_level', 'UNKNOWN')
+            support = output.get('support_level')
+            resistance = output.get('resistance_level')
+            confidence = output.get('confidence_score', 0.0)
             
+            points = [
+                ("Trend Direction", trend_dir,
+                 f"Trend strength: {trend_strength:.0f}%"),
+                ("RSI Status", f"{rsi_status} ({rsi_value:.1f})" if rsi_value else rsi_status,
+                 f"RSI indicates {'overbought' if rsi_status == 'OVERBOUGHT' else 'oversold' if rsi_status == 'OVERSOLD' else 'neutral'} conditions"),
+                ("MACD Signal", macd_status,
+                 f"Momentum indicator {'bullish' if macd_status == 'BULLISH' else 'bearish' if macd_status == 'BEARISH' else 'neutral'}"),
+                ("Volatility", volatility,
+                 f"ATR-based volatility assessment"),
+                ("Support Level", f"{support:.2f}" if support else "N/A",
+                 f"Key support level below current price"),
+                ("Resistance Level", f"{resistance:.2f}" if resistance else "N/A",
+                 f"Key resistance level above current price"),
+                ("Confidence", f"{confidence:.0%}",
+                 f"Analysis confidence based on data quality and pattern clarity")
+            ]
+            
+            # Add pattern information if available
+            reversal = output.get('reversal_pattern')
+            continuation = output.get('continuation_pattern')
+            if reversal:
+                points.append(("Reversal Pattern", reversal, "Potential trend reversal signal"))
+            if continuation:
+                points.append(("Continuation Pattern", continuation, "Trend continuation signal"))
+            
+            summary = f"Overall: {trend_dir} trend with {rsi_status} RSI and {macd_status} MACD"
+            
+            explanation = self.format_explanation("Technical Analysis", points, summary)
             self.update_state(state, output, explanation)
             
         except Exception as e:

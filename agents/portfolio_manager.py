@@ -1,7 +1,7 @@
 """Portfolio Manager Agent - Final Decision Maker."""
 
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, List
 from agents.base_agent import BaseAgent
 from agents.state import AgentState, SignalType, TrendSignal
 from config.settings import settings
@@ -18,10 +18,321 @@ class PortfolioManagerAgent(BaseAgent):
     
     def _get_default_prompt(self) -> str:
         """Get default system prompt."""
-        return """You are the Portfolio Manager Agent for a Bank Nifty trading system.
+        instrument_name = settings.instrument_name
+        return f"""You are the Portfolio Manager Agent for a {instrument_name} trading system.
 Your role: Synthesize all agent analyses and make final trading decisions.
 You receive inputs from technical, fundamental, sentiment, macro, bull/bear researchers, and risk agents.
 Make decisions based on consensus and risk management."""
+    
+    def _generate_strategy_description(
+        self, signal, signal_strength, trend_signal, bullish_score, bearish_score,
+        technical, fundamental, sentiment, macro, position_size, entry_price, stop_loss, take_profit
+    ) -> str:
+        """Generate human-readable strategy description."""
+        if signal.value == "HOLD":
+            if trend_signal.value == "BULLISH":
+                return "WAIT_FOR_BULLISH_ENTRY - Bullish trend but insufficient conviction. Waiting for stronger signals or better entry."
+            elif trend_signal.value == "BEARISH":
+                return "WAIT_FOR_BEARISH_ENTRY - Bearish trend but insufficient conviction. Waiting for stronger signals or better entry."
+            else:
+                return "NEUTRAL_HOLD - Mixed signals, no clear direction. Waiting for market clarity."
+        
+        elif signal.value == "BUY":
+            trend_info = f"Trend: {trend_signal.value}"
+            tech_info = f"Technical: {technical.get('trend_direction', 'UNKNOWN')}"
+            strength_info = f"Strength: {signal_strength}"
+            
+            if signal_strength == "STRONG_BUY":
+                return f"AGGRESSIVE_LONG - {strength_info}, {trend_info}, {tech_info}. High conviction entry."
+            elif signal_strength == "BUY":
+                return f"MODERATE_LONG - {strength_info}, {trend_info}, {tech_info}. Standard entry."
+            else:  # WEAK_BUY
+                return f"CAUTIOUS_LONG - {strength_info}, {trend_info}, {tech_info}. Reduced size entry."
+        
+        elif signal.value == "SELL":
+            trend_info = f"Trend: {trend_signal.value}"
+            tech_info = f"Technical: {technical.get('trend_direction', 'UNKNOWN')}"
+            strength_info = f"Strength: {signal_strength}"
+            
+            if signal_strength == "STRONG_SELL":
+                return f"AGGRESSIVE_SHORT - {strength_info}, {trend_info}, {tech_info}. High conviction entry."
+            elif signal_strength == "SELL":
+                return f"MODERATE_SHORT - {strength_info}, {trend_info}, {tech_info}. Standard entry."
+            else:  # WEAK_SELL
+                return f"CAUTIOUS_SHORT - {strength_info}, {trend_info}, {tech_info}. Reduced size entry."
+        
+        return "UNKNOWN_STRATEGY"
+    
+    def _generate_executive_summary(
+        self,
+        signal, signal_strength, trend_signal, bullish_score, bearish_score,
+        technical: Dict[str, Any], fundamental: Dict[str, Any],
+        sentiment: Dict[str, Any], macro: Dict[str, Any],
+        bull_thesis: str, bear_thesis: str,
+        position_size: int, entry_price: float, stop_loss: float, take_profit: float
+    ) -> str:
+        """Generate LLM-powered executive summary synthesizing all agent analyses."""
+        try:
+            instrument_name = settings.instrument_name
+            current_price = entry_price  # Use entry price as current
+            
+            # Helper function to safely get numeric values
+            def safe_num(value, default=0.0):
+                """Safely convert value to number, handling None."""
+                if value is None:
+                    return default
+                try:
+                    return float(value)
+                except (ValueError, TypeError):
+                    return default
+            
+            # Build comprehensive context for LLM
+            prompt = f"""You are a Portfolio Manager synthesizing multi-agent trading analysis for {instrument_name}.
+
+**Current Market Context:**
+- Current Price: ${current_price:,.2f}
+- Market Trend: {trend_signal.value}
+- Bullish Score: {bullish_score:.2f} | Bearish Score: {bearish_score:.2f}
+
+**Technical Analysis:**
+- Trend: {technical.get('trend_direction', 'UNKNOWN')} (Strength: {safe_num(technical.get('trend_strength'), 0):.0f}%)
+- RSI: {safe_num(technical.get('rsi'), 50):.1f} ({technical.get('rsi_status', 'NEUTRAL')})
+- MACD: {technical.get('macd_signal', 'NEUTRAL')}
+- Support: ${safe_num(technical.get('support_level'), 0):,.2f} | Resistance: ${safe_num(technical.get('resistance_level'), 0):,.2f}
+
+**Fundamental Analysis:**
+- Market Strength: {fundamental.get('market_strength', 'UNKNOWN')}
+- Bullish Probability: {safe_num(fundamental.get('bullish_probability'), 0.5):.0%}
+- Bearish Probability: {safe_num(fundamental.get('bearish_probability'), 0.5):.0%}
+
+**Sentiment Analysis:**
+- Retail Sentiment: {safe_num(sentiment.get('retail_sentiment'), 0.0):.2f}
+- Institutional Sentiment: {safe_num(sentiment.get('institutional_sentiment'), 0.0):.2f}
+- Fear & Greed Index: {int(safe_num(sentiment.get('fear_greed_index'), 50))}
+
+**Macro Environment:**
+- Regime: {macro.get('macro_regime', 'UNKNOWN')}
+- Sector Headwind Score: {safe_num(macro.get('sector_headwind_score'), 0.0):.2f}
+
+**Bull Thesis:** {bull_thesis[:200] if bull_thesis else 'Not available'}...
+
+**Bear Thesis:** {bear_thesis[:200] if bear_thesis else 'Not available'}...
+
+**Trading Decision:**
+- Signal: {signal.value} ({signal_strength})
+- Position Size: {position_size}
+- Entry: ${entry_price:,.2f} | Stop Loss: ${stop_loss:,.2f} | Target: ${take_profit:,.2f}
+
+**Your Task:**
+Write a concise, actionable executive summary (3-4 sentences) that:
+1. States the trading decision and conviction level
+2. Highlights the 2-3 most critical factors driving this decision
+3. Provides clear risk/reward context
+4. Mentions any key concerns or opportunities
+
+Write in professional trader language. Be direct and actionable. Focus on what matters most for trading decisions.
+
+Executive Summary:"""
+
+            # Call LLM for summary generation.
+            # BaseAgent._call_llm only supports (user_message, temperature).
+            # We enforce brevity via instructions + post-trim.
+            response = self._call_llm(prompt, temperature=0.7)
+            
+            if response and len(response.strip()) > 20:
+                text = response.strip()
+                # Hard cap to keep UI tight even if model ignores instructions
+                if len(text) > 900:
+                    text = text[:900].rsplit(" ", 1)[0] + "..."
+                return text
+            else:
+                # Fallback summary
+                return f"{signal.value} signal ({signal_strength}) based on {trend_signal.value} trend. Bullish score: {bullish_score:.2f}, Bearish: {bearish_score:.2f}. Position size: {position_size}."
+                
+        except Exception as e:
+            logger.error(f"Error generating executive summary: {e}", exc_info=True)
+            # Fallback to simple summary
+            return f"{signal.value} ({signal_strength}) - {trend_signal.value} trend. Bull/Bear: {bullish_score:.2f}/{bearish_score:.2f}"
+    
+    def _create_adaptive_strategy(
+        self,
+        signal, signal_strength, trend_signal, bullish_score, bearish_score,
+        technical, fundamental, sentiment, macro,
+        position_size, entry_price, stop_loss, take_profit,
+        volatility_factor, state
+    ) -> Dict[str, Any]:
+        """Create comprehensive adaptive strategy with entry/exit conditions."""
+        from datetime import datetime, timedelta
+        
+        # Determine market regime
+        macro_regime = macro.get("macro_regime", "MIXED")
+        trend_direction = technical.get("trend_direction", "SIDEWAYS")
+        
+        # Create entry conditions
+        entry_conditions = []
+        if signal.value != "HOLD":
+            # Price-based conditions
+            if signal.value == "BUY":
+                entry_conditions.append({
+                    "type": "price_above",
+                    "value": entry_price * 0.995,  # 0.5% below entry
+                    "timeframe": "1min"
+                })
+                entry_conditions.append({
+                    "type": "price_below",
+                    "value": entry_price * 1.005,  # 0.5% above entry
+                    "timeframe": "1min"
+                })
+            elif signal.value == "SELL":
+                entry_conditions.append({
+                    "type": "price_below",
+                    "value": entry_price * 1.005,
+                    "timeframe": "1min"
+                })
+                entry_conditions.append({
+                    "type": "price_above",
+                    "value": entry_price * 0.995,
+                    "timeframe": "1min"
+                })
+            
+            # Technical conditions
+            rsi = technical.get("rsi")
+            if rsi:
+                if signal.value == "BUY":
+                    entry_conditions.append({
+                        "type": "rsi_between",
+                        "min": 40,
+                        "max": 70,
+                        "timeframe": "5min"
+                    })
+                elif signal.value == "SELL":
+                    entry_conditions.append({
+                        "type": "rsi_between",
+                        "min": 30,
+                        "max": 60,
+                        "timeframe": "5min"
+                    })
+            
+            # Multi-timeframe confluence
+            entry_conditions.append({
+                "type": "multi_timeframe_confluence",
+                "timeframes": ["5min", "15min"],
+                "condition": f"both_trending_{trend_direction.lower()}"
+            })
+        
+        # Create adaptive rules
+        adaptive_rules = []
+        
+        # Regime change detection
+        adaptive_rules.append({
+            "trigger": "regime_transition_detected",
+            "action": "reduce_position_size",
+            "new_size_pct": 0.5,
+            "description": "Reduce position size if market regime changes"
+        })
+        
+        # Volume spike
+        adaptive_rules.append({
+            "trigger": "volume_spike",
+            "action": "increase_conviction",
+            "confidence_boost": 0.1,
+            "description": "Increase conviction on volume spikes"
+        })
+        
+        # Stop-loss hit
+        adaptive_rules.append({
+            "trigger": "stop_loss_hit",
+            "action": "review_entry_conditions",
+            "update_frequency": "immediate",
+            "description": "Review entry conditions if stop-loss hit"
+        })
+        
+        # Multi-timeframe analysis
+        multi_timeframe = {
+            "1min": {
+                "trend": technical.get("trend_direction", "SIDEWAYS"),
+                "strength": technical.get("trend_strength", 0) / 100,
+                "use": "ENTRY_TIMING"
+            },
+            "5min": {
+                "trend": technical.get("trend_direction", "SIDEWAYS"),
+                "strength": technical.get("trend_strength", 0) / 100,
+                "use": "SHORT_TERM"
+            },
+            "15min": {
+                "trend": technical.get("trend_direction", "SIDEWAYS"),
+                "strength": technical.get("trend_strength", 0) / 100,
+                "use": "MEDIUM_TERM"
+            }
+        }
+        
+        strategy = {
+            "strategy_id": f"adaptive_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+            "type": "ADAPTIVE",
+            "market_regime": {
+                "current": macro_regime,
+                "confidence": (bullish_score + bearish_score) / 2,
+                "trend": trend_direction
+            },
+            "multi_timeframe_analysis": multi_timeframe,
+            "entry_conditions": entry_conditions,
+            "exit_conditions": {
+                "stop_loss": stop_loss,
+                "take_profit": [take_profit],
+                "trailing_stop": False
+            },
+            "position_sizing": {
+                "base_size": position_size,
+                "risk_pct": abs((entry_price - stop_loss) / entry_price * 100) if entry_price > 0 else 2.0,
+                "max_positions": 2
+            },
+            "adaptive_rules": adaptive_rules,
+            "agent_reasoning": {
+                "bullish_score": bullish_score,
+                "bearish_score": bearish_score,
+                "confidence": (bullish_score + bearish_score) / 2,
+                "key_factors": self._extract_key_factors(technical, fundamental, sentiment, macro),
+                "signal_strength": signal_strength
+            }
+        }
+        
+        return strategy
+    
+    def _extract_key_factors(
+        self,
+        technical: Dict[str, Any],
+        fundamental: Dict[str, Any],
+        sentiment: Dict[str, Any],
+        macro: Dict[str, Any]
+    ) -> List[str]:
+        """Extract key factors from agent analyses."""
+        factors = []
+        
+        # Technical factors
+        trend = technical.get("trend_direction")
+        if trend and trend != "SIDEWAYS":
+            factors.append(f"Strong {trend} trend")
+        
+        rsi_status = technical.get("rsi_status")
+        if rsi_status and rsi_status != "NEUTRAL":
+            factors.append(f"RSI {rsi_status}")
+        
+        # Fundamental factors
+        sector_strength = fundamental.get("sector_strength")
+        if sector_strength:
+            factors.append(f"{sector_strength} sector strength")
+        
+        # Sentiment factors
+        retail_sentiment = sentiment.get("retail_sentiment", 0)
+        if abs(retail_sentiment) > 0.3:
+            factors.append(f"Strong {'positive' if retail_sentiment > 0 else 'negative'} sentiment")
+        
+        # Macro factors
+        macro_regime = macro.get("macro_regime")
+        if macro_regime:
+            factors.append(f"{macro_regime} macro regime")
+        
+        return factors[:5]  # Top 5 factors
     
     def process(self, state: AgentState) -> AgentState:
         """Process portfolio management decision."""
@@ -167,10 +478,26 @@ Make decisions based on consensus and risk management."""
             state.stop_loss = stop_loss
             state.take_profit = take_profit
             
+            # Generate strategy description
+            strategy_description = self._generate_strategy_description(
+                signal, signal_strength, trend_signal, bullish_score, bearish_score,
+                technical, fundamental, sentiment, macro, position_size, entry_price, stop_loss, take_profit
+            )
+            
+            # Create comprehensive adaptive strategy
+            adaptive_strategy = self._create_adaptive_strategy(
+                signal, signal_strength, trend_signal, bullish_score, bearish_score,
+                technical, fundamental, sentiment, macro,
+                position_size, entry_price, stop_loss, take_profit,
+                volatility_factor, state
+            )
+            
             output = {
                 "signal": signal.value,
                 "trend_signal": trend_signal.value,  # BULLISH, BEARISH, or NEUTRAL
                 "signal_strength": signal_strength,
+                "strategy": strategy_description,
+                "adaptive_strategy": adaptive_strategy,  # Comprehensive strategy for execution
                 "bullish_score": bullish_score,
                 "bearish_score": bearish_score,
                 "position_size": position_size,
@@ -180,13 +507,72 @@ Make decisions based on consensus and risk management."""
                 "risk_recommendation_used": "neutral",
                 "volatility_factor": volatility_factor
             }
+
+            # Persist full PM output in a "real" state field so it survives LangGraph reductions/copies.
+            # This is later stored to MongoDB and used by the dashboard/history views.
+            try:
+                state.decision_audit_trail["portfolio_manager_output"] = dict(output)
+            except Exception:
+                pass
             
-            explanation = f"Portfolio decision: {signal.value} ({signal_strength}), "
-            explanation += f"Trend: {trend_signal.value}, "
-            explanation += f"bullish_score={bullish_score:.2f}, bearish_score={bearish_score:.2f}, "
-            explanation += f"position_size={position_size}, volatility_factor={volatility_factor:.2f}"
+            # Build human-readable explanation with points and reasoning
+            points = [
+                ("Decision", f"{signal.value} ({signal_strength})",
+                 f"Final trading decision based on multi-agent consensus"),
+                ("Strategy", strategy_description,
+                 f"Trading strategy and approach"),
+                ("Market Trend", trend_signal.value,
+                 f"Overall market trend assessment"),
+                ("Bullish Score", f"{bullish_score:.2f}",
+                 f"Aggregated bullish factors from all agents"),
+                ("Bearish Score", f"{bearish_score:.2f}",
+                 f"Aggregated bearish factors from all agents"),
+                ("Position Size", f"{position_size}",
+                 f"Recommended position size (0 = no position)"),
+                ("Volatility Factor", f"{volatility_factor:.2f}",
+                 f"Volatility adjustment factor for risk management")
+            ]
             
+            if position_size > 0:
+                points.extend([
+                    ("Entry Price", f"{entry_price:.2f}",
+                     f"Recommended entry price level"),
+                    ("Stop Loss", f"{stop_loss:.2f} ({abs((stop_loss/entry_price - 1) * 100):.2f}%)",
+                     f"Stop loss level to limit downside"),
+                    ("Take Profit", f"{take_profit:.2f} ({abs((take_profit/entry_price - 1) * 100):.2f}%)",
+                     f"Take profit target level")
+                ])
+            
+            summary = f"Portfolio Decision: {signal.value} ({signal_strength}) - {strategy_description}"
+            
+            explanation = self.format_explanation("Portfolio Manager", points, summary)
             self.update_state(state, output, explanation)
+            
+            # Generate LLM-powered executive summary
+            try:
+                executive_summary = self._generate_executive_summary(
+                    signal, signal_strength, trend_signal, bullish_score, bearish_score,
+                    technical, fundamental, sentiment, macro,
+                    state.bull_thesis, state.bear_thesis,
+                    position_size, entry_price, stop_loss, take_profit
+                )
+                output["executive_summary"] = executive_summary
+                state.update_agent_output(self.agent_name, output)  # Update with summary
+                try:
+                    state.decision_audit_trail["executive_summary"] = executive_summary
+                    state.decision_audit_trail["portfolio_manager_output"] = dict(output)
+                except Exception:
+                    pass
+            except Exception as e:
+                logger.warning(f"Could not generate executive summary: {e}")
+                # Fallback to simple summary
+                output["executive_summary"] = summary
+                state.update_agent_output(self.agent_name, output)
+                try:
+                    state.decision_audit_trail["executive_summary"] = summary
+                    state.decision_audit_trail["portfolio_manager_output"] = dict(output)
+                except Exception:
+                    pass
             
         except Exception as e:
             logger.error(f"Error in portfolio management: {e}")

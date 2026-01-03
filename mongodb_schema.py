@@ -5,6 +5,9 @@ from datetime import datetime
 import os
 from typing import Optional
 
+# Backwards-compatible global db name (some tests rely on overriding this variable)
+trading_system = "zerodha_trading"
+
 
 def get_mongo_client(connection_string: Optional[str] = None):
     """Get MongoDB client connection."""
@@ -13,18 +16,16 @@ def get_mongo_client(connection_string: Optional[str] = None):
     return MongoClient(connection_string)
 
 
-def setup_mongodb(db_name: str = "zerodha_trading"):
+def setup_mongodb(db_name: Optional[str] = None):
     """
     Set up MongoDB collections with proper indexes for the trading system.
-    
-    Collections:
-    - ohlc_history: Historical OHLCV data
-    - trades_executed: Completed trades with full audit trail
-    - agent_decisions: Individual agent outputs and decisions
-    - backtest_results: Backtesting performance data
-    - strategy_parameters: Strategy configuration and parameters
-    - market_events: Market events (RBI announcements, etc.)
+
+    This function accepts an optional `db_name`. If `db_name` is not provided
+    it falls back to the module-level `trading_system` name for backwards
+    compatibility with older tests that monkeypatch that global variable.
     """
+    # Backwards compatible: allow tests to override module-level `trading_system`
+    db_name = db_name or trading_system
     client = get_mongo_client()
     db = client[db_name]
 
@@ -76,6 +77,71 @@ def setup_mongodb(db_name: str = "zerodha_trading"):
           f"backtest_results, strategy_parameters, market_events")
     
     return db
+
+
+def apply_schema_validators(db):
+    """Apply JSON schema validators to critical collections to prevent schema drift."""
+    try:
+        # Trades executed validator
+        trades_validator = {
+            "$jsonSchema": {
+                "bsonType": "object",
+                "required": ["trade_id", "instrument", "entry_timestamp", "entry_price", "quantity", "status"],
+                "properties": {
+                    "trade_id": {"bsonType": "string"},
+                    "instrument": {"bsonType": "string"},
+                    "entry_timestamp": {"bsonType": ["date", "string"]},
+                    "entry_price": {"bsonType": ["double", "int", "long"]},
+                    "exit_price": {"bsonType": ["double", "int", "long", "null"]},
+                    "quantity": {"bsonType": ["int", "double", "long"]},
+                    "status": {"bsonType": "string"}
+                }
+            }
+        }
+        db.command({"collMod": "trades_executed", "validator": trades_validator, "validationLevel": "moderate"})
+    except Exception as e:
+        print(f"Failed to apply trades_executed validator: {e}")
+
+    try:
+        agent_validator = {
+            "$jsonSchema": {
+                "bsonType": "object",
+                "required": ["timestamp", "instrument", "agent_decisions"],
+                "properties": {
+                    "timestamp": {"bsonType": ["date", "string"]},
+                    "instrument": {"bsonType": "string"},
+                    "agent_decisions": {"bsonType": "object"}
+                }
+            }
+        }
+        db.command({"collMod": "agent_decisions", "validator": agent_validator, "validationLevel": "moderate"})
+    except Exception as e:
+        print(f"Failed to apply agent_decisions validator: {e}")
+
+
+def migrate_trades_add_defaults(db):
+    """Backfill missing fields in trades_executed with sensible defaults."""
+    trades = db.get_collection("trades_executed")
+    # Ensure status exists
+    trades.update_many({"status": {"$exists": False}}, {"$set": {"status": "OPEN"}})
+    # Ensure entry_price exists
+    trades.update_many({"entry_price": {"$exists": False}}, {"$set": {"entry_price": 0}})
+    # Ensure quantity exists
+    trades.update_many({"quantity": {"$exists": False}}, {"$set": {"quantity": 0}})
+    # Normalize timestamp fields to ISO strings if necessary (best-effort)
+    from datetime import datetime
+    for t in trades.find({}):
+        if "entry_timestamp" in t and not isinstance(t["entry_timestamp"], str):
+            try:
+                trades.update_one({"_id": t["_id"]}, {"$set": {"entry_timestamp": t["entry_timestamp"].isoformat()}})
+            except Exception:
+                pass
+
+
+def migrate_agents_instrument_field(db, instrument):
+    """Ensure agent_decisions documents have correct instrument field for filtering."""
+    agents = db.get_collection("agent_decisions")
+    agents.update_many({"instrument": {"$exists": False}}, {"$set": {"instrument": instrument}})
 
 
 def get_collection(db, collection_name: str):

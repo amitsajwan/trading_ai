@@ -64,13 +64,13 @@ Technical Analysis:
 - Resistance Level: {technical.get('resistance_level', 'N/A')}
 
 Sentiment Analysis:
-- Retail Sentiment: {float(sentiment.get('retail_sentiment', 0.0)):.2f}
-- Institutional Sentiment: {float(sentiment.get('institutional_sentiment', 0.0)):.2f}
+- Retail Sentiment: {float(sentiment.get('retail_sentiment') or 0.0):.2f}
+- Institutional Sentiment: {float(sentiment.get('institutional_sentiment') or 0.0):.2f}
 
 Macro Analysis:
 - Macro Regime: {macro.get('macro_regime', 'UNKNOWN')}
 - RBI Cycle: {macro.get('rbi_cycle', 'UNKNOWN')}
-- Sector Headwind Score: {float(macro.get('sector_headwind_score', 0.0)):.2f}
+- Sector Headwind Score: {float(macro.get('sector_headwind_score') or 0.0):.2f}
 
 Current Price: {current_price}
 Downside Target: {target:.2f} (-3%)
@@ -92,39 +92,97 @@ Build the strongest BEAR CASE for why the price should go DOWN from here.
             analysis = self._call_llm_structured(prompt, response_format)
             
             # Validate LLM response - ensure thesis is not empty
-            bear_thesis = analysis.get("bear_thesis", "").strip()
+            bear_thesis = str(analysis.get("bear_thesis", "") or "").strip()
             if not bear_thesis or bear_thesis.lower() in ["null", "none", "n/a", ""]:
                 logger.warning("LLM returned empty bear thesis, using default")
                 analysis = default_analysis
                 bear_thesis = default_analysis["bear_thesis"]
             
+            # Ensure thesis is not empty (fallback to default if still empty)
+            if not bear_thesis or len(bear_thesis) < 10:
+                logger.warning("Bear thesis is too short or empty, using default")
+                bear_thesis = default_analysis["bear_thesis"]
+                analysis = default_analysis
+            
             # Update state
             state.bear_thesis = bear_thesis
             state.bear_confidence = analysis.get("conviction_score", 0.5)
             
-            explanation = f"Bear thesis: {analysis.get('conviction_score', 0.5):.2f} conviction, "
-            explanation += f"downside prob: {analysis.get('downside_probability', 0.5):.2f}"
+            # Build human-readable explanation with points and reasoning
+            conviction = analysis.get('conviction_score', 0.5)
+            downside_prob = analysis.get('downside_probability', 0.5)
+            downside_target = analysis.get('downside_target', current_price * 0.97)
+            key_drivers = analysis.get('key_drivers', [])[:3]  # Top 3
+            key_risks = analysis.get('key_risks', [])[:2]  # Top 2
+
+            # Avoid division by zero when price is unavailable
+            safe_price = current_price if current_price and current_price > 0 else None
+            downside_pct = ((downside_target / safe_price - 1) * 100) if safe_price else None
+            downside_pct_str = f"{downside_pct:.1f}%" if downside_pct is not None else "n/a"
             
+            points = [
+                ("Conviction Score", f"{conviction:.0%}",
+                 f"{'High' if conviction > 0.7 else 'Moderate' if conviction > 0.5 else 'Low'} conviction in bearish thesis"),
+                ("Downside Probability", f"{downside_prob:.0%}",
+                 f"Probability of price moving lower"),
+                ("Downside Target", f"{downside_target:.2f}",
+                 f"Target price level ({downside_pct_str})"),
+                ("Key Drivers", ", ".join(key_drivers) if key_drivers else "Market factors",
+                 f"Main factors supporting bearish case"),
+                ("Key Risks", ", ".join(key_risks) if key_risks else "Market risks",
+                 f"Main risks to bearish thesis")
+            ]
+            
+            summary = f"Bear Case: {conviction:.0%} conviction with {downside_prob:.0%} downside probability"
+            
+            explanation = self.format_explanation("Bear Thesis", points, summary)
             self.update_state(state, analysis, explanation)
             
         except Exception as e:
-            # Check if it's a rate limit error - if so, log but don't use defaults immediately
             error_str = str(e)
-            is_rate_limit = "429" in error_str or "rate limit" in error_str.lower() or "Rate limit" in error_str
-            is_timeout = "timeout" in error_str.lower() or "Timeout" in error_str
             
-            if is_rate_limit:
-                logger.warning(f"Bear research rate limited, will retry with fallback: {e}")
-                # Don't use defaults for rate limits - let LLM manager try other providers
-                raise
+            # Check if all providers failed - if so, retry with exponential backoff
+            if "All LLM providers failed" in error_str or "No available LLM providers" in error_str:
+                logger.error(f"❌ Bear research: All LLM providers failed. Retrying with exponential backoff...")
+                
+                # Retry with exponential backoff (up to 3 retries)
+                import time
+                max_retries = 3
+                for retry_attempt in range(max_retries):
+                    wait_time = 2 ** retry_attempt  # Exponential backoff: 1s, 2s, 4s
+                    logger.info(f"⏳ Retry {retry_attempt + 1}/{max_retries} after {wait_time}s...")
+                    time.sleep(wait_time)
+                    
+                    try:
+                        # Try again - LLM manager will try all providers
+                        analysis = self._call_llm_structured(prompt, response_format)
+                        
+                        # Validate LLM response
+                        bear_thesis = analysis.get("bear_thesis", "").strip()
+                        if bear_thesis and bear_thesis.lower() not in ["null", "none", "n/a", ""]:
+                            # Success - use the analysis
+                            state.bear_thesis = bear_thesis
+                            state.bear_confidence = analysis.get("conviction_score", 0.5)
+                            explanation = f"Bear thesis: {analysis.get('conviction_score', 0.5):.2f} conviction, "
+                            explanation += f"downside prob: {analysis.get('downside_probability', 0.5):.2f}"
+                            self.update_state(state, analysis, explanation)
+                            logger.info(f"✅ Bear research succeeded on retry {retry_attempt + 1}")
+                            return state
+                    except Exception as retry_error:
+                        logger.warning(f"⚠️ Retry {retry_attempt + 1} failed: {retry_error}")
+                        if retry_attempt == max_retries - 1:
+                            # All retries exhausted - raise the error
+                            logger.error(f"❌ Bear research failed after {max_retries} retries. All providers unavailable.")
+                            raise RuntimeError(f"Bear research failed after {max_retries} retries with all providers. Last error: {retry_error}")
+                        continue
+                
+                # Should not reach here, but if we do, raise
+                raise RuntimeError(f"Bear research failed after {max_retries} retries")
             
-            # For timeouts or other errors, use defaults
-            logger.warning(f"Bear research failed (using defaults): {e}")
-            state.bear_thesis = default_analysis['bear_thesis']  # Ensure thesis is set
-            state.bear_confidence = default_analysis['conviction_score']
-            explanation = f"Bear thesis: {default_analysis['conviction_score']:.2f} conviction (default - LLM unavailable), "
-            explanation += f"downside prob: {default_analysis['downside_probability']:.2f}"
-            self.update_state(state, default_analysis, explanation)
+            # For other errors (timeout, etc.), let LLM manager handle retries
+            # Don't use defaults - re-raise to let the system handle it properly
+            logger.error(f"❌ Bear research failed: {e}")
+            raise
         
         return state
 

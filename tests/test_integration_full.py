@@ -39,8 +39,8 @@ def mock_market_memory():
 
 @pytest.fixture
 def paper_trading():
-    """Create paper trading instance."""
-    return PaperTrading(initial_capital=1000000)
+    """Create paper trading instance with sufficient capital for tests."""
+    return PaperTrading(initial_capital=10000000)
 
 
 @pytest.mark.asyncio

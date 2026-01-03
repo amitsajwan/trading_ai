@@ -27,17 +27,36 @@ Analyze macro economic conditions and market regime."""
         """Process macro analysis."""
         logger.info("Processing macro analysis...")
         
-        # Default fallback values for graceful degradation
-        default_analysis = {
-            "macro_regime": "MIXED",
-            "rbi_cycle": "NEUTRAL",
-            "rate_cut_probability": 0.5,
-            "rate_hike_probability": 0.5,
-            "npa_concern_level": "MEDIUM",
-            "liquidity_condition": "NORMAL",
-            "sector_headwind_score": 0.0,
-            "confidence_score": 0.5
-        }
+        # Get instrument info from settings
+        from config.settings import settings
+        instrument_name = settings.instrument_name
+        is_crypto = settings.data_source.upper() == "CRYPTO" or "BTC" in instrument_name.upper() or "Bitcoin" in instrument_name
+        
+        # Default fallback values - instrument-aware
+        if is_crypto:
+            default_analysis = {
+                "macro_regime": "MIXED",
+                "rbi_cycle": "NEUTRAL",  # Will be replaced with fed_cycle for crypto
+                "fed_cycle": "NEUTRAL",  # Crypto-specific
+                "rate_cut_probability": 0.5,
+                "rate_hike_probability": 0.5,
+                "npa_concern_level": "MEDIUM",  # Not applicable for crypto
+                "liquidity_condition": "NORMAL",
+                "dollar_strength": "NEUTRAL",  # Crypto-specific
+                "sector_headwind_score": 0.0,
+                "confidence_score": 0.5
+            }
+        else:
+            default_analysis = {
+                "macro_regime": "MIXED",
+                "rbi_cycle": "NEUTRAL",
+                "rate_cut_probability": 0.5,
+                "rate_hike_probability": 0.5,
+                "npa_concern_level": "MEDIUM",
+                "liquidity_condition": "NORMAL",
+                "sector_headwind_score": 0.0,
+                "confidence_score": 0.5
+            }
         
         try:
             # Gather context
@@ -45,11 +64,39 @@ Analyze macro economic conditions and market regime."""
             inflation_rate = state.inflation_rate
             npa_ratio = state.npa_ratio
             
-            # Get instrument name from settings
-            from config.settings import settings
-            instrument_name = settings.instrument_name
-            
-            prompt = f"""
+            if is_crypto:
+                # Crypto-specific macro context
+                prompt = f"""
+Macro Economic Context for {instrument_name} (Cryptocurrency):
+- Global Interest Rates: {rbi_rate if rbi_rate else 'Unknown'} (use as proxy for global rates)
+- Inflation Rate: {inflation_rate if inflation_rate else 'Unknown'}
+- Dollar Strength (DXY): Analyze impact of USD strength on crypto
+- Risk-On/Risk-Off Sentiment: Market risk appetite
+- Liquidity Conditions: Global liquidity and funding conditions
+
+Analyze the macro regime and its impact on {instrument_name} as a cryptocurrency.
+Focus on:
+- Fed policy cycle and global monetary policy
+- Dollar strength correlation (inverse relationship)
+- Risk-on/risk-off regime shifts
+- Global liquidity conditions
+- Inflation hedge narrative
+"""
+                response_format = {
+                    "macro_regime": "string (RISK_ON/RISK_OFF/MIXED)",
+                    "fed_cycle": "string (TIGHTENING/EASING/NEUTRAL) - Fed policy cycle (REQUIRED for crypto, NOT RBI)",
+                    "rate_cut_probability": "float (0-1) - probability of Fed rate cuts",
+                    "rate_hike_probability": "float (0-1) - probability of Fed rate hikes",
+                    "liquidity_condition": "string (EASY/NORMAL/TIGHT) - global liquidity",
+                    "dollar_strength": "string (STRONG/NEUTRAL/WEAK) - USD strength impact",
+                    "sector_headwind_score": "float (-1 to +1) - negative = headwind, positive = tailwind",
+                    "confidence_score": "float (0-1)",
+                    "macro_regime_reasoning": "string explaining regime choice",
+                    "fed_cycle_reasoning": "string explaining Fed cycle assessment"
+                }
+            else:
+                # Indian stocks/banking sector context
+                prompt = f"""
 Macro Economic Context:
 - Interest Rate: {rbi_rate if rbi_rate else 'Unknown'}
 - Inflation Rate: {inflation_rate if inflation_rate else 'Unknown'}
@@ -57,17 +104,16 @@ Macro Economic Context:
 
 Analyze the macro regime and its impact on {instrument_name}.
 """
-            
-            response_format = {
-                "macro_regime": "string (GROWTH/INFLATION/STRESS/MIXED)",
-                "rbi_cycle": "string (TIGHTENING/EASING/NEUTRAL)",
-                "rate_cut_probability": "float (0-1)",
-                "rate_hike_probability": "float (0-1)",
-                "npa_concern_level": "string (LOW/MEDIUM/HIGH)",
-                "liquidity_condition": "string (EASY/NORMAL/TIGHT)",
-                "sector_headwind_score": "float (-1 to +1)",
-                "confidence_score": "float (0-1)"
-            }
+                response_format = {
+                    "macro_regime": "string (GROWTH/INFLATION/STRESS/MIXED)",
+                    "rbi_cycle": "string (TIGHTENING/EASING/NEUTRAL)",
+                    "rate_cut_probability": "float (0-1)",
+                    "rate_hike_probability": "float (0-1)",
+                    "npa_concern_level": "string (LOW/MEDIUM/HIGH)",
+                    "liquidity_condition": "string (EASY/NORMAL/TIGHT)",
+                    "sector_headwind_score": "float (-1 to +1)",
+                    "confidence_score": "float (0-1)"
+                }
             
             analysis = self._call_llm_structured(prompt, response_format)
             
@@ -78,10 +124,68 @@ Analyze the macro regime and its impact on {instrument_name}.
             except (ValueError, TypeError):
                 headwind_score = 0.0
             
-            explanation = f"Macro analysis: {analysis.get('macro_regime', 'UNKNOWN')} regime, "
-            explanation += f"RBI cycle: {analysis.get('rbi_cycle', 'UNKNOWN')}, "
-            explanation += f"headwind score: {headwind_score:.2f}"
+            # Build human-readable explanation with points and reasoning
+            if is_crypto:
+                fed_cycle = analysis.get('fed_cycle')
+                if not fed_cycle:
+                    fed_cycle = analysis.get('rbi_cycle', 'UNKNOWN')
+                    logger.warning("LLM returned rbi_cycle for crypto, should return fed_cycle")
+                
+                rate_cut_prob = analysis.get('rate_cut_probability', 0.5)
+                rate_hike_prob = analysis.get('rate_hike_probability', 0.5)
+                dollar_strength = analysis.get('dollar_strength', 'NEUTRAL')
+                liquidity = analysis.get('liquidity_condition', 'NORMAL')
+                confidence = analysis.get('confidence_score', 0.5)
+                
+                points = [
+                    ("Macro Regime", analysis.get('macro_regime', 'UNKNOWN'),
+                     f"Current market regime assessment"),
+                    ("Fed Policy Cycle", fed_cycle,
+                     f"Federal Reserve monetary policy stance"),
+                    ("Rate Cut Probability", f"{rate_cut_prob:.0%}",
+                     f"Likelihood of rate cuts in next 1-3 months"),
+                    ("Rate Hike Probability", f"{rate_hike_prob:.0%}",
+                     f"Likelihood of rate hikes in next 1-3 months"),
+                    ("Dollar Strength", dollar_strength,
+                     f"USD strength impact on crypto (inverse correlation)"),
+                    ("Liquidity Condition", liquidity,
+                     f"Global liquidity and funding conditions"),
+                    ("Headwind Score", f"{headwind_score:.2f}",
+                     f"{'Headwind' if headwind_score < 0 else 'Tailwind'} for crypto sector"),
+                    ("Confidence", f"{confidence:.0%}",
+                     f"Analysis confidence based on data quality")
+                ]
+                
+                summary = f"Overall: {analysis.get('macro_regime', 'UNKNOWN')} regime with {fed_cycle} Fed cycle"
+            else:
+                rate_cut_prob = analysis.get('rate_cut_probability', 0.5)
+                rate_hike_prob = analysis.get('rate_hike_probability', 0.5)
+                npa_level = analysis.get('npa_concern_level', 'MEDIUM')
+                liquidity = analysis.get('liquidity_condition', 'NORMAL')
+                confidence = analysis.get('confidence_score', 0.5)
+                
+                points = [
+                    ("Macro Regime", analysis.get('macro_regime', 'UNKNOWN'),
+                     f"Current economic regime assessment"),
+                    ("RBI Policy Cycle", analysis.get('rbi_cycle', 'UNKNOWN'),
+                     f"RBI monetary policy stance"),
+                    ("Rate Cut Probability", f"{rate_cut_prob:.0%}",
+                     f"Likelihood of rate cuts in next 1-3 months"),
+                    ("Rate Hike Probability", f"{rate_hike_prob:.0%}",
+                     f"Likelihood of rate hikes in next 1-3 months"),
+                    ("NPA Concern Level", npa_level,
+                     f"Banking sector asset quality concerns"),
+                    ("Liquidity Condition", liquidity,
+                     f"Market liquidity and funding conditions"),
+                    ("Headwind Score", f"{headwind_score:.2f}",
+                     f"{'Headwind' if headwind_score < 0 else 'Tailwind'} for sector"),
+                    ("Confidence", f"{confidence:.0%}",
+                     f"Analysis confidence based on data quality")
+                ]
+                
+                summary = f"Overall: {analysis.get('macro_regime', 'UNKNOWN')} regime with {analysis.get('rbi_cycle', 'UNKNOWN')} RBI cycle"
             
+            explanation = self.format_explanation("Macro Analysis", points, summary)
             self.update_state(state, analysis, explanation)
         
         except Exception as e:
@@ -96,9 +200,14 @@ Analyze the macro regime and its impact on {instrument_name}.
             
             # Only use defaults for actual errors (not rate limits)
             logger.warning(f"Macro analysis failed (using defaults): {e}")
-            explanation = f"Macro analysis: {default_analysis['macro_regime']} regime (default - LLM unavailable), "
-            explanation += f"RBI cycle: {default_analysis['rbi_cycle']}, "
-            explanation += f"headwind score: {default_analysis['sector_headwind_score']:.2f}"
+            if is_crypto:
+                explanation = f"Macro analysis: {default_analysis['macro_regime']} regime (default - LLM unavailable), "
+                explanation += f"Fed cycle: {default_analysis.get('fed_cycle', 'NEUTRAL')}, "
+                explanation += f"headwind score: {default_analysis['sector_headwind_score']:.2f}"
+            else:
+                explanation = f"Macro analysis: {default_analysis['macro_regime']} regime (default - LLM unavailable), "
+                explanation += f"RBI cycle: {default_analysis['rbi_cycle']}, "
+                explanation += f"headwind score: {default_analysis['sector_headwind_score']:.2f}"
             self.update_state(state, default_analysis, explanation)
             
         except Exception as e:

@@ -49,14 +49,19 @@ def check_env_file():
         return False
 
 def check_credentials():
-    """Check if credentials.json exists."""
+    """Check if credentials.json exists (or credentials.example.json is present)."""
     cred_path = Path("credentials.json")
+    example_path = Path("credentials.example.json")
     if cred_path.exists():
         print("✅ credentials.json: Exists")
         return True
+    elif example_path.exists():
+        print("⚠️  credentials.json: Not found")
+        print("   A template `credentials.example.json` is present. Copy it to `credentials.json` and fill in your values, or run: python auto_login.py")
+        return False
     else:
         print("⚠️  credentials.json: Not found")
-        print("   Run: python auto_login.py")
+        print("   No credentials template found. Run: python auto_login.py or create credentials.json from your live account data")
         return False
 
 def setup_mongodb_schema():

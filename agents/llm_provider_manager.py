@@ -3,7 +3,9 @@
 import os
 import logging
 import time
+import random
 import concurrent.futures
+import threading
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List, Tuple
 from enum import Enum
@@ -27,7 +29,8 @@ class ProviderConfig:
     name: str
     api_key: Optional[str] = None
     base_url: Optional[str] = None
-    model: str = ""
+    model: str = ""  # Primary/default model
+    models: List[str] = field(default_factory=list)  # Optional rotation list
     priority: int = 0  # Lower = higher priority
     rate_limit_per_minute: int = 60
     rate_limit_per_day: int = 100000
@@ -39,6 +42,8 @@ class ProviderConfig:
     requests_this_minute: int = 0
     last_request_time: Optional[datetime] = None
     minute_window_start: Optional[datetime] = None
+    tokens_today: int = 0
+    daily_token_quota: Optional[int] = None
 
 
 class LLMProviderManager:
@@ -57,14 +62,68 @@ class LLMProviderManager:
         self.provider_clients: Dict[str, Any] = {}
         # Semaphore to limit parallel Ollama calls (Ollama doesn't handle parallel well)
         self._ollama_semaphore = None
+        # Global semaphore to cap total concurrent LLM calls across all agents
+        max_concurrency = int(os.getenv("LLM_MAX_CONCURRENCY", "3"))
+        self._global_semaphore = threading.Semaphore(max(1, max_concurrency))
+        # Provider rotation counter for load distribution
+        self._rotation_counter = 0
+        # Model rotation trackers
+        self._model_lock = threading.Lock()
+        self._model_counters: Dict[str, int] = {}
+        # Track parallel group assignments to ensure different providers
+        self._parallel_assignments: Dict[str, List[str]] = {}
+        # Lock for thread-safe parallel assignment
+        self._assignment_lock = threading.Lock()
+        # Health check thread control
+        self._health_check_interval = int(os.getenv("LLM_HEALTH_CHECK_INTERVAL", "60"))
+        self._stop_health_thread = threading.Event()
+        self._health_thread = threading.Thread(target=self._health_check_loop, daemon=True)
         self._initialize_providers()
         self._select_best_provider()
+        # Start health check thread
+        try:
+            self._health_thread.start()
+        except Exception as e:
+            logger.debug(f"Failed to start health check thread: {e}")
+
+    def _health_check_loop(self):
+        """Background loop that pings providers and attempts recovery."""
+        import time
+        while not self._stop_health_thread.is_set():
+            try:
+                for name in list(self.providers.keys()):
+                    config = self.providers[name]
+                    if config.status != ProviderStatus.AVAILABLE:
+                        # Try to recover rate-limited or errored providers
+                        self._recover_provider(name)
+                    # Periodic health check for available providers (lightweight)
+                    if config.status == ProviderStatus.AVAILABLE:
+                        healthy = self.check_provider_health(name, timeout=2)
+                        if not healthy:
+                            logger.warning(f"⚠️ Health check failed for provider {name}; marking as degraded")
+                            config.status = ProviderStatus.ERROR
+                            config.last_error = "Health check failed"
+                            config.last_error_time = datetime.now()
+                time.sleep(self._health_check_interval)
+            except Exception as e:
+                logger.debug(f"Health check loop error: {e}")
+                time.sleep(self._health_check_interval)
     
     def _initialize_providers(self):
         """Initialize all available providers."""
+        # Helper to load model lists from env (comma-separated) with a single fallback
+        def _get_model_list(single_env: str, plural_env: str, default: str) -> List[str]:
+            models_env = os.getenv(plural_env)
+            if models_env:
+                models = [m.strip() for m in models_env.split(",") if m.strip()]
+                return models or [default]
+            single = os.getenv(single_env)
+            return [single] if single else [default]
+
         # Ollama (Local LLM - initialize FIRST for highest priority)
         ollama_base_url = settings.ollama_base_url or "http://localhost:11434"
         ollama_model = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
+        ollama_models = _get_model_list("OLLAMA_MODEL", "OLLAMA_MODELS", ollama_model)
         # Check if Ollama is available (no API key needed)
         try:
             import httpx
@@ -79,6 +138,7 @@ class LLMProviderManager:
                     # Try to use the first available model as fallback
                     if available_models:
                         ollama_model = available_models[0]
+                        ollama_models = [ollama_model]
                         logger.info(f"Using fallback model: {ollama_model}")
                     else:
                         logger.warning("No Ollama models available, skipping Ollama provider")
@@ -91,6 +151,7 @@ class LLMProviderManager:
                     api_key="ollama",  # Not used but required
                     base_url=ollama_base_url,
                     model=ollama_model,
+                    models=ollama_models,
                     priority=10,  # Lower priority - cloud providers preferred (faster, more reliable)
                     rate_limit_per_minute=1000,  # Very high (local)
                     rate_limit_per_day=10000000,  # Very high (local)
@@ -101,11 +162,11 @@ class LLMProviderManager:
                     import httpx
                     # Ollama OpenAI-compatible API requires /v1 endpoint
                     ollama_api_url = f"{ollama_base_url}/v1" if not ollama_base_url.endswith("/v1") else ollama_base_url
-                    # Set 60 second timeout for Ollama (can be slow on first call)
+                    # Set 30 second timeout for Ollama (reduced - prefer cloud providers)
                     self.provider_clients["ollama"] = OpenAI(
                         api_key="ollama",  # Not used by Ollama but required by OpenAI client
                         base_url=ollama_api_url,
-                        timeout=httpx.Timeout(60.0, connect=10.0)  # 60s total, 10s connect
+                        timeout=httpx.Timeout(30.0, connect=5.0)  # 30s total, 5s connect (reduced)
                     )
                     logger.info(f"✅ Ollama provider initialized FIRST (model: {ollama_model}, base_url: {ollama_api_url})")
                 except Exception as e:
@@ -120,10 +181,12 @@ class LLMProviderManager:
         if settings.groq_api_key:
             # Use fastest Groq model (llama-3.1-8b-instant is faster than 70b)
             groq_model = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")  # Fastest Groq model
+            groq_models = _get_model_list("GROQ_MODEL", "GROQ_MODELS", groq_model)
             self.providers["groq"] = ProviderConfig(
                 name="groq",
                 api_key=settings.groq_api_key,
                 model=groq_model,
+                models=groq_models,
                 priority=0,  # HIGHEST priority - fastest free provider
                 rate_limit_per_minute=30,
                 rate_limit_per_day=100000,
@@ -145,10 +208,13 @@ class LLMProviderManager:
                 import importlib
                 importlib.import_module("google.generativeai")
                 
+                gemini_model = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
+                gemini_models = _get_model_list("GEMINI_MODEL", "GEMINI_MODELS", gemini_model)
                 self.providers["gemini"] = ProviderConfig(
                     name="gemini",
                     api_key=settings.google_api_key,
-                    model="gemini-flash-latest",  # Use latest flash model (works with free tier)
+                    model=gemini_model,  # Use latest flash model (works with free tier)
+                    models=gemini_models,
                     priority=1,  # Second highest priority (fast, free tier)
                     rate_limit_per_minute=60,
                     rate_limit_per_day=15000000,  # Very high limit
@@ -171,11 +237,13 @@ class LLMProviderManager:
             # Use a reliable free model - try meta-llama/llama-3.2-3b-instruct:free or mistralai/mistral-7b-instruct:free
             # Use fastest free model on OpenRouter
             openrouter_model = os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.2-3b-instruct:free")
+            openrouter_models = _get_model_list("OPENROUTER_MODEL", "OPENROUTER_MODELS", openrouter_model)
             self.providers["openrouter"] = ProviderConfig(
                 name="openrouter",
                 api_key=openrouter_key,
                 base_url="https://openrouter.ai/api/v1",
                 model=openrouter_model,  # Free model - verified working
+                models=openrouter_models,
                 priority=2,  # Third priority (free tier)
                 rate_limit_per_minute=50,
                 rate_limit_per_day=50000,
@@ -198,11 +266,13 @@ class LLMProviderManager:
         if settings.together_api_key:
             # Use faster model if available
             together_model = os.getenv("TOGETHER_MODEL", "mistralai/Mixtral-8x7B-Instruct-v0.1")
+            together_models = _get_model_list("TOGETHER_MODEL", "TOGETHER_MODELS", together_model)
             self.providers["together"] = ProviderConfig(
                 name="together",
                 api_key=settings.together_api_key,
                 base_url="https://api.together.xyz/v1",
                 model=together_model,
+                models=together_models,
                 priority=3,  # Fourth priority
                 rate_limit_per_minute=40,
                 rate_limit_per_day=100000,
@@ -227,6 +297,7 @@ class LLMProviderManager:
                 name="openai",
                 api_key=settings.openai_api_key,
                 model="gpt-4o-mini",  # Cost-effective
+                models=_get_model_list("OPENAI_MODEL", "OPENAI_MODELS", "gpt-4o-mini"),
                 priority=5,  # Lower priority (paid)
                 rate_limit_per_minute=60,
                 rate_limit_per_day=1000000,
@@ -246,12 +317,22 @@ class LLMProviderManager:
         
         logger.info(f"Initialized {len([p for p in self.providers.values() if p.status == ProviderStatus.AVAILABLE])} LLM providers")
     
-    def _select_best_provider(self) -> Optional[str]:
+    def _select_best_provider(self, use_rotation: bool = False) -> Optional[str]:
         """Select the best available provider based on priority and status."""
         # First, try to recover providers that had errors or rate limits
-        for name, config in self.providers.items():
+        for name, config in list(self.providers.items()):
             if config.status in [ProviderStatus.ERROR, ProviderStatus.RATE_LIMITED, ProviderStatus.UNAVAILABLE]:
                 self._recover_provider(name)
+                # If provider still marked unavailable, try a health check to re-evaluate
+                if config.status != ProviderStatus.AVAILABLE:
+                    healthy = self.check_provider_health(name)
+                    if healthy:
+                        config.status = ProviderStatus.AVAILABLE
+                        config.last_error = None
+                        config.last_error_time = None
+                        logger.info(f"✅ Provider {name} recovered via health check during selection")
+                    else:
+                        logger.debug(f"Provider {name} remains unavailable during selection")
         
         available_providers = [
             (name, config) for name, config in self.providers.items()
@@ -271,13 +352,123 @@ class LLMProviderManager:
             return None
         
         # Sort by priority (lower = better)
-        # Ollama (priority 0) should always be selected first if available
         available_providers.sort(key=lambda x: x[1].priority)
         
-        best_provider = available_providers[0][0]
+        # If rotation enabled, distribute load across cloud providers
+        if use_rotation and len(available_providers) > 1:
+            # Skip Ollama in rotation (too slow for parallel calls)
+            cloud_providers = [p for p in available_providers if p[0] != "ollama"]
+            if cloud_providers:
+                # Rotate through cloud providers
+                if not hasattr(self, '_rotation_counter'):
+                    self._rotation_counter = 0
+                self._rotation_counter += 1
+                selected_idx = self._rotation_counter % len(cloud_providers)
+                best_provider = cloud_providers[selected_idx][0]
+                logger.debug(f"🔄 Rotated to provider: {best_provider} (rotation #{self._rotation_counter})")
+            else:
+                # Fallback to all providers if no cloud providers
+                if not hasattr(self, '_rotation_counter'):
+                    self._rotation_counter = 0
+                self._rotation_counter += 1
+                selected_idx = self._rotation_counter % len(available_providers)
+                best_provider = available_providers[selected_idx][0]
+        else:
+            # Use highest priority provider
+            best_provider = available_providers[0][0]
+        
         self.current_provider = best_provider
         logger.info(f"✅ Selected provider: {best_provider} (priority: {self.providers[best_provider].priority})")
         return best_provider
+
+    def _select_model(self, provider_name: str) -> str:
+        """Round-robin model selection for a provider when multiple models are configured."""
+        config = self.providers[provider_name]
+        if not config.models:
+            return config.model
+        if len(config.models) == 1:
+            return config.models[0]
+        with self._model_lock:
+            counter = self._model_counters.get(provider_name, 0)
+            model = config.models[counter % len(config.models)]
+            self._model_counters[provider_name] = counter + 1
+            return model
+    
+    def get_provider_for_agent(self, agent_name: str, parallel_group: Optional[str] = None) -> Optional[str]:
+        """
+        Get a provider for a specific agent, distributing load across providers.
+        This prevents all agents from hitting the same provider simultaneously.
+        
+        For parallel execution, ensures different agents get different providers.
+        
+        Args:
+            agent_name: Name of the agent (e.g., "technical", "fundamental")
+            parallel_group: Optional group identifier for parallel agents (e.g., "analysis_parallel")
+                          Agents in same group will get different providers
+        
+        Returns:
+            Provider name or None if none available
+        """
+        # Recover providers first
+        for name, config in self.providers.items():
+            if config.status in [ProviderStatus.ERROR, ProviderStatus.RATE_LIMITED, ProviderStatus.UNAVAILABLE]:
+                self._recover_provider(name)
+        
+        # Get available cloud providers (skip Ollama for parallel calls)
+        cloud_providers = [
+            (name, config) for name, config in self.providers.items()
+            if config.status == ProviderStatus.AVAILABLE and name != "ollama"
+        ]
+        
+        if not cloud_providers:
+            # Fallback to all providers including Ollama
+            cloud_providers = [
+                (name, config) for name, config in self.providers.items()
+                if config.status == ProviderStatus.AVAILABLE
+            ]
+        
+        if not cloud_providers:
+            return None
+        
+        # Sort by priority
+        cloud_providers.sort(key=lambda x: x[1].priority)
+        
+        if parallel_group:
+            # For parallel execution, use round-robin within the group
+            # Thread-safe assignment to prevent race conditions
+            with self._assignment_lock:
+                if parallel_group not in self._parallel_assignments:
+                    self._parallel_assignments[parallel_group] = []
+                
+                # Get providers already assigned in this parallel group
+                assigned_providers = set(self._parallel_assignments[parallel_group])
+                
+                # Find providers NOT yet assigned in this group
+                unassigned_providers = [
+                    (name, config) for name, config in cloud_providers
+                    if name not in assigned_providers
+                ]
+                
+                if unassigned_providers:
+                    # Use first unassigned provider
+                    provider = unassigned_providers[0][0]
+                    self._parallel_assignments[parallel_group].append(provider)
+                    logger.info(f"📊 Assigned provider {provider} to agent {agent_name} (parallel group: {parallel_group}, avoiding duplicates)")
+                else:
+                    # All providers assigned, use round-robin
+                    agent_hash = hash(agent_name) % 1000
+                    selected_idx = agent_hash % len(cloud_providers)
+                    provider = cloud_providers[selected_idx][0]
+                    logger.info(f"📊 Assigned provider {provider} to agent {agent_name} (parallel group: {parallel_group}, round-robin fallback)")
+        else:
+            # Use agent name hash to consistently assign provider to agent
+            # This ensures same agent always gets same provider (unless provider fails)
+            agent_hash = hash(agent_name) % 1000
+            selected_idx = agent_hash % len(cloud_providers)
+            provider = cloud_providers[selected_idx][0]
+            logger.debug(f"📊 Assigned provider {provider} to agent {agent_name} (hash: {agent_hash})")
+        
+        return provider
     
     def _check_rate_limit(self, provider_name: str) -> bool:
         """Check if provider is within rate limits."""
@@ -303,11 +494,12 @@ class LLMProviderManager:
         
         return True
     
-    def _update_rate_limit(self, provider_name: str):
-        """Update rate limit counters."""
+    def _update_rate_limit(self, provider_name: str, tokens_used: int = 0):
+        """Update rate limit counters and token usage."""
         config = self.providers[provider_name]
         config.requests_this_minute += 1
         config.requests_today += 1
+        config.tokens_today = getattr(config, 'tokens_today', 0) + tokens_used
         config.last_request_time = datetime.now()
     
     def _handle_provider_error(self, provider_name: str, error: Exception):
@@ -383,6 +575,20 @@ class LLMProviderManager:
             config.last_error = error_str
             config.last_error_time = datetime.now()
             logger.warning(f"Provider {provider_name} error: {error}. Will retry after 5 minutes.")
+
+        # Route an alert for operator visibility (non-blocking)
+        try:
+            from monitoring.alert_router import send_alert
+            alert_type = 'provider_rate_limited' if is_rate_limit else 'provider_error'
+            severity = 'warning' if is_rate_limit else 'critical'
+            details = {
+                'provider': provider_name,
+                'error': error_str,
+                'reset_time': config.last_error_time.isoformat() if config.last_error_time else None
+            }
+            send_alert(alert_type, f"Provider {provider_name} status: {config.status.value}", severity=severity, details=details, source='llm_provider_manager')
+        except Exception as ae:
+            logger.debug(f"Failed to route alert for provider {provider_name}: {ae}")
         
         # Select next best provider
         self._select_best_provider()
@@ -432,6 +638,17 @@ class LLMProviderManager:
                     config.status = ProviderStatus.AVAILABLE
                     config.last_error = None
                     logger.info(f"✅ Provider {provider_name} recovered after {time_since_reset:.0f}s")
+        else:
+            # If there's no last_error_time but status is not AVAILABLE, attempt a quick health check
+            if config.status != ProviderStatus.AVAILABLE:
+                healthy = self.check_provider_health(provider_name)
+                if healthy:
+                    config.status = ProviderStatus.AVAILABLE
+                    config.last_error = None
+                    config.last_error_time = None
+                    logger.info(f"✅ Provider {provider_name} marked healthy by quick check")
+                else:
+                    logger.debug(f"Provider {provider_name} still unhealthy by quick check")
     
     def get_client(self, provider_name: Optional[str] = None) -> Tuple[Any, str]:
         """
@@ -498,23 +715,20 @@ class LLMProviderManager:
         """
         max_retries = len(self.providers)
         last_error = None
-        
+
         for attempt in range(max_retries):
+            self._global_semaphore.acquire()
+            jitter = random.uniform(0.1, 0.6)
+            time.sleep(jitter)
             try:
                 client, provider = self.get_client(provider_name)
                 config = self.providers[provider]
-                
-                # Use specified model or provider default
-                model_name = model or config.model
-                import time
+
+                model_name = model or self._select_model(provider)
                 call_start_time = time.time()
                 logger.info(f"🔄 Attempt {attempt + 1}/{max_retries}: Trying {provider} (model: {model_name})")
-                
-                # Call appropriate API based on provider
-                # Wrap calls without native timeout support with ThreadPoolExecutor
+
                 if provider == "gemini":
-                    # client is the genai module, already configured
-                    # Gemini doesn't support timeout, wrap with ThreadPoolExecutor
                     def _call_gemini():
                         genai_model = client.GenerativeModel(model_name)
                         prompt = f"{system_prompt}\n\n{user_message}"
@@ -526,12 +740,11 @@ class LLMProviderManager:
                             }
                         )
                         return response.text
-                    
+
                     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                         future = executor.submit(_call_gemini)
                         result = future.result(timeout=60.0)
                 elif provider == "groq":
-                    # Groq doesn't support timeout in client, wrap with ThreadPoolExecutor
                     def _call_groq():
                         return client.chat.completions.create(
                             model=model_name,
@@ -542,29 +755,24 @@ class LLMProviderManager:
                             temperature=temperature,
                             max_tokens=max_tokens
                         )
-                    
+
                     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                         future = executor.submit(_call_groq)
                         response = future.result(timeout=60.0)
                         result = response.choices[0].message.content
                 elif provider == "ollama":
-                    # Ollama uses OpenAI-compatible API
-                    # Always use Ollama's configured model, not the generic model from settings
-                    ollama_model = config.model  # Use the model configured for Ollama specifically
+                    ollama_model = config.model
                     logger.debug(f"Using Ollama model: {ollama_model} (requested: {model_name})")
-                    
-                    # Ollama doesn't handle parallel requests well - limit concurrency
-                    # Initialize semaphore if not exists (limit to 2 concurrent calls)
+
                     if self._ollama_semaphore is None:
                         import threading
-                        self._ollama_semaphore = threading.Semaphore(2)  # Max 2 parallel Ollama calls
-                    
+                        self._ollama_semaphore = threading.Semaphore(2)
+
                     def _call_ollama():
-                        # Acquire semaphore to limit parallel calls
                         with self._ollama_semaphore:
-                            logger.debug(f"Ollama call starting (semaphore acquired)")
+                            logger.debug("Ollama call starting (semaphore acquired)")
                             return client.chat.completions.create(
-                                model=ollama_model,  # Use Ollama-specific model, not settings.llm_model
+                                model=ollama_model,
                                 messages=[
                                     {"role": "system", "content": system_prompt},
                                     {"role": "user", "content": user_message}
@@ -572,16 +780,18 @@ class LLMProviderManager:
                                 temperature=temperature,
                                 max_tokens=max_tokens
                             )
-                    
-                    # Use ThreadPoolExecutor timeout for Ollama (handles hangs better)
+
                     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                         future = executor.submit(_call_ollama)
                         try:
-                            response = future.result(timeout=60.0)  # 60 second timeout
+                            response = future.result(timeout=30.0)
                             result = response.choices[0].message.content
                         except concurrent.futures.TimeoutError:
-                            logger.error(f"❌ Ollama call timed out after 60 seconds")
-                            raise TimeoutError("Ollama call timed out after 60 seconds")
+                            logger.error("❌ Ollama call timed out after 30 seconds")
+                            self.providers["ollama"].status = ProviderStatus.UNAVAILABLE
+                            self.providers["ollama"].last_error = "Timeout after 30 seconds"
+                            self.providers["ollama"].last_error_time = datetime.now()
+                            raise TimeoutError("Ollama call timed out after 30 seconds")
                 elif provider in ["openrouter", "together", "openai"]:
                     response = client.chat.completions.create(
                         model=model_name,
@@ -595,45 +805,53 @@ class LLMProviderManager:
                     result = response.choices[0].message.content
                 else:
                     raise ValueError(f"Unsupported provider: {provider}")
-                
-                # Update rate limit
-                self._update_rate_limit(provider)
-                
+
+                # Estimate tokens used (simple heuristic) and update rate/token counters
+                tokens_used = max(1, len((system_prompt + user_message).split()) + len(str(result).split()))
+                try:
+                    self._update_rate_limit(provider, tokens_used=tokens_used)
+                except Exception:
+                    # Fallback to safe update
+                    self._update_rate_limit(provider, tokens_used=0)
+
                 call_elapsed = time.time() - call_start_time
-                logger.info(f"✅ LLM call successful via {provider} (model: {model_name}) in {call_elapsed:.1f}s")
+                logger.info(f"✅ LLM call successful via {provider} (model: {model_name}) in {call_elapsed:.1f}s, tokens_est={tokens_used}")
                 return result
-                
+
             except concurrent.futures.TimeoutError as e:
                 last_error = e
-                error_msg = f"Timeout after 60 seconds"
                 current_provider = provider if 'provider' in locals() else (provider_name or "unknown")
-                logger.error(f"❌ Provider {current_provider} timed out after 60 seconds")
-                # Mark as error and try next provider
+                logger.error(f"❌ Provider {current_provider} timed out")
                 if current_provider in self.providers:
                     self._handle_provider_error(current_provider, e)
-                # Try next provider
+                    if current_provider == "ollama":
+                        self.providers["ollama"].status = ProviderStatus.UNAVAILABLE
+                        logger.warning("⚠️ Skipping Ollama for future calls (too slow)")
                 provider_name = None
                 if attempt < max_retries - 1:
                     next_provider = self._select_best_provider()
+                    if next_provider == "ollama" and current_provider == "ollama":
+                        cloud_providers = [p for p in self.providers.keys()
+                                          if p not in ["ollama", current_provider]
+                                          and self.providers[p].status == ProviderStatus.AVAILABLE]
+                        if cloud_providers:
+                            next_provider = cloud_providers[0]
+                            logger.info(f"🔄 Skipping Ollama, switching to cloud provider: {next_provider}")
                     if next_provider and next_provider != current_provider:
                         logger.info(f"🔄 Switching to provider: {next_provider} after timeout")
                         continue
                     else:
-                        logger.error(f"No alternative provider available after timeout.")
+                        logger.error("No alternative provider available after timeout.")
                         break
                 else:
                     break
             except Exception as e:
                 last_error = e
                 error_msg = str(e)
-                
-                # Get provider name safely (might not be set if get_client failed)
                 current_provider = provider if 'provider' in locals() else (provider_name or "unknown")
-                
-                # Check if it's a model-specific error (like 404)
+
                 if "404" in error_msg or "No endpoints found" in error_msg or "model" in error_msg.lower():
                     logger.error(f"Provider {current_provider} model error: {error_msg}")
-                    # Mark provider as unavailable and try next
                     if current_provider in self.providers:
                         self.providers[current_provider].status = ProviderStatus.UNAVAILABLE
                         self.providers[current_provider].last_error = error_msg
@@ -642,28 +860,53 @@ class LLMProviderManager:
                     logger.warning(f"⚠️ Provider {current_provider} failed: {error_msg[:200]}. Trying next provider...")
                     if current_provider in self.providers:
                         self._handle_provider_error(current_provider, e)
-                
-                # Try next provider
-                provider_name = None  # Let it select best available
+
+                provider_name = None
                 if attempt < max_retries - 1:
-                    # Select next best provider
                     next_provider = self._select_best_provider()
                     if next_provider and next_provider != current_provider:
                         logger.info(f"🔄 Switching to provider: {next_provider}")
                         continue
                     else:
-                        logger.error(f"No alternative provider available. All providers failed.")
+                        logger.error("No alternative provider available. All providers failed.")
                         break
                 else:
                     break
-        
-        # All providers failed - provide helpful error message
+            finally:
+                try:
+                    self._global_semaphore.release()
+                except Exception:
+                    pass
+
         error_details = []
         for name, config in self.providers.items():
             if config.last_error:
                 error_details.append(f"{name}: {config.last_error}")
-        
+
         error_summary = "\n".join(error_details) if error_details else str(last_error)
+        
+        # FINAL FALLBACK: Try our multi-provider API manager with Cohere, AI21, etc.
+        logger.warning("🔄 All existing providers failed. Trying multi-provider fallback...")
+        try:
+            from utils.request_router import RequestRouter
+            fallback_router = RequestRouter()
+            
+            # Combine system and user messages
+            combined_prompt = f"{system_prompt}\n\n{user_message}"
+            
+            fallback_result = fallback_router.make_llm_request(
+                prompt=combined_prompt,
+                max_tokens=max_tokens,
+                temperature=temperature
+            )
+            
+            logger.info(f"✅ Multi-provider fallback successful via {fallback_result['provider']}")
+            return fallback_result['response']['text']
+            
+        except Exception as fallback_error:
+            logger.error(f"❌ Multi-provider fallback also failed: {fallback_error}")
+            # Continue with original error
+        
         raise RuntimeError(f"All LLM providers failed. Last error: {last_error}\nProvider errors:\n{error_summary}")
     
     def get_provider_status(self) -> Dict[str, Dict[str, Any]]:
@@ -677,11 +920,91 @@ class LLMProviderManager:
                 "requests_this_minute": config.requests_this_minute,
                 "rate_limit_per_minute": config.rate_limit_per_minute,
                 "rate_limit_per_day": config.rate_limit_per_day,
+                "tokens_today": getattr(config, 'tokens_today', 0),
+                "daily_token_quota": getattr(config, 'daily_token_quota', None),
                 "last_error": config.last_error,
                 "last_error_time": config.last_error_time.isoformat() if config.last_error_time else None,
                 "is_current": name == self.current_provider
+            }        
+        # Add multi-provider fallback status
+        try:
+            from utils.request_router import RequestRouter
+            router = RequestRouter()
+            multi_stats = router.get_stats()
+            
+            status["multi_provider_fallback"] = {
+                "status": "available",
+                "providers": {
+                    name: {
+                        "usage": info["usage"],
+                        "limit": info["limit"],
+                        "usage_percent": info["usage_percent"],
+                        "has_key": info["has_key"],
+                        "model": info["model"]
+                    }
+                    for name, info in multi_stats.items()
+                },
+                "description": "Cohere, AI21, Groq, HuggingFace, OpenAI, Google fallback"
             }
+        except Exception as e:
+            status["multi_provider_fallback"] = {
+                "status": "error",
+                "error": str(e)
+            }
+        
         return status
+
+    def check_provider_health(self, provider_name: str, timeout: int = 5) -> bool:
+        """Quick health check for a provider by making a lightweight call or ping.
+
+        Returns True if healthy, False otherwise.
+        """
+        if provider_name not in self.providers:
+            return False
+        config = self.providers[provider_name]
+        try:
+            # For Ollama, check tags endpoint
+            if provider_name == 'ollama' and config.base_url:
+                import httpx
+                r = httpx.get(f"{config.base_url}/api/tags", timeout=timeout)
+                return r.status_code == 200
+
+            # For cloud providers, make a tiny request (non-blocking) via client if available
+            client = self.provider_clients.get(provider_name)
+            if client is None:
+                return False
+
+            # Try to call a minimal API with very small max_tokens
+            try:
+                # Use API-specific lightweight pattern
+                if provider_name in ['openai', 'openrouter', 'together']:
+                    response = client.chat.completions.create(
+                        model=config.model,
+                        messages=[{"role": "system", "content": "health check"}, {"role": "user", "content": "ping"}],
+                        max_tokens=1
+                    )
+                    return True if getattr(response, 'choices', None) else True
+                elif provider_name == 'groq':
+                    # Groq: call chat.completions.create with minimal tokens
+                    response = client.chat.completions.create(
+                        model=config.model,
+                        messages=[{"role": "system", "content": "health check"}, {"role": "user", "content": "ping"}],
+                        max_tokens=1
+                    )
+                    return True
+                elif provider_name == 'gemini':
+                    mg = client.GenerativeModel(config.model)
+                    r = mg.generate_content('ping', generation_config={"max_output_tokens": 1})
+                    return True
+                else:
+                    # Unknown provider - assume unhealthy
+                    return False
+            except Exception as e:
+                logger.debug(f"Health check call failed for {provider_name}: {e}")
+                return False
+        except Exception as e:
+            logger.debug(f"Health check error for {provider_name}: {e}")
+            return False
 
 
 # Global instance

@@ -49,7 +49,7 @@ class TradingConfig(BaseModel):
     llm_provider: str = Field(default="groq")  # "groq", "openai", "azure", "ollama", "huggingface", "together", "gemini"
     llm_model: str = Field(default="llama-3.3-70b-versatile")  # Model name varies by provider
     llm_temperature: float = Field(default=0.3)  # Lower temperature for more deterministic outputs
-    max_tokens: int = Field(default=2000)
+    max_tokens: int = Field(default=4000)  # Increased for structured JSON outputs (raised to 4000)
     
     # Market Data - Instrument Configuration
     instrument_symbol: str = Field(default="NIFTY BANK")  # Trading symbol (e.g., NIFTY BANK, BTC-USD)
@@ -80,6 +80,9 @@ class TradingConfig(BaseModel):
     news_update_interval_minutes: int = Field(default=5)
     sentiment_update_interval_minutes: int = Field(default=10)
     
+    # Trading Loop Configuration
+    trading_loop_interval_seconds: int = Field(default=900)  # 15 minutes - agent discussions inform trading decisions
+    
     # Monitoring
     enable_alerts: bool = Field(default=True)
     slack_webhook_url: Optional[str] = Field(default=None)
@@ -88,9 +91,24 @@ class TradingConfig(BaseModel):
     # Paper Trading
     paper_trading_mode: bool = Field(default=True)  # Start in paper trading mode
     
+    # Feature Flags for Staged Rollout
+    enable_json_validation: bool = Field(default=True)  # Enable JSON completeness validation
+    enable_circuit_breaker: bool = Field(default=True)  # Enable circuit breaker for providers/endpoints
+    enable_provider_health_checks: bool = Field(default=True)  # Enable background provider health checks
+    enable_token_quota_enforcement: bool = Field(default=True)  # Enable token quota tracking and alerts
+    enable_field_aliasing: bool = Field(default=True)  # Enable camelCase field aliases in API responses
+    enable_schema_validation: bool = Field(default=False)  # Enable MongoDB schema validation (moderate mode)
+    llm_health_check_interval: int = Field(default=60)  # Provider health check interval (seconds)
+    
     # Logging
     log_level: str = Field(default="INFO")
     log_file: Optional[str] = Field(default=None)
+    
+    # Feature Flags (for gradual rollout)
+    enable_json_validation_retry: bool = Field(default=True)  # Retry incomplete JSON responses
+    enable_circuit_breaker: bool = Field(default=True)  # Circuit breaker for providers/endpoints
+    enable_health_monitoring: bool = Field(default=True)  # Background health checks for LLM providers
+    enable_token_quota_enforcement: bool = Field(default=False)  # Block requests when quota exceeded (default off)
     
     @classmethod
     def from_env(cls) -> "TradingConfig":
@@ -133,7 +151,7 @@ class TradingConfig(BaseModel):
             llm_provider=os.getenv("LLM_PROVIDER", "groq"),
             llm_model=os.getenv("LLM_MODEL", "llama-3.3-70b-versatile"),
             llm_temperature=float(os.getenv("LLM_TEMPERATURE", "0.3")),
-            max_tokens=int(os.getenv("MAX_TOKENS", "2000")),
+            max_tokens=int(os.getenv("MAX_TOKENS", "4000")),
             
             # Market Data - Instrument Configuration
             instrument_symbol=os.getenv("INSTRUMENT_SYMBOL", "NIFTY BANK"),
@@ -164,6 +182,9 @@ class TradingConfig(BaseModel):
             news_update_interval_minutes=int(os.getenv("NEWS_UPDATE_INTERVAL_MINUTES", "5")),
             sentiment_update_interval_minutes=int(os.getenv("SENTIMENT_UPDATE_INTERVAL_MINUTES", "10")),
             
+            # Trading Loop Configuration
+            trading_loop_interval_seconds=int(os.getenv("TRADING_LOOP_INTERVAL_SECONDS", "900")),  # Default: 15 minutes
+            
             # Monitoring
             enable_alerts=os.getenv("ENABLE_ALERTS", "true").lower() == "true",
             slack_webhook_url=os.getenv("SLACK_WEBHOOK_URL"),
@@ -175,6 +196,12 @@ class TradingConfig(BaseModel):
             # Logging
             log_level=os.getenv("LOG_LEVEL", "INFO"),
             log_file=os.getenv("LOG_FILE"),
+            
+            # Feature Flags
+            enable_json_validation_retry=os.getenv("ENABLE_JSON_VALIDATION_RETRY", "true").lower() == "true",
+            enable_circuit_breaker=os.getenv("ENABLE_CIRCUIT_BREAKER", "true").lower() == "true",
+            enable_health_monitoring=os.getenv("ENABLE_HEALTH_MONITORING", "true").lower() == "true",
+            enable_token_quota_enforcement=os.getenv("ENABLE_TOKEN_QUOTA_ENFORCEMENT", "false").lower() == "true",
         )
 
 

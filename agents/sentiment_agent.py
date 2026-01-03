@@ -68,14 +68,37 @@ Analyze the market sentiment and provide your assessment.
             
             analysis = self._call_llm_structured(prompt, response_format)
             
-            retail_sent = analysis.get('retail_sentiment', 0.0)
-            inst_sent = analysis.get('institutional_sentiment', 0.0)
-            divergence = analysis.get('sentiment_divergence', 'NONE')
+            # Ensure all values are proper types (handle string returns from LLM)
+            retail_sent = float(analysis.get('retail_sentiment', 0.0) or 0.0)
+            inst_sent = float(analysis.get('institutional_sentiment', 0.0) or 0.0)
+            divergence = str(analysis.get('sentiment_divergence', 'NONE') or 'NONE')
+            options_flow = str(analysis.get('options_flow_signal', 'NEUTRAL') or 'NEUTRAL')
+            fear_greed = float(analysis.get('fear_greed_index', 50) or 50)
+            confidence = float(analysis.get('confidence_score', 0.3) or 0.3)
             
-            explanation = f"Sentiment analysis: retail {retail_sent:.2f}, "
-            explanation += f"institutional {inst_sent:.2f}, "
-            explanation += f"divergence: {divergence}"
+            # Build human-readable explanation with points and reasoning
+            retail_desc = "bullish" if retail_sent > 0.2 else "bearish" if retail_sent < -0.2 else "neutral"
+            inst_desc = "bullish" if inst_sent > 0.2 else "bearish" if inst_sent < -0.2 else "neutral"
+            fear_greed_desc = "extreme greed" if fear_greed > 75 else "greed" if fear_greed > 55 else "neutral" if fear_greed > 45 else "fear" if fear_greed > 25 else "extreme fear"
             
+            points = [
+                ("Retail Sentiment", f"{retail_sent:.2f} ({retail_desc})",
+                 f"Retail investor sentiment based on news and social media"),
+                ("Institutional Sentiment", f"{inst_sent:.2f} ({inst_desc})",
+                 f"Institutional investor sentiment based on positioning"),
+                ("Sentiment Divergence", divergence,
+                 f"{'No divergence' if divergence == 'NONE' else 'Divergence detected'} between retail and institutional"),
+                ("Options Flow", options_flow,
+                 f"Options market sentiment signal"),
+                ("Fear & Greed Index", f"{fear_greed:.0f} ({fear_greed_desc})",
+                 f"Market sentiment indicator (0=extreme fear, 100=extreme greed)"),
+                ("Confidence", f"{confidence:.0%}",
+                 f"Analysis confidence based on data availability")
+            ]
+            
+            summary = f"Overall: {retail_desc} retail sentiment, {inst_desc} institutional sentiment"
+            
+            explanation = self.format_explanation("Sentiment Analysis", points, summary)
             self.update_state(state, analysis, explanation)
         
         except Exception as e:
