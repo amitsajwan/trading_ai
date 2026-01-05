@@ -74,6 +74,15 @@ class LLMProviderManager:
         self._parallel_assignments: Dict[str, List[str]] = {}
         # Lock for thread-safe parallel assignment
         self._assignment_lock = threading.Lock()
+        # Selection strategy: random | round_robin | weighted | hash
+        self.selection_strategy: str = os.getenv("LLM_SELECTION_STRATEGY", "random").lower()
+        # Provider usage counters (for metrics and to avoid hammering one provider)
+        self.provider_usage_counter: Dict[str, int] = {}
+        # Per-provider recent usage timestamps for soft throttling
+        self._usage_times: Dict[str, List[datetime]] = {}
+        self._usage_lock = threading.Lock()
+        # Soft throttle threshold per minute (skip providers temporarily when exceeded)
+        self._soft_throttle_per_min = int(os.getenv("LLM_SOFT_THROTTLE", "20"))
         # Health check thread control
         self._health_check_interval = int(os.getenv("LLM_HEALTH_CHECK_INTERVAL", "60"))
         self._stop_health_thread = threading.Event()
@@ -206,7 +215,7 @@ class LLMProviderManager:
             try:
                 # Quick check if module exists before trying to initialize
                 import importlib
-                importlib.import_module("google.generativeai")
+                importlib.import_module("google.genai")
                 
                 gemini_model = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
                 gemini_models = _get_model_list("GEMINI_MODEL", "GEMINI_MODELS", gemini_model)
@@ -220,7 +229,7 @@ class LLMProviderManager:
                     rate_limit_per_day=15000000,  # Very high limit
                     cost_per_1k_tokens=0.0
                 )
-                import google.generativeai as genai
+                import google.genai as genai
                 genai.configure(api_key=settings.google_api_key)
                 self.provider_clients["gemini"] = genai
                 logger.info("✅ Google Gemini provider initialized")
@@ -315,6 +324,76 @@ class LLMProviderManager:
                 logger.warning(f"Failed to initialize OpenAI: {e}")
                 self.providers["openai"].status = ProviderStatus.UNAVAILABLE
         
+        # Cohere (if configured)
+        if settings.cohere_api_key:
+            cohere_model = os.getenv("COHERE_MODEL", "command")
+            cohere_models = _get_model_list("COHERE_MODEL", "COHERE_MODELS", cohere_model)
+            self.providers["cohere"] = ProviderConfig(
+                name="cohere",
+                api_key=settings.cohere_api_key,
+                model=cohere_model,
+                models=cohere_models,
+                priority=6,  # Lower priority (paid)
+                rate_limit_per_minute=100,
+                rate_limit_per_day=5000000,
+                cost_per_1k_tokens=0.0  # Free tier available
+            )
+            try:
+                import cohere
+                self.provider_clients["cohere"] = cohere.Client(api_key=settings.cohere_api_key)
+                logger.info("✅ Cohere provider initialized")
+            except ImportError:
+                logger.debug("Cohere library not installed, skipping")
+            except Exception as e:
+                logger.warning(f"Failed to initialize Cohere: {e}")
+                self.providers["cohere"].status = ProviderStatus.UNAVAILABLE
+        
+        # AI21 (if configured)
+        if settings.ai21_api_key:
+            ai21_model = os.getenv("AI21_MODEL", "j2-mid")
+            ai21_models = _get_model_list("AI21_MODEL", "AI21_MODELS", ai21_model)
+            self.providers["ai21"] = ProviderConfig(
+                name="ai21",
+                api_key=settings.ai21_api_key,
+                model=ai21_model,
+                models=ai21_models,
+                priority=7,  # Lower priority (paid)
+                rate_limit_per_minute=60,
+                rate_limit_per_day=300000,
+                cost_per_1k_tokens=0.0  # Free tier available
+            )
+            try:
+                import requests
+                # AI21 uses REST API, no special client needed
+                self.provider_clients["ai21"] = None  # Will use requests directly
+                logger.info("✅ AI21 provider initialized")
+            except Exception as e:
+                logger.warning(f"Failed to initialize AI21: {e}")
+                self.providers["ai21"].status = ProviderStatus.UNAVAILABLE
+        
+        # HuggingFace (if configured)
+        if settings.huggingface_api_key:
+            huggingface_model = os.getenv("HUGGINGFACE_MODEL", "microsoft/DialoGPT-medium")
+            huggingface_models = _get_model_list("HUGGINGFACE_MODEL", "HUGGINGFACE_MODELS", huggingface_model)
+            self.providers["huggingface"] = ProviderConfig(
+                name="huggingface",
+                api_key=settings.huggingface_api_key,
+                model=huggingface_model,
+                models=huggingface_models,
+                priority=8,  # Lowest priority (free but slower)
+                rate_limit_per_minute=30,
+                rate_limit_per_day=30000,
+                cost_per_1k_tokens=0.0  # Free
+            )
+            try:
+                import requests
+                # HuggingFace uses REST API, no special client needed
+                self.provider_clients["huggingface"] = None  # Will use requests directly
+                logger.info("✅ HuggingFace provider initialized")
+            except Exception as e:
+                logger.warning(f"Failed to initialize HuggingFace: {e}")
+                self.providers["huggingface"].status = ProviderStatus.UNAVAILABLE
+        
         logger.info(f"Initialized {len([p for p in self.providers.values() if p.status == ProviderStatus.AVAILABLE])} LLM providers")
     
     def _select_best_provider(self, use_rotation: bool = False) -> Optional[str]:
@@ -393,6 +472,42 @@ class LLMProviderManager:
             model = config.models[counter % len(config.models)]
             self._model_counters[provider_name] = counter + 1
             return model
+
+    # --- Usage tracking & soft throttling helpers ---
+    def _record_usage(self, provider_name: str):
+        """Record a timestamped selection for a provider and increment counters.
+
+        Also persist a rolling counter in MongoDB so the dashboard (in a separate process)
+        can surface usage_counts across services.
+        """
+        now = datetime.now()
+        with self._usage_lock:
+            self._usage_times.setdefault(provider_name, []).append(now)
+        self.provider_usage_counter[provider_name] = self.provider_usage_counter.get(provider_name, 0) + 1
+        # Persist to MongoDB (best-effort)
+        try:
+            from mongodb_schema import get_mongo_client, get_collection
+            client = get_mongo_client()
+            db = client[settings.mongodb_db_name]
+            coll = get_collection(db, 'llm_usage')
+            coll.update_one({'_id': 'counters'}, {'$inc': {provider_name: 1}, '$set': {'timestamp': datetime.utcnow().isoformat()}}, upsert=True)
+        except Exception:
+            # Non-fatal - persistence is best-effort
+            pass
+
+    def _clean_usage(self, provider_name: str):
+        """Remove timestamps older than one minute for provider throttling."""
+        cutoff = datetime.now() - timedelta(seconds=60)
+        with self._usage_lock:
+            times = self._usage_times.get(provider_name, [])
+            self._usage_times[provider_name] = [t for t in times if t >= cutoff]
+
+    def _is_throttled(self, provider_name: str) -> bool:
+        """Return True if provider has exceeded soft throttle threshold in the last minute."""
+        self._clean_usage(provider_name)
+        with self._usage_lock:
+            cnt = len(self._usage_times.get(provider_name, []))
+        return cnt >= self._soft_throttle_per_min
     
     def get_provider_for_agent(self, agent_name: str, parallel_group: Optional[str] = None) -> Optional[str]:
         """
@@ -419,6 +534,24 @@ class LLMProviderManager:
             (name, config) for name, config in self.providers.items()
             if config.status == ProviderStatus.AVAILABLE and name != "ollama"
         ]
+
+        # Soft throttling: avoid providers approaching their minute rate limit
+        try:
+            throttle_factor = float(os.getenv("LLM_SOFT_THROTTLE_FACTOR", "0.8"))
+        except Exception:
+            throttle_factor = 0.8
+        def _is_throttled(cfg: ProviderConfig):
+            if not cfg.minute_window_start:
+                return False
+            allowed = max(1, int(cfg.rate_limit_per_minute * throttle_factor))
+            return getattr(cfg, 'requests_this_minute', 0) >= allowed
+
+        # Filter out providers currently above the soft throttle threshold
+        available_filtered = [(n,c) for (n,c) in cloud_providers if not _is_throttled(c)]
+        if not available_filtered and cloud_providers:
+            # If all providers are throttled, fall back to original list (we will let rate-limit checks handle it later)
+            available_filtered = cloud_providers
+        cloud_providers = available_filtered
         
         if not cloud_providers:
             # Fallback to all providers including Ollama
@@ -430,6 +563,11 @@ class LLMProviderManager:
         if not cloud_providers:
             return None
         
+        # Apply soft-throttle: filter out providers that exceeded recent usage
+        available_filtered = [(n, c) for (n, c) in cloud_providers if not self._is_throttled(n)]
+        if available_filtered:
+            cloud_providers = available_filtered
+        # If all providers are throttled, fall back to original list to avoid total blockage
         # Sort by priority
         cloud_providers.sort(key=lambda x: x[1].priority)
         
@@ -450,24 +588,73 @@ class LLMProviderManager:
                 ]
                 
                 if unassigned_providers:
-                    # Use first unassigned provider
-                    provider = unassigned_providers[0][0]
+                    # Choose a random unassigned provider to distribute load within the group
+                    provider = random.choice(unassigned_providers)[0]
                     self._parallel_assignments[parallel_group].append(provider)
-                    logger.info(f"📊 Assigned provider {provider} to agent {agent_name} (parallel group: {parallel_group}, avoiding duplicates)")
+                    # Record usage and persist counters
+                    try:
+                        self._record_usage(provider)
+                    except Exception:
+                        pass
+                    logger.info(f"📊 Assigned provider {provider} to agent {agent_name} (parallel group: {parallel_group}, avoiding duplicates, strategy={self.selection_strategy})")
                 else:
-                    # All providers assigned, use round-robin
-                    agent_hash = hash(agent_name) % 1000
-                    selected_idx = agent_hash % len(cloud_providers)
-                    provider = cloud_providers[selected_idx][0]
-                    logger.info(f"📊 Assigned provider {provider} to agent {agent_name} (parallel group: {parallel_group}, round-robin fallback)")
+                    # All providers assigned, pick using configured strategy
+                    strategy = self.selection_strategy
+                    names = [p[0] for p in cloud_providers]
+                    if strategy == 'round_robin':
+                        if not hasattr(self, '_rotation_counter'):
+                            self._rotation_counter = 0
+                        self._rotation_counter += 1
+                        provider = names[self._rotation_counter % len(names)]
+                    elif strategy == 'weighted':
+                        # Inverse priority weighting (lower priority -> higher weight)
+                        weights = [1.0 / (p[1].priority + 1) for p in cloud_providers]
+                        provider = random.choices(names, weights=weights, k=1)[0]
+                    elif strategy == 'hash':
+                        agent_hash = hash(agent_name) % 1000
+                        selected_idx = agent_hash % len(names)
+                        provider = names[selected_idx]
+                    else:  # default: random
+                        provider = random.choice(names)
+                    # Record usage and persist counters
+                    try:
+                        self._record_usage(provider)
+                    except Exception:
+                        pass
+                    logger.info(f"📊 Assigned provider {provider} to agent {agent_name} (parallel group: {parallel_group}, strategy={strategy})")
         else:
-            # Use agent name hash to consistently assign provider to agent
-            # This ensures same agent always gets same provider (unless provider fails)
-            agent_hash = hash(agent_name) % 1000
-            selected_idx = agent_hash % len(cloud_providers)
-            provider = cloud_providers[selected_idx][0]
-            logger.debug(f"📊 Assigned provider {provider} to agent {agent_name} (hash: {agent_hash})")
-        
+            # Use configured strategy to select provider for non-parallel calls
+            strategy = self.selection_strategy
+            names = [p[0] for p in cloud_providers]
+            if strategy == 'round_robin':
+                if not hasattr(self, '_rotation_counter'):
+                    self._rotation_counter = 0
+                self._rotation_counter += 1
+                provider = names[self._rotation_counter % len(names)]
+                logger.debug(f"📊 Assigned provider {provider} to agent {agent_name} (round_robin, rotation #{self._rotation_counter})")
+            elif strategy == 'weighted':
+                # Inverse priority weighting (lower priority -> higher weight)
+                weights = [1.0 / (p[1].priority + 1) for p in cloud_providers]
+                provider = random.choices(names, weights=weights, k=1)[0]
+                logger.debug(f"📊 Assigned provider {provider} to agent {agent_name} (weighted selection)")
+            elif strategy == 'hash':
+                agent_hash = hash(agent_name) % 1000
+                selected_idx = agent_hash % len(names)
+                provider = names[selected_idx]
+                logger.debug(f"📊 Assigned provider {provider} to agent {agent_name} (hash: {agent_hash})")
+            else:  # default: random
+                provider = random.choice(names)
+                logger.debug(f"📊 Assigned provider {provider} to agent {agent_name} (random)")
+
+        # Record usage and track counts for metrics and throttling
+        try:
+            self._record_usage(provider)
+        except Exception:
+            # Fallback increment if record fails
+            try:
+                self.provider_usage_counter[provider] = self.provider_usage_counter.get(provider, 0) + 1
+            except Exception:
+                pass
         return provider
     
     def _check_rate_limit(self, provider_name: str) -> bool:
@@ -803,6 +990,47 @@ class LLMProviderManager:
                         max_tokens=max_tokens
                     )
                     result = response.choices[0].message.content
+                elif provider == "cohere":
+                    import cohere
+                    co = cohere.Client(api_key=config.api_key)
+                    response = co.generate(
+                        model=model_name,
+                        prompt=f"{system_prompt}\n\n{user_message}",
+                        max_tokens=max_tokens,
+                        temperature=temperature,
+                        num_generations=1
+                    )
+                    result = response.generations[0].text
+                elif provider == "ai21":
+                    import requests
+                    url = f"https://api.ai21.com/studio/v1/{model_name}/complete"
+                    headers = {
+                        "Authorization": f"Bearer {config.api_key}",
+                        "Content-Type": "application/json"
+                    }
+                    data = {
+                        "prompt": f"{system_prompt}\n\n{user_message}",
+                        "maxTokens": max_tokens,
+                        "temperature": temperature
+                    }
+                    response = requests.post(url, headers=headers, json=data, timeout=60)
+                    response.raise_for_status()
+                    result = response.json()["completions"][0]["data"]["text"]
+                elif provider == "huggingface":
+                    import requests
+                    api_url = f"https://api-inference.huggingface.co/models/{model_name}"
+                    headers = {"Authorization": f"Bearer {config.api_key}"}
+                    data = {
+                        "inputs": f"{system_prompt}\n\n{user_message}",
+                        "parameters": {
+                            "max_new_tokens": max_tokens,
+                            "temperature": temperature,
+                            "do_sample": True
+                        }
+                    }
+                    response = requests.post(api_url, headers=headers, json=data, timeout=60)
+                    response.raise_for_status()
+                    result = response.json()[0]["generated_text"]
                 else:
                     raise ValueError(f"Unsupported provider: {provider}")
 
@@ -995,6 +1223,47 @@ class LLMProviderManager:
                 elif provider_name == 'gemini':
                     mg = client.GenerativeModel(config.model)
                     r = mg.generate_content('ping', generation_config={"max_output_tokens": 1})
+                    return True
+                elif provider_name == 'cohere':
+                    import cohere
+                    co = cohere.Client(api_key=config.api_key)
+                    response = co.generate(
+                        model=config.model,
+                        prompt="ping",
+                        max_tokens=1,
+                        temperature=0.0,
+                        num_generations=1
+                    )
+                    return True
+                elif provider_name == 'ai21':
+                    import requests
+                    url = f"https://api.ai21.com/studio/v1/{config.model}/complete"
+                    headers = {
+                        "Authorization": f"Bearer {config.api_key}",
+                        "Content-Type": "application/json"
+                    }
+                    data = {
+                        "prompt": "ping",
+                        "maxTokens": 1,
+                        "temperature": 0.0
+                    }
+                    response = requests.post(url, headers=headers, json=data, timeout=timeout)
+                    response.raise_for_status()
+                    return True
+                elif provider_name == 'huggingface':
+                    import requests
+                    api_url = f"https://api-inference.huggingface.co/models/{config.model}"
+                    headers = {"Authorization": f"Bearer {config.api_key}"}
+                    data = {
+                        "inputs": "ping",
+                        "parameters": {
+                            "max_new_tokens": 1,
+                            "temperature": 0.0,
+                            "do_sample": False
+                        }
+                    }
+                    response = requests.post(api_url, headers=headers, json=data, timeout=timeout)
+                    response.raise_for_status()
                     return True
                 else:
                     # Unknown provider - assume unhealthy

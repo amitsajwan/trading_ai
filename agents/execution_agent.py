@@ -8,6 +8,7 @@ from agents.base_agent import BaseAgent
 from agents.state import AgentState, SignalType
 from config.settings import settings
 from mongodb_schema import get_mongo_client, get_collection
+from utils.signal_validation import validate_trade_signal
 
 logger = logging.getLogger(__name__)
 
@@ -169,6 +170,34 @@ Your role: Place orders via trading API and track execution."""
                 logger.warning("Position size is 0, skipping execution")
                 return state
             
+            # Validate signal before execution
+            overall_confidence = state.bull_confidence if signal_str == "BUY" else state.bear_confidence
+            is_valid, validation_result = validate_trade_signal(
+                signal=signal_str,
+                entry_price=entry_price,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+                confidence=overall_confidence,
+                current_market_price=state.current_price,
+                tolerance_pct=0.50  # Allow 50% deviation (generous for volatile markets)
+            )
+            
+            if not is_valid:
+                error_msg = "; ".join(validation_result["errors"])
+                logger.error(f"Signal validation failed: {error_msg}")
+                logger.error(f"Signal: {signal_str}, Entry: {entry_price}, SL: {stop_loss}, TP: {take_profit}")
+                logger.error(f"Current Price: {state.current_price}, Confidence: {overall_confidence}")
+                state.execution_notes = f"VALIDATION_FAILED: {error_msg}"
+                return state
+            
+            # Log warnings if any
+            if validation_result["warnings"]:
+                for warning in validation_result["warnings"]:
+                    logger.warning(f"Signal validation warning: {warning}")
+            
+            # Use normalized confidence
+            overall_confidence = validation_result["normalized_confidence"]
+            
             # Place order
             if self.paper_trading:
                 order_result = self._place_paper_order(
@@ -188,7 +217,7 @@ Your role: Place orders via trading API and track execution."""
             # Generate trade ID
             state.trade_id = f"TRD_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
             
-            # Store trade in MongoDB
+            # Store trade in MongoDB (overall_confidence already normalized from validation)
             trade_doc = {
                 "trade_id": state.trade_id,
                 "order_id": state.order_id,
@@ -202,6 +231,8 @@ Your role: Place orders via trading API and track execution."""
                 "entry_timestamp": state.execution_timestamp.isoformat(),
                 "status": "OPEN",
                 "paper_trading": order_result["paper_trading"],
+                "confidence": overall_confidence,  # Overall signal confidence (0-1)
+                "instrument": settings.instrument_symbol,
                 "agent_decisions": {
                     "technical": state.technical_analysis,
                     "fundamental": state.fundamental_analysis,

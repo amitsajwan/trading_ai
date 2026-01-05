@@ -41,7 +41,35 @@ Analyze market sentiment from news, social media, and market flow data."""
             # Gather context
             latest_news = state.latest_news[:20] if state.latest_news else []
             aggregate_sentiment = state.sentiment_score
-            
+
+            # Fallback: if we have no recent news, return informative fallback analysis (avoid misleading 0.00 values)
+            if not latest_news:
+                logger.info("No recent news available - setting fallback sentiment reasoning")
+                analysis = {
+                    "retail_sentiment": 0.0,
+                    "retail_sentiment_reasoning": "No recent news available",
+                    "institutional_sentiment": 0.0,
+                    "institutional_sentiment_reasoning": "Insufficient data to assess",
+                    "sentiment_divergence": "NONE",
+                    "options_flow_signal": "NEUTRAL",
+                    "fear_greed_index": 50.0,
+                    "confidence_score": 0.10,
+                    "status": "INSUFFICIENT_DATA"
+                }
+
+                points = [
+                    ("Retail Sentiment", "N/A", "No recent news available"),
+                    ("Institutional Sentiment", "Insufficient data", "Insufficient data to assess"),
+                    ("Sentiment Divergence", "NONE", "No divergence - no news data"),
+                    ("Options Flow", "NEUTRAL", "No options flow signal available"),
+                    ("Fear & Greed Index", "50 (neutral)", "No news to update index"),
+                    ("Confidence", "10%", "Low confidence due to missing news data")
+                ]
+
+                explanation = self.format_explanation("Sentiment Analysis", points, "Insufficient news data to perform detailed sentiment analysis")
+                self.update_state(state, analysis, explanation)
+                return state
+
             # Prepare prompt
             news_headlines = "\n".join([
                 f"- {item.get('title', 'No title')}"
@@ -75,7 +103,22 @@ Analyze the market sentiment and provide your assessment.
             options_flow = str(analysis.get('options_flow_signal', 'NEUTRAL') or 'NEUTRAL')
             fear_greed = float(analysis.get('fear_greed_index', 50) or 50)
             confidence = float(analysis.get('confidence_score', 0.3) or 0.3)
-            
+            status = str(analysis.get('status', 'ACTIVE') or 'ACTIVE')
+
+            # Derive a simple sentiment bias for the near-term
+            if retail_sent > 0.2 and inst_sent >= 0:
+                sentiment_bias = "BULLISH"
+            elif retail_sent < -0.2 and inst_sent <= 0:
+                sentiment_bias = "BEARISH"
+            else:
+                sentiment_bias = "NEUTRAL"
+
+            analysis["sentiment_bias"] = sentiment_bias
+            analysis.setdefault("time_horizon", "INTRADAY_15M")
+
+            # Normalize status when confidence very low
+            if confidence < 0.2 and status == 'ACTIVE':
+                status = 'LOW_CONFIDENCE'            
             # Build human-readable explanation with points and reasoning
             retail_desc = "bullish" if retail_sent > 0.2 else "bearish" if retail_sent < -0.2 else "neutral"
             inst_desc = "bullish" if inst_sent > 0.2 else "bearish" if inst_sent < -0.2 else "neutral"
@@ -83,20 +126,22 @@ Analyze the market sentiment and provide your assessment.
             
             points = [
                 ("Retail Sentiment", f"{retail_sent:.2f} ({retail_desc})",
-                 f"Retail investor sentiment based on news and social media"),
+                 "Retail investor sentiment based on news and social media"),
                 ("Institutional Sentiment", f"{inst_sent:.2f} ({inst_desc})",
-                 f"Institutional investor sentiment based on positioning"),
+                 "Institutional investor sentiment based on positioning"),
                 ("Sentiment Divergence", divergence,
                  f"{'No divergence' if divergence == 'NONE' else 'Divergence detected'} between retail and institutional"),
                 ("Options Flow", options_flow,
-                 f"Options market sentiment signal"),
+                 "Options market sentiment signal"),
                 ("Fear & Greed Index", f"{fear_greed:.0f} ({fear_greed_desc})",
-                 f"Market sentiment indicator (0=extreme fear, 100=extreme greed)"),
+                 "Market sentiment indicator (0=extreme fear, 100=extreme greed)"),
+                ("Sentiment Bias (15m)", sentiment_bias,
+                 "Near-term sentiment tilt from news & flow"),
                 ("Confidence", f"{confidence:.0%}",
-                 f"Analysis confidence based on data availability")
+                 "Analysis confidence based on data availability")
             ]
             
-            summary = f"Overall: {retail_desc} retail sentiment, {inst_desc} institutional sentiment"
+            summary = f"Overall: {retail_desc} retail sentiment, {inst_desc} institutional sentiment ({sentiment_bias} bias, 15m horizon)"
             
             explanation = self.format_explanation("Sentiment Analysis", points, summary)
             self.update_state(state, analysis, explanation)

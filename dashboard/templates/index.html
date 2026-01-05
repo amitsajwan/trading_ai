@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trading Dashboard - {{ INSTRUMENT }}</title>
+    <link rel="stylesheet" href="/static/css/main.css">
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/dompurify/dist/purify.min.js"></script>
+</head>
+<body>
+    <div class="wrapper">
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <div class="sidebar-logo">📊 Trading Pro</div>
+                <div class="sidebar-subtitle">GenAI Dashboard v3</div>
+            </div>
+            <nav class="nav-section">
+                <div class="nav-section-title">Main</div>
+                <div class="nav-item active" onclick="scrollToSection('overview')">📈 Overview</div>
+                <div class="nav-item" onclick="scrollToSection('technicals')">📊 Technicals</div>
+                <div class="nav-item" onclick="scrollToSection('trades')">📋 Trades</div>
+                <div class="nav-item" onclick="scrollToSection('analysis')">🤖 Analysis</div>
+                <div class="nav-item" onclick="scrollToSection('portfolio')">🎯 Portfolio</div>
+            </nav>
+            <nav class="nav-section">
+                <div class="nav-section-title">Tools</div>
+                <div class="nav-item" onclick="loadData()">🔄 Refresh</div>
+            </nav>
+            <div class="sidebar-footer">
+                <div class="status-indicator">
+                    <div class="status-dot"></div>
+                    <span>System Active</span>
+                </div>
+                <button class="btn btn-primary" onclick="toggleTheme()" style="width: 100%;">
+                    🌙 Dark Mode
+                </button>
+            </div>
+        </aside>
+
+        <main class="main">
+            <div class="page-header" id="overview">
+                <h1 class="page-title">Trading Dashboard - {{ INSTRUMENT }}</h1>
+                <div class="header-controls">
+                    <span class="badge badge-success">🟢 Running</span>
+                    <span class="badge badge-warning">📄 Paper Mode</span>
+                    <span style="font-size: 12px; color: white;" id="last-update">Last updated: just now</span>
+                </div>
+            </div>
+
+            <!-- SYSTEM STATUS BANNER -->
+            <div class="card" style="margin-bottom: 1.5rem; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none;">
+                <div class="card-content">
+                    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;">
+                        <div>
+                            <h3 style="margin: 0; color: white; font-size: 1.2rem;">🚀 System Status</h3>
+                            <p style="margin: 0.5rem 0 0 0; opacity: 0.9; font-size: 0.9rem;" id="system-status-text">All systems operational</p>
+                        </div>
+                        <div style="display: flex; gap: 1.5rem; flex-wrap: wrap;">
+                            <div style="text-align: center;">
+                                <div style="font-size: 0.8rem; opacity: 0.8;">LLM Provider</div>
+                                <div style="font-weight: bold; font-size: 1.1rem;" id="llm-provider">Loading...</div>
+                            </div>
+                            <div style="text-align: center;">
+                                <div style="font-size: 0.8rem; opacity: 0.8;">Data Feed</div>
+                                <div style="font-weight: bold; font-size: 1.1rem;" id="data-feed-status">Loading...</div>
+                            </div>
+                            <div style="text-align: center;">
+                                <div style="font-size: 0.8rem; opacity: 0.8;">Agents</div>
+                                <div style="font-weight: bold; font-size: 1.1rem;" id="agents-status">Loading...</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- SIGNAL BANNER -->
+            <div class="signal-banner" id="signal-card">
+                <div class="signal-banner-top">
+                    <div class="signal-info">
+                        <div class="signal-title">
+                            <span id="signal-icon">📊</span>
+                            <span id="signal-text">HOLD</span>
+                        </div>
+                        <div class="signal-subtitle" id="signal-reasoning">Waiting for analysis...</div>
+                    </div>
+                </div>
+                <div class="signal-grid" id="signal-metrics">
+                    <div class="signal-metric">
+                        <div class="signal-metric-label">Confidence</div>
+                        <div class="signal-metric-value" id="signal-conf">-</div>
+                    </div>
+                    <div class="signal-metric">
+                        <div class="signal-metric-label">Entry Price</div>
+                        <div class="signal-metric-value" id="signal-entry">-</div>
+                    </div>
+                    <div class="signal-metric">
+                        <div class="signal-metric-label">Stop Loss</div>
+                        <div class="signal-metric-value" id="signal-sl">-</div>
+                    </div>
+                    <div class="signal-metric">
+                        <div class="signal-metric-label">Take Profit</div>
+                        <div class="signal-metric-value" id="signal-tp">-</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- METRICS GRID -->
+            <div class="dashboard-grid">
+                <div class="card">
+                    <div class="card-header">
+                        <span style="font-size: 18px;">📊</span>
+                        <h3 class="card-title">Market Data</h3>
+                        <div style="font-size: 11px; color: #6b7280; margin-top: 2px;" id="market-timestamp">Loading...</div>
+                    </div>
+                    <div class="card-content">
+                        <div class="metric-row">
+                            <span class="metric-label">Current Price</span>
+                            <span class="metric-value" id="current-price">-</span>
+                        </div>
+                        <div class="metric-row">
+                            <span class="metric-label">24h Change</span>
+                            <span class="metric-value" id="change-24h">-</span>
+                        </div>
+                        <div class="metric-row">
+                            <span class="metric-label">24h Volume</span>
+                            <span class="metric-value" id="volume-24h">-</span>
+                        </div>
+                        <div class="metric-row">
+                            <span class="metric-label">24h High</span>
+                            <span class="metric-value" id="high-24h">-</span>
+                        </div>
+                        <div class="metric-row">
+                            <span class="metric-label">24h Low</span>
+                            <span class="metric-value" id="low-24h">-</span>
+                        </div>
+                        <div class="metric-row">
+                            <span class="metric-label">VWAP</span>
+                            <span class="metric-value" id="vwap">-</span>
+                        </div>
+                        <div class="metric-row">
+                            <span class="metric-label">Status</span>
+                            <span class="metric-value" id="market-status">-</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <span style="font-size: 18px;">💰</span>
+                        <h3 class="card-title">Performance</h3>
+                        <div style="font-size: 11px; color: #6b7280; margin-top: 2px;" id="metrics-timestamp">Loading...</div>
+                    </div>
+                    <div class="card-content">
+                        <div class="metric-row">
+                            <span class="metric-label">Total P&L</span>
+                            <span class="metric-value" id="total-pnl">-</span>
+                        </div>
+                        <div class="metric-row">
+                            <span class="metric-label">Win Rate</span>
+                            <span class="metric-value" id="win-rate">-</span>
+                        </div>
+                        <div class="metric-row">
+                            <span class="metric-label">Total Trades</span>
+                            <span class="metric-value" id="total-trades">-</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <span style="font-size: 18px;">⚠️</span>
+                        <h3 class="card-title">Risk Metrics</h3>
+                        <div style="font-size: 11px; color: #6b7280; margin-top: 2px;" id="risk-timestamp">Loading...</div>
+                    </div>
+                    <div class="card-content">
+                        <div class="metric-row">
+                            <span class="metric-label">Sharpe Ratio</span>
+                            <span class="metric-value" id="sharpe">-</span>
+                        </div>
+                        <div class="metric-row">
+                            <span class="metric-label">Max Drawdown</span>
+                            <span class="metric-value metric-negative" id="drawdown">-</span>
+                        </div>
+                        <div class="metric-row">
+                            <span class="metric-label">VaR (95%)</span>
+                            <span class="metric-value" id="var-95">-</span>
+                        </div>
+                        <div class="metric-row">
+                            <span class="metric-label">Total Exposure</span>
+                            <span class="metric-value" id="total-exposure">-</span>
+                        </div>
+                        <div class="metric-row">
+                            <span class="metric-label">Portfolio Value</span>
+                            <span class="metric-value" id="portfolio-value">-</span>
+                        </div>
+                        <div class="metric-row">
+                            <span class="metric-label">Win/Loss Ratio</span>
+                            <span class="metric-value" id="win-loss-ratio">-</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <span style="font-size: 18px;">🏥</span>
+                        <h3 class="card-title">System Health</h3>
+                    </div>
+                    <div class="card-content" id="health-content">
+                        <div class="loading">Checking...</div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">
+                        <span style="font-size: 18px;">🤖</span>
+                        <h3 class="card-title">LLM Providers</h3>
+                    </div>
+                    <div class="card-content" id="llm-providers-content">
+                        <div class="loading">Loading provider metrics...</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- TRADES SECTION -->
+            <div class="section-full" id="trades">
+                <div class="section-title">📋 Recent Trades</div>
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Time</th>
+                            <th>Signal</th>
+                            <th>Entry</th>
+                            <th>Exit</th>
+                            <th>P&L</th>
+                            <th>Status</th>
+                        </tr>
+                    </thead>
+                    <tbody id="trades-body">
+                        <tr>
+                            <td colspan="6" class="loading">Loading trades...</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+
+            <!-- TECHNICAL INDICATORS SECTION -->
+            <div class="section-full" id="technicals">
+                <div class="section-title">📊 Technical Indicators</div>
+                <div id="technicals-container" class="indicator-grid">
+                    <div class="loading" style="grid-column: 1/-1;">Loading indicators...</div>
+                </div>
+            </div>
+
+            <!-- AGENT ANALYSIS SECTION -->
+            <div class="section-full" id="analysis">
+                <div class="section-title">🤖 Agent Analysis</div>
+                <div id="agents-container" class="agent-grid">
+                    <div class="loading" style="grid-column: 1/-1;">Loading agents...</div>
+                </div>
+            </div>
+
+            <!-- PORTFOLIO SECTION -->
+            <div class="section-full" id="portfolio">
+                <div class="section-title">🎯 Portfolio Positions</div>
+                <table class="data-table">
+                    <thead>
+                        <tr>
+                            <th>Symbol</th>
+                            <th>Size</th>
+                            <th>Entry</th>
+                            <th>Current</th>
+                            <th>P&L</th>
+                        </tr>
+                    </thead>
+                    <tbody id="portfolio-body">
+                        <tr>
+                            <td colspan="5" class="loading">No positions</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        // Pass instrument symbol from backend to JavaScript
+        window.INSTRUMENT_SYMBOL = '{{ INSTRUMENT }}';
+    </script>
+    <script src="/static/js/dashboard.js"></script>
+</body>
+</html>

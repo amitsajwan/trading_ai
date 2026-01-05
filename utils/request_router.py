@@ -348,7 +348,7 @@ class RequestRouter:
     def _call_google(self, api_key: str, prompt: str, max_tokens: int, temperature: float, model: str) -> Dict:
         """Call Google Gemini API"""
         try:
-            import google.generativeai as genai
+            import google.genai as genai
             genai.configure(api_key=api_key)
             model_obj = genai.GenerativeModel(model)
             
@@ -366,7 +366,7 @@ class RequestRouter:
                 "tokens_used": tokens_used
             }
         except ImportError:
-            raise ProviderUnavailableError("Google AI library not installed. Run: pip install google-generativeai")
+            raise ProviderUnavailableError("Google AI library not installed. Run: pip install google-genai")
         except Exception as e:
             err_str = str(e)
             if '429' in err_str or 'rate limit' in err_str.lower():

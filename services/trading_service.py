@@ -194,7 +194,7 @@ class TradingService:
             
             # Initialize news collector (if API key configured)
             self.news_collector = None
-            if settings.news_api_key:
+            if settings.finnhub_api_key or settings.eodhd_api_key:
                 from data.news_collector import NewsCollector
                 self.news_collector = NewsCollector(self.market_memory)
                 logger.info("News collector initialized")

@@ -19,8 +19,8 @@ if sys.platform == "win32":
 parser = argparse.ArgumentParser(description='Start trading system components')
 parser.add_argument('--skip-data-verification', action='store_true',
                    help='Skip real-time data verification (allows starting without live market data)')
-parser.add_argument('--instrument', type=str, default='BTC',
-                   help='Trading instrument (default: BTC)')
+parser.add_argument('--instrument', type=str, default='BANKNIFTY',
+                   help='Trading instrument (default: BANKNIFTY)')
 args = parser.parse_args()
 
 # Add parent directory to path
@@ -799,7 +799,7 @@ def main():
         print("  BANKNIFTY  - Bank Nifty (Indian Market)")
         print("  NIFTY      - Nifty 50 (Indian Market)")
         print("\nOptions:")
-        print("  --instrument <INSTRUMENT>          Trading instrument (default: BTC)")
+        print("  --instrument <INSTRUMENT>          Trading instrument (default: BANKNIFTY)")
         print("  --skip-data-verification           Skip real-time data verification")
         print("\nExamples:")
         print("  python scripts/start_all.py")

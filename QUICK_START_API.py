@@ -121,7 +121,7 @@ manager.reset_provider_usage("groq")
 # ============================================================================
 # INSTALLATION
 # ============================================================================
-# pip install cohere groq openai google-generativeai requests python-dotenv
+# pip install cohere groq openai google-genai requests python-dotenv
 
 
 # ============================================================================

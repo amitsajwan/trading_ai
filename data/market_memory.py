@@ -166,7 +166,7 @@ class MarketMemory:
         }
         self.redis_client.setex(
             key,
-            timedelta(hours=24).total_seconds(),
+            int(timedelta(hours=24).total_seconds()),
             json.dumps(data)
         )
     
@@ -206,7 +206,7 @@ class MarketMemory:
         }
         self.redis_client.setex(
             key,
-            timedelta(hours=24).total_seconds(),
+            int(timedelta(hours=24).total_seconds()),
             json.dumps(data)
         )
     

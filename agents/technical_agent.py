@@ -34,7 +34,7 @@ Analyze OHLC data and provide structured technical analysis."""
             logger.warning("DataFrame is empty, cannot calculate indicators")
             return indicators
         
-        # Use adaptive period based on available data
+        # Use adaptive period based on available data - more flexible minimums
         data_length = len(df)
         rsi_period = min(14, max(2, data_length - 1))  # At least 2, but prefer 14
         atr_period = min(14, max(2, data_length - 1))
@@ -67,7 +67,8 @@ Analyze OHLC data and provide structured technical analysis."""
         
         try:
             # MACD - needs at least 26 periods, but we'll try with available data
-            if data_length >= 26:
+            macd_period = min(26, max(12, data_length // 2))  # Adaptive period
+            if data_length >= macd_period:
                 macd_data = ta.macd(df["close"])
                 if not macd_data.empty and "MACD_12_26_9" in macd_data.columns:
                     macd_line = macd_data["MACD_12_26_9"].iloc[-1]
@@ -82,7 +83,7 @@ Analyze OHLC data and provide structured technical analysis."""
                     indicators["macd"] = None
                     indicators["macd_status"] = "NEUTRAL"
             else:
-                logger.debug(f"Not enough data for MACD (have {data_length}, need 26)")
+                logger.debug(f"Not enough data for MACD (have {data_length}, need {macd_period})")
                 indicators["macd"] = None
                 indicators["macd_status"] = "NEUTRAL"
         except Exception as e:
@@ -173,7 +174,17 @@ Analyze OHLC data and provide structured technical analysis."""
         
         try:
             # Convert OHLC data to DataFrame
-            ohlc_data = state.ohlc_5min if state.ohlc_5min else state.ohlc_1min
+            # Prefer 15-min data for bias over the next 15 minutes,
+            # then fall back to 5-min, then 1-min.
+            if state.ohlc_15min:
+                ohlc_data = state.ohlc_15min
+                analysis_timeframe = "15min"
+            elif state.ohlc_5min:
+                ohlc_data = state.ohlc_5min
+                analysis_timeframe = "5min"
+            else:
+                ohlc_data = state.ohlc_1min
+                analysis_timeframe = "1min"
             if not ohlc_data:
                 logger.warning("No OHLC data available for technical analysis")
                 output = {
@@ -257,7 +268,15 @@ Analyze OHLC data and provide structured technical analysis."""
                 indicators.get('trend_direction') is not None
             ])
             
-            if not has_basic_indicators:
+            # Also check for any calculated indicators
+            has_any_indicators = any([
+                indicators.get('rsi') is not None,
+                indicators.get('macd') is not None,
+                indicators.get('atr') is not None,
+                has_basic_indicators
+            ])
+            
+            if not has_any_indicators:
                 logger.warning(f"Failed to calculate any indicators. DataFrame shape: {df.shape}, columns: {list(df.columns)}")
                 logger.debug(f"First few rows:\n{df.head()}")
                 output = {
@@ -286,7 +305,7 @@ Analyze OHLC data and provide structured technical analysis."""
             
             prompt = f"""
 Current Price: {current_price}
-OHLC 5-min data: {len(ohlc_data)} candles
+Primary OHLC timeframe: {analysis_timeframe} ({len(ohlc_data)} candles)
 Technical Indicators:
 - RSI: {indicators.get('rsi', 'N/A')}
 - MACD: {indicators.get('macd', 'N/A')}
@@ -302,6 +321,8 @@ Analyze the technical patterns and provide your assessment.
             # Only use LLM for pattern recognition that can't be calculated programmatically
             output = {
                 **indicators,  # All calculated indicators (RSI, MACD, ATR, support, resistance, trend)
+                "analysis_timeframe": analysis_timeframe,
+                "time_horizon": "INTRADAY_15M"
             }
             
             # Only call LLM for advanced pattern recognition (optional enhancement)
@@ -344,6 +365,15 @@ Analyze the technical patterns and provide your assessment.
             resistance = output.get('resistance_level')
             confidence = output.get('confidence_score', 0.0)
             
+            # Derive a simple technical bias for the next 15 minutes
+            if trend_dir == "UP" and rsi_status != "OVERBOUGHT":
+                technical_bias = "BULLISH"
+            elif trend_dir == "DOWN" and rsi_status != "OVERSOLD":
+                technical_bias = "BEARISH"
+            else:
+                technical_bias = "NEUTRAL"
+            output["technical_bias"] = technical_bias
+
             points = [
                 ("Trend Direction", trend_dir,
                  f"Trend strength: {trend_strength:.0f}%"),
@@ -356,7 +386,9 @@ Analyze the technical patterns and provide your assessment.
                 ("Support Level", f"{support:.2f}" if support else "N/A",
                  f"Key support level below current price"),
                 ("Resistance Level", f"{resistance:.2f}" if resistance else "N/A",
-                 f"Key resistance level above current price"),
+                  f"Key resistance level above current price"),
+                 ("Technical Bias (15m)", technical_bias,
+                  f"Near-term bias based on trend/RSI"),
                 ("Confidence", f"{confidence:.0%}",
                  f"Analysis confidence based on data quality and pattern clarity")
             ]
@@ -369,7 +401,7 @@ Analyze the technical patterns and provide your assessment.
             if continuation:
                 points.append(("Continuation Pattern", continuation, "Trend continuation signal"))
             
-            summary = f"Overall: {trend_dir} trend with {rsi_status} RSI and {macd_status} MACD"
+            summary = f"Overall: {trend_dir} trend with {rsi_status} RSI and {macd_status} MACD ({technical_bias} bias, 15m horizon)"
             
             explanation = self.format_explanation("Technical Analysis", points, summary)
             self.update_state(state, output, explanation)

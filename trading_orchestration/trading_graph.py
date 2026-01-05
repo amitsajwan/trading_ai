@@ -445,10 +445,24 @@ class TradingGraph:
                 # Start from a fresh or initial AgentState to run agents sequentially
                 fallback_state = initial_state if initial_state is not None else AgentState()
                 try:
+                    # Run analysis agents
                     fallback_state = self.technical_agent.process(fallback_state)
                     fallback_state = self.fundamental_agent.process(fallback_state)
                     fallback_state = self.sentiment_agent.process(fallback_state)
                     fallback_state = self.macro_agent.process(fallback_state)
+                    
+                    # Run bull/bear researchers (critical for confidence and reasoning!)
+                    fallback_state = self.bull_researcher.process(fallback_state)
+                    fallback_state = self.bear_researcher.process(fallback_state)
+                    
+                    # Run risk agents
+                    fallback_state = self.aggressive_risk.process(fallback_state)
+                    fallback_state = self.conservative_risk.process(fallback_state)
+                    fallback_state = self.neutral_risk.process(fallback_state)
+                    
+                    # Run portfolio manager (makes final decision)
+                    fallback_state = self.portfolio_manager.process(fallback_state)
+                    
                     # Use fallback_state as the result from now on
                     result = fallback_state
                 except Exception as e:
@@ -470,7 +484,7 @@ class TradingGraph:
         try:
             from mongodb_schema import get_mongo_client, get_collection
             from config.settings import settings
-            from datetime import datetime
+            from datetime import datetime, timezone
             
             mongo_client = get_mongo_client()
             db = mongo_client[settings.mongodb_db_name]
@@ -583,7 +597,7 @@ class TradingGraph:
             
             # Store analysis document
             analysis_doc = {
-                "timestamp": datetime.now().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "instrument": settings.instrument_symbol,  # Add instrument for filtering
                 "instrument_name": settings.instrument_name,
                 "current_price": getattr(state, 'current_price', None),
@@ -638,9 +652,11 @@ class TradingGraph:
             incomplete_agents = _find_incomplete(analysis_doc['agent_decisions'])
             if incomplete_agents:
                 analysis_doc['status'] = 'INCOMPLETE'
+                # Persist list of incomplete agents for downstream visibility
+                analysis_doc['incomplete_agents'] = incomplete_agents
                 try:
-                    alerts_col = get_collection(db, 'alerts')
-                    alerts_col.insert_one({
+                    alerts_collection = get_collection(db, 'alerts')
+                    alerts_collection.insert_one({
                         'type': 'analysis_incomplete',
                         'agents': incomplete_agents,
                         'timestamp': datetime.now().isoformat(),

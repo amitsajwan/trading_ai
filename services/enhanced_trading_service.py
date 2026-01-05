@@ -158,6 +158,35 @@ class EnhancedTradingService:
         logger.info("=" * 70)
         
         try:
+            # Start crypto feed if configured (Binance / Crypto)
+            if settings.data_source.upper() in ("CRYPTO", "BINANCE"):
+                try:
+                    from data.crypto_data_feed import CryptoDataFeed
+                    self.crypto_feed = CryptoDataFeed(self.market_memory)
+
+                    async def _run_crypto():
+                        try:
+                            await self.crypto_feed.start()
+                        except Exception as e:
+                            logger.error(f"Crypto feed task crashed: {e}", exc_info=True)
+
+                    self._crypto_feed_task = asyncio.create_task(_run_crypto())
+                    logger.info("✅ Crypto data feed task started (Binance/CRYPTO)")
+
+                    # Wait briefly for connection (non-blocking)
+                    max_wait = 15
+                    connected = False
+                    for _ in range(max_wait):
+                        if getattr(self.crypto_feed, 'connected', False):
+                            logger.info("✅ Crypto feed connected")
+                            connected = True
+                            break
+                        await asyncio.sleep(1)
+                    if not connected:
+                        logger.warning("Crypto feed still connecting - will continue in background")
+                except Exception as e:
+                    logger.warning(f"Could not start crypto feed: {e}", exc_info=True)
+            
             # Start all three layers concurrently
             self.strategic_layer_task = asyncio.create_task(self._strategic_layer_loop())
             self.tactical_layer_task = asyncio.create_task(self._tactical_layer_loop())
@@ -561,7 +590,20 @@ class EnhancedTradingService:
         logger.info("Stopping enhanced trading service...")
         self.running = False
         
-        # Cancel tasks
+        # Stop crypto feed (if running)
+        if hasattr(self, 'crypto_feed') and self.crypto_feed:
+            try:
+                self.crypto_feed.stop()
+            except Exception as e:
+                logger.debug(f"Error stopping crypto feed: {e}")
+        if hasattr(self, '_crypto_feed_task') and self._crypto_feed_task:
+            self._crypto_feed_task.cancel()
+            try:
+                await self._crypto_feed_task
+            except asyncio.CancelledError:
+                pass
+
+        # Cancel layer tasks
         for task in [self.strategic_layer_task, self.tactical_layer_task, self.execution_layer_task]:
             if task:
                 task.cancel()

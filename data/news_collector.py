@@ -21,7 +21,9 @@ class NewsCollector:
     def __init__(self, market_memory: MarketMemory):
         """Initialize news collector."""
         self.market_memory = market_memory
-        self.news_api_key = settings.news_api_key
+        self.finnhub_api_key = settings.finnhub_api_key
+        self.eodhd_api_key = settings.eodhd_api_key
+        self.news_api_provider = settings.news_api_provider
         self.running = False
         
         # MongoDB connection
@@ -35,40 +37,106 @@ class NewsCollector:
         if query is None:
             query = settings.news_query
         
-        if not self.news_api_key:
-            logger.warning("News API key not configured, skipping news fetch")
-            return []
+        # Fetch from both EODHD and Finnhub if keys are available
+        all_news_items = []
         
+        # Fetch from EODHD
+        if self.eodhd_api_key:
+            eodhd_news = await self._fetch_from_provider("eodhd", self.eodhd_api_key, query, max_results // 2)
+            all_news_items.extend(eodhd_news)
+        
+        # Fetch from Finnhub
+        if self.finnhub_api_key:
+            finnhub_news = await self._fetch_from_provider("finnhub", self.finnhub_api_key, query, max_results // 2)
+            all_news_items.extend(finnhub_news)
+        
+        # Sort by published_at (most recent first) and limit results
+        all_news_items.sort(key=lambda x: x.get("published_at", ""), reverse=True)
+        return all_news_items[:max_results]
+    
+    async def _fetch_from_provider(self, provider: str, api_key: str, query: str, max_results: int) -> List[Dict[str, Any]]:
+        """Fetch news from a specific provider."""
         try:
             async with httpx.AsyncClient() as client:
-                # NewsAPI endpoint
-                url = "https://newsapi.org/v2/everything"
-                params = {
-                    "q": query,
-                    "apiKey": self.news_api_key,
-                    "language": "en",
-                    "sortBy": "publishedAt",
-                    "pageSize": max_results,
-                    "from": (datetime.now() - timedelta(hours=24)).isoformat()
-                }
+                if provider == "finnhub":
+                    # Finnhub API
+                    url = "https://finnhub.io/api/v1/news"
+                    # Determine category based on instrument
+                    category = "crypto" if "BTC" in settings.instrument_symbol.upper() else "general"
+                    params = {
+                        "category": category,
+                        "token": api_key
+                    }
+                elif provider == "eodhd":
+                    # EODHD API for financial news
+                    url = "https://eodhd.com/api/news"
+                    # Use appropriate topics based on instrument
+                    if "BTC" in settings.instrument_symbol.upper():
+                        topics = "crypto,blockchain,finance"
+                    else:
+                        topics = "finance,markets,economy"
+                    params = {
+                        "api_token": api_key,
+                        "t": topics,
+                        "limit": max_results,
+                        "from": (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+                    }
+                else:
+                    # Default to NewsAPI
+                    url = "https://newsapi.org/v2/everything"
+                    params = {
+                        "q": query,
+                        "apiKey": api_key,
+                        "language": "en",
+                        "sortBy": "publishedAt",
+                        "pageSize": max_results,
+                        "from": (datetime.now() - timedelta(hours=24)).isoformat()
+                    }
                 
                 response = await client.get(url, params=params, timeout=10.0)
                 response.raise_for_status()
                 
                 data = response.json()
-                articles = data.get("articles", [])
+                
+                if provider == "finnhub":
+                    articles = data  # Finnhub returns direct array
+                elif provider == "eodhd":
+                    articles = data  # EODHD returns direct array
+                else:
+                    articles = data.get("articles", [])
                 
                 news_items = []
-                for article in articles:
-                    news_item = {
-                        "title": article.get("title", ""),
-                        "content": article.get("description", ""),
-                        "source": article.get("source", {}).get("name", "unknown"),
-                        "url": article.get("url", ""),
-                        "published_at": article.get("publishedAt", ""),
-                        "timestamp": datetime.now().isoformat(),
-                        "event_type": "NEWS"
-                    }
+                for article in articles[:max_results]:  # Limit results
+                    if provider == "finnhub":
+                        news_item = {
+                            "title": article.get("headline", ""),
+                            "content": article.get("summary", ""),
+                            "source": article.get("source", "finnhub"),
+                            "url": article.get("url", ""),
+                            "published_at": datetime.fromtimestamp(article.get("datetime", 0)).isoformat() if article.get("datetime") else "",
+                            "timestamp": datetime.now().isoformat(),
+                            "event_type": "NEWS"
+                        }
+                    elif provider == "eodhd":
+                        news_item = {
+                            "title": article.get("title", ""),
+                            "content": article.get("content", ""),
+                            "source": article.get("source", "eodhd"),
+                            "url": article.get("link", ""),
+                            "published_at": article.get("date", ""),
+                            "timestamp": datetime.now().isoformat(),
+                            "event_type": "NEWS"
+                        }
+                    else:
+                        news_item = {
+                            "title": article.get("title", ""),
+                            "content": article.get("description", ""),
+                            "source": article.get("source", {}).get("name", "unknown"),
+                            "url": article.get("url", ""),
+                            "published_at": article.get("publishedAt", ""),
+                            "timestamp": datetime.now().isoformat(),
+                            "event_type": "NEWS"
+                        }
                     
                     # Simple sentiment analysis (can be enhanced with LLM)
                     news_item["sentiment_score"] = self._calculate_sentiment(news_item["title"])
@@ -78,7 +146,7 @@ class NewsCollector:
                 return news_items
                 
         except Exception as e:
-            logger.error(f"Error fetching news: {e}")
+            logger.error(f"Error fetching news from {provider}: {e}")
             return []
     
     def _calculate_sentiment(self, text: str) -> float:

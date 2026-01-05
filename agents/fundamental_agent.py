@@ -69,7 +69,7 @@ Analyze fundamental factors affecting {instrument_name} performance."""
             ]) if latest_news else "No recent news available"
             
             if is_crypto:
-                # Crypto-specific context
+                # Crypto-specific context (mapped to generic prompt schema)
                 prompt = f"""
 Latest News for {instrument_name}:
 {news_summary}
@@ -87,17 +87,23 @@ Focus on:
 - Network health and security
 - Market structure and liquidity
 """
+                # Use the richer generic schema from the prompt; we'll
+                # normalize it back into the simpler fields used by
+                # other agents (sector_strength, bullish_probability, etc.).
                 response_format = {
-                    "sector_strength": "string (STRONG/MODERATE/WEAK) - overall crypto market strength",
-                    "credit_quality_trend": "string (IMPROVING/STABLE/DETERIORATING) - network security trend",
-                    "rbi_policy_impact": "string (POSITIVE/NEUTRAL/NEGATIVE) - kept for compatibility",
-                    "regulatory_impact": "string (POSITIVE/NEUTRAL/NEGATIVE) - regulatory environment impact",
-                    "adoption_trend": "string (ACCELERATING/STABLE/DECLINING) - adoption trend",
+                    "asset_strength": "STRONG | MODERATE | WEAK",
+                    "asset_strength_reasoning": "string",
+                    "market_health_trend": "IMPROVING | STABLE | DETERIORATING",
+                    "market_health_reasoning": "string",
+                    "policy_impact": "POSITIVE | NEUTRAL | NEGATIVE",
+                    "policy_reasoning": "string",
                     "bullish_probability": "float (0-1)",
                     "bearish_probability": "float (0-1)",
-                    "key_risk_factors": "array of strings - crypto-specific risks",
-                    "key_catalysts": "array of strings - crypto-specific catalysts",
-                    "confidence_score": "float (0-1)"
+                    "probability_reasoning": "string",
+                    "key_risk_factors": "array of strings",
+                    "key_catalysts": "array of strings",
+                    "confidence_score": "float (0-1)",
+                    "confidence_reasoning": "string"
                 }
             else:
                 # Indian stocks/banking sector context
@@ -113,17 +119,25 @@ Market Context:
 - Market Health Indicator: {npa_ratio if npa_ratio else 'Unknown'}
 
 Analyze the fundamental strength of {instrument_name} and provide your assessment.
-Focus on factors that directly impact {instrument_name} performance.
+Use a 15-minute to 1-day trading horizon and focus on
+factors that directly impact near-term price moves in {instrument_name}.
 """
+                # Use the richer generic schema from the prompt file and
+                # map it into the simpler fields other agents already use.
                 response_format = {
-                    "sector_strength": "string (STRONG/MODERATE/WEAK)",
-                    "credit_quality_trend": "string (IMPROVING/STABLE/DETERIORATING)",
-                    "rbi_policy_impact": "string (POSITIVE/NEUTRAL/NEGATIVE)",
+                    "asset_strength": "STRONG | MODERATE | WEAK",
+                    "asset_strength_reasoning": "string",
+                    "market_health_trend": "IMPROVING | STABLE | DETERIORATING",
+                    "market_health_reasoning": "string",
+                    "policy_impact": "POSITIVE | NEUTRAL | NEGATIVE",
+                    "policy_reasoning": "string",
                     "bullish_probability": "float (0-1)",
                     "bearish_probability": "float (0-1)",
+                    "probability_reasoning": "string",
                     "key_risk_factors": "array of strings",
                     "key_catalysts": "array of strings",
-                    "confidence_score": "float (0-1)"
+                    "confidence_score": "float (0-1)",
+                    "confidence_reasoning": "string"
                 }
             
             analysis = self._call_llm_structured(prompt, response_format)
@@ -140,6 +154,37 @@ Focus on factors that directly impact {instrument_name} performance.
             except (ValueError, TypeError):
                 bearish_prob = 0.5
             
+            # Derive a simple bias label for downstream agents (BULLISH/BEARISH/NEUTRAL)
+            if bullish_prob - bearish_prob > 0.05:
+                fundamental_bias = "BULLISH"
+            elif bearish_prob - bullish_prob > 0.05:
+                fundamental_bias = "BEARISH"
+            else:
+                fundamental_bias = "NEUTRAL"
+
+            # Normalize schema so other agents can consume a consistent
+            # view regardless of the underlying prompt structure.
+            if is_crypto:
+                sector_strength = analysis.get("asset_strength") or analysis.get("sector_strength", "MODERATE")
+                credit_trend = analysis.get("credit_quality_trend", "STABLE")
+                policy_impact = analysis.get("policy_impact") or analysis.get("rbi_policy_impact", "NEUTRAL")
+                regulatory_impact = analysis.get("regulatory_impact", policy_impact)
+                adoption_trend = analysis.get("adoption_trend", "STABLE")
+            else:
+                sector_strength = analysis.get("asset_strength") or analysis.get("sector_strength", "MODERATE")
+                credit_trend = analysis.get("credit_quality_trend", "STABLE")
+                policy_impact = analysis.get("policy_impact") or analysis.get("rbi_policy_impact", "NEUTRAL")
+
+            normalized = dict(analysis)
+            normalized.setdefault("sector_strength", sector_strength)
+            normalized.setdefault("credit_quality_trend", credit_trend)
+            normalized.setdefault("rbi_policy_impact", policy_impact)
+            normalized.setdefault("bullish_probability", bullish_prob)
+            normalized.setdefault("bearish_probability", bearish_prob)
+            normalized.setdefault("fundamental_bias", fundamental_bias)
+            # Explicitly tag the short-term horizon we are analysing for (15m window)
+            normalized.setdefault("time_horizon", "INTRADAY_15M")
+
             # Build human-readable explanation with points and reasoning
             if is_crypto:
                 key_catalysts = analysis.get('key_catalysts', [])[:3]  # Top 3
@@ -147,11 +192,11 @@ Focus on factors that directly impact {instrument_name} performance.
                 confidence = analysis.get('confidence_score', 0.5)
                 
                 points = [
-                    ("Market Strength", analysis.get('asset_strength', 'UNKNOWN'), 
+                    ("Market Strength", sector_strength or analysis.get('asset_strength', 'UNKNOWN'), 
                      f"Based on adoption trends and network health"),
-                    ("Regulatory Impact", analysis.get('regulatory_impact', 'NEUTRAL'),
+                    ("Regulatory Impact", regulatory_impact,
                      f"Current regulatory environment assessment"),
-                    ("Adoption Trend", analysis.get('adoption_trend', 'UNKNOWN'),
+                    ("Adoption Trend", adoption_trend,
                      f"Institutional and retail adoption momentum"),
                     ("Bullish Probability", f"{bullish_prob:.0%}",
                      f"Based on {', '.join(key_catalysts[:2]) if key_catalysts else 'market factors'}"),
@@ -161,18 +206,18 @@ Focus on factors that directly impact {instrument_name} performance.
                      f"Analysis confidence based on data quality")
                 ]
                 
-                summary = f"Overall: {analysis.get('asset_strength', 'UNKNOWN')} crypto market strength with {analysis.get('regulatory_impact', 'NEUTRAL')} regulatory environment"
+                summary = f"Overall: {sector_strength or analysis.get('asset_strength', 'UNKNOWN')} crypto market strength with {regulatory_impact} regulatory environment ({fundamental_bias} bias, 15m horizon)"
             else:
                 key_catalysts = analysis.get('key_catalysts', [])[:3]
                 key_risks = analysis.get('key_risk_factors', [])[:3]
                 confidence = analysis.get('confidence_score', 0.5)
                 
                 points = [
-                    ("Sector Strength", analysis.get('sector_strength', 'UNKNOWN'),
+                    ("Sector Strength", sector_strength,
                      f"Overall sector health assessment"),
-                    ("Credit Quality Trend", analysis.get('credit_quality_trend', 'UNKNOWN'),
+                    ("Credit Quality Trend", credit_trend,
                      f"Credit quality direction"),
-                    ("RBI Policy Impact", analysis.get('rbi_policy_impact', 'NEUTRAL'),
+                    ("RBI Policy Impact", policy_impact,
                      f"Impact of current RBI policy"),
                     ("Bullish Probability", f"{bullish_prob:.0%}",
                      f"Based on {', '.join(key_catalysts[:2]) if key_catalysts else 'sector factors'}"),
@@ -182,10 +227,10 @@ Focus on factors that directly impact {instrument_name} performance.
                      f"Analysis confidence based on data quality")
                 ]
                 
-                summary = f"Overall: {analysis.get('sector_strength', 'UNKNOWN')} sector strength"
+                summary = f"Overall: {sector_strength} sector strength ({fundamental_bias} bias, 15m horizon)"
             
             explanation = self.format_explanation("Fundamental Analysis", points, summary)
-            self.update_state(state, analysis, explanation)
+            self.update_state(state, normalized, explanation)
         
         except Exception as e:
             # Check if it's a rate limit error - if so, log but don't use defaults immediately

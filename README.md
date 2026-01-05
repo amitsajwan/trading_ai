@@ -4,13 +4,32 @@ A fully autonomous multi-agent LLM trading system supporting **multiple instrume
 
 ## Quick Start
 
-### 1. Install Dependencies
+### Option A: Docker (Recommended for Production)
+
+```bash
+# Start all instruments simultaneously
+manage_trading.bat start all
+
+# OR start individual instruments
+manage_trading.bat start banknifty  # Bank Nifty
+manage_trading.bat start nifty      # Nifty 50
+manage_trading.bat start btc        # Bitcoin
+
+# Access dashboards:
+# Bank Nifty: http://localhost:8002
+# Nifty 50: http://localhost:8003
+# Bitcoin: http://localhost:8001
+```
+
+### Option B: Local Development
+
+#### 1. Install Dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. Configure Environment
+#### 2. Configure Environment
 
 Copy the sample configuration and edit:
 
@@ -19,7 +38,7 @@ cp .env.example .env  # If .env.example exists
 # OR create .env with required settings (see Configuration below)
 ```
 
-### 3. Setup LLM Provider
+#### 3. Setup LLM Provider
 
 **Option A: Local LLM (Recommended - FREE)**
 ```bash
@@ -39,7 +58,7 @@ Add one of these API keys to `.env`:
 - `GOOGLE_API_KEY` - [Get free key](https://aistudio.google.com/app/apikey)
 - `OPENROUTER_API_KEY` - [Get free key](https://openrouter.ai)
 
-### 4. Start Services
+#### 4. Start Services
 
 ```bash
 # Start MongoDB and Redis
@@ -50,7 +69,7 @@ redis-server &
 python scripts/start_all.py
 ```
 
-### 5. Access Dashboard
+#### 5. Access Dashboard
 
 Open http://localhost:8888
 
@@ -71,10 +90,10 @@ All configuration is in a single `.env` file:
    OLLAMA_MODEL=llama3.1:8b
 
    # Instrument Configuration
-   INSTRUMENT_SYMBOL=BTC-USD    # BTC-USD, NIFTY BANK, NIFTY 50
-   INSTRUMENT_NAME=Bitcoin      # Bitcoin, Bank Nifty, Nifty 50
-   DATA_SOURCE=CRYPTO           # CRYPTO, ZERODHA
-   MARKET_24_7=true             # true for crypto, false for stocks
+   INSTRUMENT_SYMBOL=NIFTY BANK    # NIFTY BANK, NIFTY 50, BTC-USD
+   INSTRUMENT_NAME=Bank Nifty      # Bank Nifty, Nifty 50, Bitcoin
+   DATA_SOURCE=ZERODHA             # ZERODHA, CRYPTO
+   MARKET_24_7=false               # true for crypto, false for stocks
 
    # Database
    MONGODB_URI=mongodb://localhost:27017/
@@ -92,16 +111,32 @@ See [docs/SETUP.md](docs/SETUP.md) for complete configuration options.
 
 | Instrument | Symbol | Data Source | Market Hours |
 |------------|--------|-------------|--------------|
-| Bitcoin | BTC-USD | Binance WebSocket | 24/7 |
 | Bank Nifty | NIFTY BANK | Zerodha Kite | 9:15-15:30 IST |
 | Nifty 50 | NIFTY 50 | Zerodha Kite | 9:15-15:30 IST |
+| Bitcoin | BTC-USD | Binance WebSocket | 24/7 |
 
 Switch instruments:
 ```bash
-python scripts/configure_instrument.py BTC      # Bitcoin
-python scripts/configure_instrument.py BANKNIFTY  # Bank Nifty
+python scripts/configure_instrument.py BANKNIFTY  # Bank Nifty (default)
 python scripts/configure_instrument.py NIFTY     # Nifty 50
+python scripts/configure_instrument.py BTC       # Bitcoin
 ```
+
+## Development vs Production
+
+### Local Development
+- Run individual components for testing
+- Direct Python execution
+- Single instrument at a time
+- Full debugging capabilities
+
+### Docker Production
+- Multi-instrument simultaneous trading
+- Isolated containers per instrument
+- Production-ready with proper networking
+- Easy scaling and deployment
+
+**For production use, Docker is recommended.**
 
 ## Architecture
 

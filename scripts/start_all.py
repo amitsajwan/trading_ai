@@ -19,8 +19,10 @@ if sys.platform == "win32":
 parser = argparse.ArgumentParser(description='Start trading system components')
 parser.add_argument('--skip-data-verification', action='store_true',
                    help='Skip real-time data verification (allows starting without live market data)')
-parser.add_argument('--instrument', type=str, default='BTC',
-                   help='Trading instrument (default: BTC)')
+parser.add_argument('--instrument', type=str, default='BANKNIFTY',
+                   help='Trading instrument (default: BANKNIFTY)')
+parser.add_argument('--auto-kill', action='store_true', default=False,
+                   help='Automatically kill existing trading service processes without prompting (useful for automated restarts)')
 # Backwards compatibility: allow providing the instrument as a positional arg
 parser.add_argument('instrument_pos', nargs='?', help='Positional instrument name (optional, for backward compatibility)')
 args = parser.parse_args()
@@ -219,11 +221,18 @@ def start_dashboard():
             return None
     
     # Use uvicorn to run FastAPI app properly
-    # Don't capture output so errors are visible in terminal
+    # Capture stdout/stderr to a rotating log file so we can inspect crashes
+    log_dir = Path(__file__).parent.parent / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    uv_log = log_dir / "dashboard-uvicorn.log"
+    uv_out = open(uv_log, "a", encoding="utf-8")
+
+    # '-u' forces unbuffered binary stdout and stderr, useful when redirecting
     process = subprocess.Popen(
-        [python_path, "-m", "uvicorn", "dashboard_pro:app", "--host", "0.0.0.0", "--port", str(dashboard_port)],
-        cwd=Path(__file__).parent.parent
-        # No stdout/stderr capture - let uvicorn output go to terminal
+        [python_path, "-u", "-m", "uvicorn", "dashboard_pro:app", "--host", "0.0.0.0", "--port", str(dashboard_port)],
+        cwd=Path(__file__).parent.parent,
+        stdout=uv_out,
+        stderr=uv_out
     )
     time.sleep(2)  # Give it a moment to start
     return process, dashboard_port
@@ -610,13 +619,20 @@ def start_trading_service():
     """Start the trading service."""
     python_path = get_python_path()
     print("Starting trading service (includes data feed)...")
-    print("   [INFO] Trading service logs will appear below:")
+    print("   [INFO] Trading service logs will be captured to logs/trading-service.log")
     print("   [INFO] Look for '[OK] Connected to Binance WebSocket' and '[TICK #]' messages")
     print()
-    # Don't capture output - let logs show in terminal so we can see WebSocket connection
+    
+    log_dir = Path(__file__).parent.parent / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    ts_log = log_dir / "trading-service.log"
+    ts_out = open(ts_log, "a", encoding="utf-8")
+    
+    # Capture output to log file for debugging crashes
     process = subprocess.Popen(
         [python_path, "-m", "services.trading_service"],
-        # stdout and stderr NOT captured - logs will show in terminal
+        stdout=ts_out,
+        stderr=ts_out,
         cwd=Path(__file__).parent.parent
     )
     time.sleep(3)  # Give it a moment to initialize
@@ -668,7 +684,15 @@ def check_existing_processes():
             print("  2. Continue anyway (not recommended)")
             print("  3. Abort and stop manually")
             print("=" * 70)
-            response = input("\nChoose option (1/2/3) [default: 1]: ").strip().lower()
+            try:
+                # If auto-kill flag is present, choose option 1 automatically.
+                if getattr(args, 'auto_kill', False):
+                    response = ''
+                else:
+                    response = input("\nChoose option (1/2/3) [default: 1]: ").strip().lower()
+            except EOFError:
+                # Non-interactive execution (no stdin) - default to option 1
+                response = ''
             
             if response == '3':
                 print("\nAborted. Please stop existing processes manually:")
@@ -804,7 +828,7 @@ def main():
         print("  BANKNIFTY  - Bank Nifty (Indian Market)")
         print("  NIFTY      - Nifty 50 (Indian Market)")
         print("\nOptions:")
-        print("  --instrument <INSTRUMENT>          Trading instrument (default: BTC)")
+        print("  --instrument <INSTRUMENT>          Trading instrument (default: BANKNIFTY)")
         print("  --skip-data-verification           Skip real-time data verification")
         print("\nExamples:")
         print("  python scripts/start_all.py")
@@ -995,26 +1019,51 @@ def main():
         print()
         
         print("=" * 70)
-        print("[SUCCESS] SYSTEM STARTED SUCCESSFULLY!")
         print("=" * 70)
-        print(f"Instrument: {instrument}")
-        # Get dashboard port from processes (stored as tuple)
-        dashboard_port = 8888  # Default
-        for name, proc_info in processes:
-            if name == "Dashboard":
-                if isinstance(proc_info, tuple):
-                    _, dashboard_port = proc_info
-                break
-        print(f"Dashboard: http://localhost:{dashboard_port}")
-        print("\nComponents:")
-        print("  [OK] Dashboard - Running")
-        print("  [OK] Data Feed - Running")
-        print("  [OK] Trading Service - Running")
+        print("=" * 70)
+        print()
+        print("   ✅✅✅  TRADING SYSTEM STARTED SUCCESSFULLY!  ✅✅✅")
+        print()
+        print("=" * 70)
+        print("=" * 70)
+        print("=" * 70)
+        print()
+        print(f"   🌐 DASHBOARD: http://localhost:{dashboard_port}")
+        print(f"   📊 INSTRUMENT: {instrument}")
+        print(f"   📈 DATA FEED: {'Binance WebSocket (Crypto)' if instrument in ['BTC', 'ETH'] else 'Zerodha Kite'}")
+        print(f"   📄 PAPER TRADING: Enabled")
+        print()
+        print("=" * 70)
+        print("   🔥 IMPORTANT: OPEN YOUR BROWSER NOW! 🔥")
+        print(f"   👉 Go to: http://localhost:{dashboard_port}")
+        print("=" * 70)
+        print()
+        print("📋 WHAT TO CHECK:")
+        print("   1. Agent Analysis section - Shows WHY agents made decisions")
+        print("   2. Latest Signal - BUY/SELL/HOLD with confidence")
+        print("   3. Market Data - Live prices from Binance")
+        print()
+        print("🔧 QUICK COMMANDS:")
+        print("   • Clean old trades: python scripts/cleanup_paper_trades.py --clean-old 1")
+        print("   • View system health: Open dashboard and scroll to 'System Health'")
+        print("   • Stop system: Press Ctrl+C in this terminal")
+        print()
+        print("=" * 70)
+        print()
         if agent_analysis_verified:
-            print("  [OK] Agent Analysis - Verified")
+            print("  ✅ Dashboard - Running")
+            print("  ✅ Data Feed - Running")
+            print("  ✅ Trading Service - Running")
+            print("  ✅ Agent Analysis - Verified")
         else:
-            print("  [WARNING] Agent Analysis - Not yet verified (check dashboard)")
-        print("\nPress Ctrl+C to stop all services")
+            print("  ✅ Dashboard - Running")
+            print("  ✅ Data Feed - Running")
+            print("  ✅ Trading Service - Running")
+            print("  ⏳ Agent Analysis - Initializing (check dashboard in 1-2 minutes)")
+        print()
+        print("=" * 70)
+        print("💡 The terminal will now show ongoing system logs.")
+        print("   To stop: Press Ctrl+C")
         print("=" * 70)
         
         # Wait for processes
