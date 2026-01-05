@@ -43,13 +43,39 @@ class LTPDataCollector:
         # Price tracking for OHLC
         self.price_history = []
     
+    def _instrument_key(self) -> str:
+        sym = (settings.instrument_symbol or "NIFTY BANK").upper().replace(" ", "")
+        if "BANKNIFTY" in sym or "NIFTYBANK" in sym:
+            return "BANKNIFTY"
+        return "NIFTY"
+
     def get_instrument_token(self) -> Optional[int]:
-        """Get Bank Nifty instrument token."""
+        """Resolve instrument token for index (prefer NSE index, fallback NFO-FUT)."""
         try:
-            instruments = self.kite.instruments("NSE")
-            for inst in instruments:
-                if inst["tradingsymbol"] == "NIFTY BANK":
-                    return inst["instrument_token"]
+            key = self._instrument_key()
+            # Prefer NSE index exact match
+            nse = self.kite.instruments("NSE")
+            wanted = "NIFTY BANK" if key == "BANKNIFTY" else "NIFTY 50"
+            for inst in nse:
+                if (inst.get("tradingsymbol") or "").upper() == wanted:
+                    return inst.get("instrument_token")
+            # Fallback to NFO futures nearest expiry
+            nfo = self.kite.instruments("NFO")
+            today = datetime.now().date()
+            futs = []
+            for inst in nfo:
+                if inst.get("segment") != "NFO-FUT" or inst.get("instrument_type") != "FUT":
+                    continue
+                ts = (inst.get("tradingsymbol") or "").upper()
+                if key not in ts:
+                    continue
+                expiry = inst.get("expiry")
+                if not expiry or expiry < today:
+                    continue
+                futs.append(inst)
+            if futs:
+                futs.sort(key=lambda x: x.get("expiry"))
+                return futs[0].get("instrument_token")
             return None
         except Exception as e:
             logger.error(f"Error getting instrument token: {e}")
@@ -145,11 +171,16 @@ class LTPDataCollector:
     def _finalize_candle(self, timeframe: str, candle: Dict[str, Any]):
         """Finalize and store a completed candle."""
         # Store in Redis
-        self.market_memory.store_ohlc("BANKNIFTY", timeframe, candle)
+        self.market_memory.store_ohlc(self._instrument_key(), timeframe, candle)
         
         # Store in MongoDB
         try:
-            self.ohlc_collection.insert_one(candle)
+            candle_to_store = dict(candle)
+            try:
+                candle_to_store["instrument"] = settings.instrument_symbol
+            except Exception:
+                pass
+            self.ohlc_collection.insert_one(candle_to_store)
         except Exception as e:
             logger.error(f"Error storing candle in MongoDB: {e}")
     
@@ -175,7 +206,7 @@ class LTPDataCollector:
                         "last_price": price,
                         "timestamp": timestamp.isoformat()
                     }
-                    self.market_memory.store_tick("BANKNIFTY", tick_data)
+                    self.market_memory.store_tick(self._instrument_key(), tick_data)
                     
                     # Update OHLC
                     self.update_ohlc_from_price(price, timestamp)

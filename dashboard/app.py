@@ -1,7 +1,9 @@
 import logging
 import json
+import asyncio
 from pathlib import Path
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from typing import Any, Dict, List, Optional
 
 import csv
@@ -10,6 +12,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
+from kiteconnect import KiteConnect
 
 try:
     from config.settings import settings
@@ -32,6 +35,19 @@ try:
     marketmemory = MarketMemory()
 except Exception:  # pragma: no cover - Redis optional
     marketmemory = None
+
+try:
+    from data.order_flow_analyzer import OrderFlowAnalyzer
+    from data.options_chain_fetcher import OptionsChainFetcher
+except Exception:  # pragma: no cover - optional analytics
+    OrderFlowAnalyzer = None
+    OptionsChainFetcher = None
+
+try:
+    from services.decision_snapshot import build_snapshot, build_and_store_forever
+except Exception:
+    build_snapshot = None
+    build_and_store_forever = None
 
 logger = logging.getLogger(__name__)
 BASE_DIR = Path(__file__).resolve().parent
@@ -88,6 +104,47 @@ def _safe_db():
     return mongo_client, db
 
 
+def _instrument_key() -> str:
+    symbol = getattr(settings, "instrument_symbol", "INSTRUMENT") if settings else "INSTRUMENT"
+    return symbol.replace("-", "").replace(" ", "").upper()
+
+
+def _latest_tick() -> Optional[Dict[str, Any]]:
+    if not marketmemory or not getattr(marketmemory, "_redis_available", False):
+        return None
+    try:
+        r = marketmemory.redis_client
+        keys = r.keys(f"tick:{_instrument_key()}:*")
+        if not keys:
+            return None
+        latest_key = sorted(keys)[-1]
+        data = r.get(latest_key)
+        if data:
+            return json.loads(data)
+    except Exception as exc:
+        logger.debug(f"latest tick fetch failed: {exc}")
+    return None
+
+
+def _safe_kite_client() -> Optional[KiteConnect]:
+    try:
+        if not settings or not getattr(settings, "kite_api_key", None):
+            return None
+        cred_path = Path("credentials.json")
+        if not cred_path.exists():
+            return None
+        creds = json.loads(cred_path.read_text())
+        access_token = creds.get("access_token") or creds.get("request_token")
+        if not access_token:
+            return None
+        kite = KiteConnect(api_key=settings.kite_api_key)
+        kite.set_access_token(access_token)
+        return kite
+    except Exception as exc:
+        logger.debug(f"kite client init failed: {exc}")
+        return None
+
+
 # ---------- routes ----------
 
 @app.get("/", response_class=HTMLResponse)
@@ -101,7 +158,64 @@ async def dashboard(request: Request):
 
 @app.get("/api/health")
 async def health_check():
-    return {"status": "ok", "timestamp": datetime.utcnow().isoformat()}
+    """Report freshness of LTP and presence of depth from Redis.
+
+    Status logic:
+    - ok: LTP fresh and depth recent
+    - degraded: only LTP fresh or only depth recent
+    - unhealthy: neither fresh
+    """
+    now = datetime.utcnow()
+    instrument = _instrument_key()
+    result: Dict[str, Any] = {"instrument": instrument}
+    ltp_fresh = False
+    depth_recent = False
+    ltp_age = None
+    depth_age = None
+
+    try:
+        if marketmemory and getattr(marketmemory, "_redis_available", False):
+            r = marketmemory.redis_client
+            ts = r.get(f"price:{instrument}:latest_ts")
+            if ts:
+                try:
+                    ts_dt = datetime.fromisoformat(ts)
+                    ltp_age = (now - ts_dt).total_seconds()
+                    # Fresh if < 120s
+                    ltp_fresh = ltp_age is not None and ltp_age < 120
+                except Exception:
+                    ltp_fresh = False
+            # Depth: look at latest tick and ensure it contains depth in the last 180s
+            tick = _latest_tick()
+            if tick and tick.get("timestamp"):
+                try:
+                    tdt = datetime.fromisoformat(str(tick["timestamp"]))
+                    depth_age = (now - tdt).total_seconds()
+                    depth = tick.get("depth") or {}
+                    buy = depth.get("buy") or []
+                    sell = depth.get("sell") or []
+                    depth_recent = depth_age is not None and depth_age < 180 and (len(buy) > 0 or len(sell) > 0)
+                except Exception:
+                    depth_recent = False
+    except Exception as exc:
+        logger.debug(f"health check redis read failed: {exc}")
+
+    # derive status
+    status = "unhealthy"
+    if ltp_fresh and depth_recent:
+        status = "ok"
+    elif ltp_fresh or depth_recent:
+        status = "degraded"
+
+    result.update({
+        "status": status,
+        "ltp_fresh": ltp_fresh,
+        "ltp_age_seconds": ltp_age,
+        "depth_recent": depth_recent,
+        "depth_age_seconds": depth_age,
+        "timestamp": now.isoformat()
+    })
+    return result
 
 
 @app.get("/api/metrics/llm")
@@ -185,6 +299,17 @@ async def get_market_data() -> Dict[str, Any]:
     low_24h = None
     vwap = None
     change_24h = None
+    now = datetime.now()
+
+    def _parse_ts(value: Any) -> Optional[datetime]:
+        if isinstance(value, datetime):
+            return value
+        if isinstance(value, str):
+            try:
+                return datetime.fromisoformat(value)
+            except Exception:
+                return None
+        return None
     
     try:
         if marketmemory and marketmemory._redis_available:
@@ -197,46 +322,40 @@ async def get_market_data() -> Dict[str, Any]:
         _, db = _safe_db()
         ohlc_collection = get_collection(db, "ohlc_history")
         
+        raw_ohlc = list(ohlc_collection.find({"instrument": settings.instrument_symbol}).sort("timestamp", -1).limit(500))
+        parsed_ohlc = []
+        for candle in raw_ohlc:
+            ts = _parse_ts(candle.get("timestamp"))
+            if ts:
+                candle["_parsed_ts"] = ts
+                parsed_ohlc.append(candle)
+        recent_ohlc = [c for c in parsed_ohlc if c["_parsed_ts"] >= now - timedelta(hours=24)]
+        recent_ohlc.sort(key=lambda c: c["_parsed_ts"])
+
         # Get current price from latest OHLC if not from Redis
-        if not current_price:
-            last_ohlc = ohlc_collection.find_one({"instrument": settings.instrument_symbol}, sort=[("timestamp", -1)])
-            if last_ohlc and last_ohlc.get("close"):
-                current_price = last_ohlc["close"]
-        
-        # Calculate 24h metrics from OHLC history
-        now = datetime.now()
-        twenty_four_hours_ago = now - timedelta(hours=24)
-        recent_ohlc = list(ohlc_collection.find({
-            "instrument": settings.instrument_symbol,
-            "timestamp": {"$gte": twenty_four_hours_ago}
-        }).sort("timestamp", 1))
+        if not current_price and parsed_ohlc:
+            current_price = parsed_ohlc[0].get("close")
         
         if recent_ohlc:
-            # Calculate 24h high, low, volume
             high_24h = max(candle.get("high", 0) for candle in recent_ohlc)
-            low_24h = min(candle.get("low", float('inf')) for candle in recent_ohlc if candle.get("low", 0) > 0)
-            if low_24h == float('inf'):
-                low_24h = None
-            
-            # Calculate 24h volume
+            valid_lows = [candle.get("low") for candle in recent_ohlc if candle.get("low") not in (None, 0)]
+            low_24h = min(valid_lows) if valid_lows else None
             volume_24h = sum(candle.get("volume", 0) for candle in recent_ohlc)
             
-            # Calculate VWAP (Volume Weighted Average Price)
             total_volume = 0
             vwap_sum = 0
             for candle in recent_ohlc:
                 vol = candle.get("volume", 0)
-                if vol > 0:
+                if vol and vol > 0:
                     typical_price = (candle.get("high", 0) + candle.get("low", 0) + candle.get("close", 0)) / 3
                     vwap_sum += typical_price * vol
                     total_volume += vol
             if total_volume > 0:
                 vwap = vwap_sum / total_volume
             
-            # Calculate 24h price change
-            if current_price and recent_ohlc:
+            if current_price:
                 first_price = recent_ohlc[0].get("open", 0)
-                if first_price > 0:
+                if first_price and first_price > 0:
                     change_24h = ((current_price - first_price) / first_price) * 100
                     
     except Exception as exc:
@@ -245,10 +364,12 @@ async def get_market_data() -> Dict[str, Any]:
     market_open = True
     if settings and not getattr(settings, "market_24_7", True):
         try:
+            tz_name = getattr(settings, "timezone", None) or ("Asia/Kolkata" if str(getattr(settings, "instrument_exchange", "")).upper() in {"NSE", "BSE"} else "UTC")
+            tz = ZoneInfo(tz_name)
             open_time = datetime.strptime(settings.market_open_time, "%H:%M:%S").time()
             close_time = datetime.strptime(settings.market_close_time, "%H:%M:%S").time()
-            now = datetime.now().time()
-            market_open = open_time <= now <= close_time
+            now_local = datetime.now(tz).time()
+            market_open = open_time <= now_local <= close_time
         except Exception:
             market_open = True
 
@@ -267,6 +388,44 @@ async def get_market_data() -> Dict[str, Any]:
     }
 
 
+@app.get("/api/order-flow")
+async def get_order_flow() -> Dict[str, Any]:
+    if not OrderFlowAnalyzer:
+        return {"available": False, "reason": "analyzer_unavailable"}
+    tick = _latest_tick()
+    if not tick:
+        return {"available": False, "reason": "no_tick"}
+
+    buy_qty = int(tick.get("buy_quantity") or 0)
+    sell_qty = int(tick.get("sell_quantity") or 0)
+    depth = tick.get("depth") or {}
+    buy_depth = depth.get("buy") or tick.get("depth_buy") or []
+    sell_depth = depth.get("sell") or tick.get("depth_sell") or []
+    bid_price = buy_depth[0].get("price") if buy_depth else None
+    ask_price = sell_depth[0].get("price") if sell_depth else None
+    last_price = tick.get("last_price") or tick.get("price") or 0
+
+    imbalance = OrderFlowAnalyzer.calculate_buy_sell_imbalance(buy_qty, sell_qty)
+    spread = OrderFlowAnalyzer.analyze_bid_ask_spread(bid_price, ask_price, last_price)
+    depth_view = OrderFlowAnalyzer.analyze_market_depth(buy_depth, sell_depth)
+    large_orders = OrderFlowAnalyzer.detect_large_orders(buy_depth, sell_depth)
+
+    return {
+        "available": True,
+        "timestamp": tick.get("timestamp"),
+        "last_price": last_price,
+        "imbalance": imbalance,
+        "spread": spread,
+        "depth": depth_view,
+        "large_orders": large_orders,
+        # Include raw depth data for UI ladder (top 5 levels from Kite)
+        "depth_buy": buy_depth[:5],
+        "depth_sell": sell_depth[:5],
+        "total_bid_quantity": tick.get("total_bid_quantity", sum(d.get("quantity", 0) for d in buy_depth[:5])),
+        "total_ask_quantity": tick.get("total_ask_quantity", sum(d.get("quantity", 0) for d in sell_depth[:5]))
+    }
+
+
 @app.get("/api/recent-trades")
 async def get_recent_trades(limit: int = Query(10, ge=1, le=100)) -> List[Dict[str, Any]]:
     try:
@@ -280,6 +439,108 @@ async def get_recent_trades(limit: int = Query(10, ge=1, le=100)) -> List[Dict[s
     except Exception as exc:
         logger.error(f"recent trades failed: {exc}")
         return []
+
+
+@app.get("/api/options-chain")
+async def get_options_chain() -> Dict[str, Any]:
+    try:
+        if not OptionsChainFetcher:
+            return {"available": False, "reason": "options_not_available"}
+
+        if not settings:
+            return {"available": False, "reason": "no_settings"}
+
+        exchange = str(getattr(settings, "instrument_exchange", "")).upper()
+        if exchange not in {"NFO", "NSE"}:
+            return {"available": False, "reason": "unsupported_instrument"}
+
+        kite = _safe_kite_client()
+        if not kite:
+            return {"available": False, "reason": "missing_token"}
+
+        fetcher = OptionsChainFetcher(kite, marketmemory or MarketMemory(), getattr(settings, "instrument_symbol", "NIFTY BANK"))
+        chain = await fetcher.fetch_options_chain()
+        return chain or {"available": False, "reason": "empty"}
+    except Exception as exc:
+        logger.error(f"options-chain endpoint failed: {exc}")
+        return {"available": False, "reason": "error"}
+
+
+@app.get("/api/decision-snapshot")
+async def get_decision_snapshot() -> Dict[str, Any]:
+    """Return latest decision snapshot from Redis or compute on demand."""
+    instrument = _instrument_key()
+    # Try Redis cache
+    if marketmemory and getattr(marketmemory, "_redis_available", False):
+        try:
+            raw = marketmemory.redis_client.get(f"snapshot:{instrument}:latest")
+            if raw:
+                return json.loads(raw)
+        except Exception:
+            pass
+    # Fallback: build on the fly
+    if build_snapshot:
+        try:
+            return await build_snapshot(marketmemory or MarketMemory())
+        except Exception as exc:
+            logger.error(f"snapshot build failed: {exc}")
+    raise HTTPException(status_code=503, detail="Snapshot unavailable")
+
+
+@app.on_event("startup")
+async def _start_snapshot_scheduler():
+    """Start background snapshot builder if available."""
+    if not build_and_store_forever:
+        return
+    # Default interval 20s; configurable via env FASTAPI_SNAPSHOT_INTERVAL
+    import os
+    try:
+        interval = int(os.getenv("SNAPSHOT_INTERVAL_SECONDS", "20"))
+    except Exception:
+        interval = 20
+    try:
+        asyncio.create_task(build_and_store_forever(interval_seconds=interval))
+        logger.info(f"Decision snapshot scheduler started (interval={interval}s)")
+    except Exception as exc:
+        logger.warning(f"Failed to start snapshot scheduler: {exc}")
+
+
+@app.get("/api/decision-context")
+async def get_decision_context() -> Dict[str, Any]:
+    """Comprehensive context for agents - all data in one call."""
+    try:
+        market = await get_market_data()
+        orderflow = await get_order_flow()
+        options = await get_options_chain()
+        
+        _, db = _safe_db()
+        trades_coll = get_collection(db, "trades_executed")
+        latest_trade = trades_coll.find_one(sort=[("entry_timestamp", -1)])
+        
+        recent_trades = list(trades_coll.find({}).sort("entry_timestamp", -1).limit(10))
+        closed_trades = [t for t in recent_trades if t.get("status") == "CLOSED"]
+        
+        pnl = sum(t.get("pnl", 0) for t in closed_trades)
+        win_count = sum(1 for t in closed_trades if t.get("pnl", 0) > 0)
+        win_rate = (win_count / len(closed_trades) * 100) if closed_trades else 0
+        
+        return {
+            "timestamp": datetime.now().isoformat(),
+            "market": market,
+            "order_flow": orderflow if orderflow.get("available") else None,
+            "options_chain": options if options.get("available") else None,
+            "recent_pnl": pnl,
+            "win_rate": win_rate,
+            "last_signal": latest_trade.get("signal") if latest_trade else "HOLD",
+            "data_freshness": {
+                "market_age_seconds": (datetime.now() - datetime.fromisoformat(market.get("timestamp"))).total_seconds() if market.get("timestamp") else None,
+                "orderflow_available": orderflow.get("available", False),
+                "options_available": options.get("available", False)
+            }
+        }
+    except Exception as exc:
+        logger.error(f"decision-context failed: {exc}")
+        return {"error": str(exc), "timestamp": datetime.now().isoformat()}
 
 
 @app.get("/metrics/trading")
@@ -500,9 +761,16 @@ async def get_portfolio() -> Dict[str, Any]:
     try:
         _, db = _safe_db()
         trades_collection = get_collection(db, "trades_executed")
-        open_trades = list(trades_collection.find({"status": "OPEN"}))
+        
+        # Filter trades by current instrument only
+        current_instrument = getattr(settings, "instrument_symbol", "INSTRUMENT")
+        open_trades = list(trades_collection.find({
+            "status": "OPEN",
+            "instrument": current_instrument
+        }))
+        
         for trade in open_trades:
-            symbol = trade.get("instrument", getattr(settings, "instrument_symbol", "INSTRUMENT"))
+            symbol = trade.get("instrument", current_instrument)
             size = trade.get("quantity", 0)
             entry_price = trade.get("entry_price", 0)
             current_price = None
