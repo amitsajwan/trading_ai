@@ -83,6 +83,8 @@ class DepthCollector:
                     tick = {
                         "instrument_token": token,
                         "last_price": data.get("last_price"),
+                        "volume": data.get("volume"),
+                        "average_price": data.get("average_price"),
                         "timestamp": datetime.now().isoformat(),
                     }
                     depth = data.get("depth") or {}

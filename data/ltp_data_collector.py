@@ -42,6 +42,8 @@ class LTPDataCollector:
         
         # Price tracking for OHLC
         self.price_history = []
+        # Track cumulative volume for delta computation
+        self._last_cum_volume: Optional[float] = None
     
     def _instrument_key(self) -> str:
         sym = (settings.instrument_symbol or "NIFTY BANK").upper().replace(" ", "")
@@ -92,7 +94,7 @@ class LTPDataCollector:
             logger.error(f"Error fetching LTP: {e}")
             return None
     
-    def update_ohlc_from_price(self, price: float, timestamp: datetime):
+    def update_ohlc_from_price(self, price: float, timestamp: datetime, volume_delta: float = 0.0):
         """Update OHLC candles from current price."""
         def get_candle_key(dt: datetime, minutes: int) -> str:
             rounded_minute = (dt.minute // minutes) * minutes
@@ -114,7 +116,7 @@ class LTPDataCollector:
                 "high": price,
                 "low": price,
                 "close": price,
-                "volume": 0,
+                "volume": float(volume_delta) if volume_delta else 0,
                 "timeframe": "1min"
             }
         else:
@@ -122,6 +124,8 @@ class LTPDataCollector:
             candle["high"] = max(candle["high"], price)
             candle["low"] = min(candle["low"], price)
             candle["close"] = price
+            if volume_delta:
+                candle["volume"] = float(candle.get("volume", 0)) + float(volume_delta)
         
         # Similar for other timeframes
         for minutes, timeframe in [(5, "5min"), (15, "15min")]:
@@ -137,7 +141,7 @@ class LTPDataCollector:
                     "high": price,
                     "low": price,
                     "close": price,
-                    "volume": 0,
+                    "volume": float(volume_delta) if volume_delta else 0,
                     "timeframe": timeframe
                 }
             else:
@@ -145,6 +149,8 @@ class LTPDataCollector:
                 candle["high"] = max(candle["high"], price)
                 candle["low"] = min(candle["low"], price)
                 candle["close"] = price
+                if volume_delta:
+                    candle["volume"] = float(candle.get("volume", 0)) + float(volume_delta)
         
         # Hourly
         key_hourly = timestamp.replace(minute=0, second=0, microsecond=0).isoformat()
@@ -159,7 +165,7 @@ class LTPDataCollector:
                 "high": price,
                 "low": price,
                 "close": price,
-                "volume": 0,
+                "volume": float(volume_delta) if volume_delta else 0,
                 "timeframe": "hourly"
             }
         else:
@@ -167,6 +173,8 @@ class LTPDataCollector:
             candle["high"] = max(candle["high"], price)
             candle["low"] = min(candle["low"], price)
             candle["close"] = price
+            if volume_delta:
+                candle["volume"] = float(candle.get("volume", 0)) + float(volume_delta)
     
     def _finalize_candle(self, timeframe: str, candle: Dict[str, Any]):
         """Finalize and store a completed candle."""
@@ -199,6 +207,28 @@ class LTPDataCollector:
                 
                 if price:
                     timestamp = datetime.now()
+                    # Compute volume delta from Redis (cumulative volume via depth collector)
+                    volume_delta = 0.0
+                    try:
+                        if getattr(self.market_memory, "_redis_available", False):
+                            key = self._instrument_key()
+                            vol_str = self.market_memory.redis_client.get(f"volume:{key}:latest")
+                            if vol_str is not None:
+                                curr_vol = float(vol_str)
+                                if self._last_cum_volume is None:
+                                    # initialize baseline for the session
+                                    self._last_cum_volume = curr_vol
+                                    volume_delta = 0.0
+                                else:
+                                    # handle daily reset
+                                    if curr_vol >= self._last_cum_volume:
+                                        volume_delta = max(0.0, curr_vol - self._last_cum_volume)
+                                    else:
+                                        # reset detected
+                                        volume_delta = 0.0
+                                    self._last_cum_volume = curr_vol
+                    except Exception as e:
+                        logger.debug(f"volume delta calc failed: {e}")
                     
                     # Store tick
                     tick_data = {
@@ -209,7 +239,7 @@ class LTPDataCollector:
                     self.market_memory.store_tick(self._instrument_key(), tick_data)
                     
                     # Update OHLC
-                    self.update_ohlc_from_price(price, timestamp)
+                    self.update_ohlc_from_price(price, timestamp, volume_delta=volume_delta)
                     
                     price_count += 1
                     if price != last_price:
