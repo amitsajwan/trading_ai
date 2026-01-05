@@ -1,6 +1,15 @@
-const currencySymbol = window.INSTRUMENT_SYMBOL.includes('BTC') || window.INSTRUMENT_SYMBOL.includes('ETH') ? '$' : '₹';
+// Currency symbol - detect from instrument metadata
+let currencySymbol = '₹';  // Default to INR
 const dataTimestamps = {};
 let refreshCountdown = 10;
+
+// Detect currency from backend or instrument symbol
+function detectCurrency(instrument) {
+    if (!instrument) return '₹';
+    const sym = String(instrument).toUpperCase();
+    if (sym.includes('BTC') || sym.includes('ETH') || sym.includes('USD')) return '$';
+    return '₹';
+}
 
 function formatCurrency(val) {
     return currencySymbol + parseFloat(val || 0).toLocaleString('en-IN', {minimumFractionDigits: 2, maximumFractionDigits: 2});
@@ -61,7 +70,7 @@ if (localStorage.getItem('darkMode') === 'true') {
 
 async function loadData() {
     try {
-        const [signal, market, metrics, risk, trades, agents, portfolio, health, technicals, latestAnalysis, llm] = await Promise.all([
+        const [signal, market, metrics, risk, trades, agents, portfolio, health, technicals, latestAnalysis, llm, orderflow, optionsChain] = await Promise.all([
             fetch('/api/latest-signal').then(r => r.json()).catch(() => ({})),
             fetch('/api/market-data').then(r => r.json()).catch(() => ({})),
             fetch('/metrics/trading').then(r => r.json()).catch(() => ({})),
@@ -72,8 +81,13 @@ async function loadData() {
             fetch('/api/system-health').then(r => r.json()).catch(() => ({})),
             fetch('/api/technical-indicators').then(r => r.json()).catch(() => ({})),
             fetch('/api/latest-analysis').then(r => r.json()).catch(() => ({})),
-            fetch('/api/metrics/llm').then(r => r.json()).catch(() => ({}))
+            fetch('/api/metrics/llm').then(r => r.json()).catch(() => ({})),
+            fetch('/api/order-flow').then(r => r.json()).catch(() => ({available:false})),
+            fetch('/api/options-chain').then(r => r.json()).catch(() => ({available:false}))
         ]);
+        
+        // Update currency symbol based on instrument
+        currencySymbol = detectCurrency(window.INSTRUMENT_SYMBOL);
         
         updateSignal(signal);
         updateMarketData(market);
@@ -86,6 +100,8 @@ async function loadData() {
         updateSystemStatus(health, agents, llm);
         displayTechnicals(technicals);
         updateLLMProviders(llm);
+        displayOrderFlow(orderflow);
+        displayOptionsChain(optionsChain);
         
         document.getElementById('last-update').textContent = 'Last updated: ' + new Date().toLocaleTimeString();
     } catch (error) {
@@ -120,13 +136,14 @@ function updateMarketData(market) {
     changeEl.className = 'metric-value ' + (change >= 0 ? 'metric-positive' : 'metric-negative');
     
     // Volume - format with K/M/B suffix
-    const volume = market.volume24h || market.volume_24h || market.volume || 0;
+    const volume = (market.volume24h ?? market.volume_24h ?? market.volume);
     let volumeText = 'No data';
-    if (volume > 0) {
-        if (volume >= 1e9) volumeText = (volume / 1e9).toFixed(2) + 'B';
-        else if (volume >= 1e6) volumeText = (volume / 1e6).toFixed(2) + 'M';
-        else if (volume >= 1e3) volumeText = (volume / 1e3).toFixed(2) + 'K';
-        else volumeText = volume.toFixed(0);
+    if (volume !== undefined && volume !== null) {
+        const volNum = Number(volume) || 0;
+        if (volNum >= 1e9) volumeText = (volNum / 1e9).toFixed(2) + 'B';
+        else if (volNum >= 1e6) volumeText = (volNum / 1e6).toFixed(2) + 'M';
+        else if (volNum >= 1e3) volumeText = (volNum / 1e3).toFixed(2) + 'K';
+        else volumeText = volNum.toFixed(0);
     }
     document.getElementById('volume-24h').textContent = volumeText;
     
@@ -503,6 +520,101 @@ function updateLLMProviders(metrics) {
 
     html += '</div>';
     container.innerHTML = html;
+}
+
+function displayOrderFlow(data) {
+    const card = document.getElementById('orderflow-card');
+    if (!card) return;
+    if (!data || data.available === false) {
+        card.style.display = 'none';
+        return;
+    }
+    card.style.display = 'block';
+    const ts = data.timestamp || new Date().toISOString();
+    updateTimestamp('orderflow-timestamp', ts);
+    document.getElementById('orderflow-lastprice').textContent = data.last_price ? formatCurrency(data.last_price) : '-';
+
+    const imbalance = data.imbalance || {};
+    const pct = imbalance.imbalance_pct != null ? imbalance.imbalance_pct.toFixed(2) + '%' : '-';
+    document.getElementById('orderflow-imbalance').textContent = `${pct} (${imbalance.imbalance_status || 'NEUTRAL'})`;
+
+    const spread = data.spread || {};
+    const spreadText = spread.spread_pct != null ? spread.spread_pct.toFixed(2) + '%' : 'n/a';
+    document.getElementById('orderflow-spread').textContent = `${spreadText} (${spread.spread_status || 'UNKNOWN'})`;
+
+    // Display total depth quantities
+    const totalBidQty = data.total_bid_quantity || 0;
+    const totalAskQty = data.total_ask_quantity || 0;
+    document.getElementById('orderflow-total-depth').textContent = `${totalBidQty} / ${totalAskQty}`;
+
+    // Render depth ladder (top 5 levels from Kite)
+    const depthBuy = data.depth_buy || [];
+    const depthSell = data.depth_sell || [];
+    const ladderBody = document.getElementById('depth-ladder-body');
+    
+    if (!depthBuy.length || !depthSell.length) {
+        ladderBody.innerHTML = '<tr><td colspan="4" class="loading">No depth data</td></tr>';
+        return;
+    }
+    
+    let ladderHtml = '';
+    const maxLevels = Math.max(depthBuy.length, depthSell.length);
+    
+    for (let i = 0; i < Math.min(maxLevels, 5); i++) {
+        const bid = depthBuy[i] || {};
+        const ask = depthSell[i] || {};
+        
+        const bidQty = bid.quantity || '-';
+        const bidPrice = bid.price ? formatCurrency(bid.price) : '-';
+        const askPrice = ask.price ? formatCurrency(ask.price) : '-';
+        const askQty = ask.quantity || '-';
+        
+        ladderHtml += '<tr>' +
+            `<td style="color: #10b981;">${bidQty}</td>` +
+            `<td style="color: #10b981; font-weight: 600;">${bidPrice}</td>` +
+            `<td style="color: #ef4444; font-weight: 600;">${askPrice}</td>` +
+            `<td style="color: #ef4444;">${askQty}</td>` +
+            '</tr>';
+    }
+    
+    ladderBody.innerHTML = ladderHtml;
+}
+
+function displayOptionsChain(chain) {
+    const card = document.getElementById('options-card');
+    if (!card) return;
+    
+    // Show card if instrument supports options (NFO), hide for crypto
+    const isCrypto = currencySymbol === '$';
+    if (isCrypto || !chain || chain.available === false) {
+        card.style.display = 'none';
+        return;
+    }
+    
+    card.style.display = 'block';
+    const ts = chain.timestamp || new Date().toISOString();
+    updateTimestamp('options-timestamp', ts);
+    document.getElementById('options-fut-price').textContent = chain.futures_price ? formatCurrency(chain.futures_price) : '-';
+
+    const tbody = document.getElementById('options-body');
+    const strikes = chain.strikes || {};
+    const strikeList = Object.keys(strikes).sort((a,b) => Number(a)-Number(b)).slice(0, 8);
+    if (!strikeList.length) {
+        tbody.innerHTML = '<tr><td colspan="5" class="loading">No options data (market closed or no recent expiry)</td></tr>';
+        return;
+    }
+    let html = '';
+    strikeList.forEach(s => {
+        const row = strikes[s] || {};
+        html += '<tr>' +
+            `<td>${s}</td>` +
+            `<td>${row.ce_ltp != null ? formatCurrency(row.ce_ltp) : '-'}</td>` +
+            `<td>${row.ce_oi != null ? row.ce_oi : '-'}</td>` +
+            `<td>${row.pe_ltp != null ? formatCurrency(row.pe_ltp) : '-'}</td>` +
+            `<td>${row.pe_oi != null ? row.pe_oi : '-'}</td>` +
+        '</tr>';
+    });
+    tbody.innerHTML = html;
 }
 
 // Update refresh countdown every second
