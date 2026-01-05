@@ -68,6 +68,15 @@ class TradingConfig(BaseModel):
     news_query: str = Field(default="Bank Nifty OR banking sector OR RBI")  # News API query
     news_keywords: str = Field(default="Bank Nifty,banking sector,RBI")  # Comma-separated keywords
     
+    # RSS Feed Configuration
+    rss_feeds_enabled: bool = Field(default=True)  # Enable RSS feeds
+    rss_moneycontrol_latest: str = Field(default="https://www.moneycontrol.com/rss/latestnews.xml")
+    rss_moneycontrol_economy: str = Field(default="https://www.moneycontrol.com/rss/economy.xml")
+    rss_moneycontrol_markets: str = Field(default="https://www.moneycontrol.com/rss/markets.xml")
+    rss_moneycontrol_business: str = Field(default="https://www.moneycontrol.com/rss/businessnews.xml")
+    rss_keywords: str = Field(default="Nifty,Bank Nifty,RBI,FII,DII,volatility,OI,options,expire,bank,sensex,index,market,stock,bse,nse,rupee,dollar,economy,growth,inflation,policy,rate,hike,cut,gdp,monsoon,export,import,fiscal,budget")  # RSS filter keywords
+    rss_update_interval_seconds: int = Field(default=60)  # Poll RSS every 60 seconds
+    
     # Macro Data Configuration
     macro_data_enabled: bool = Field(default=True)  # Enable RBI/macro data (false for crypto)
     crypto_macro_indicators: Optional[str] = Field(default=None)  # Crypto-specific indicators
@@ -79,8 +88,7 @@ class TradingConfig(BaseModel):
     
     # Data Collection
     finnhub_api_key: Optional[str] = Field(default=None)
-    eodhd_api_key: Optional[str] = Field(default=None)
-    news_api_provider: str = Field(default="newsapi")  # "newsapi", "finnhub", "eodhd"
+    news_api_provider: str = Field(default="newsapi")  # "newsapi", "finnhub"
     news_update_interval_minutes: int = Field(default=5)
     sentiment_update_interval_minutes: int = Field(default=10)
     
@@ -174,6 +182,15 @@ class TradingConfig(BaseModel):
             news_query=os.getenv("NEWS_QUERY", "Bank Nifty OR banking sector OR RBI"),
             news_keywords=os.getenv("NEWS_KEYWORDS", "Bank Nifty,banking sector,RBI"),
             
+            # RSS Feed Configuration
+            rss_feeds_enabled=os.getenv("RSS_FEEDS_ENABLED", "true").lower() == "true",
+            rss_moneycontrol_latest=os.getenv("RSS_MONEYCONTROL_LATEST", "https://www.moneycontrol.com/rss/latestnews.xml"),
+            rss_moneycontrol_economy=os.getenv("RSS_MONEYCONTROL_ECONOMY", "https://www.moneycontrol.com/rss/economy.xml"),
+            rss_moneycontrol_markets=os.getenv("RSS_MONEYCONTROL_MARKETS", "https://www.moneycontrol.com/rss/markets.xml"),
+            rss_moneycontrol_business=os.getenv("RSS_MONEYCONTROL_BUSINESS", "https://www.moneycontrol.com/rss/businessnews.xml"),
+            rss_keywords=os.getenv("RSS_KEYWORDS", "Nifty,Bank Nifty,RBI,FII,DII,volatility,OI,options,expire,bank,sensex,index,market,stock,bse,nse,rupee,dollar,economy,growth,inflation,policy,rate,hike,cut,gdp,monsoon,export,import,fiscal,budget"),
+            rss_update_interval_seconds=int(os.getenv("RSS_UPDATE_INTERVAL_SECONDS", "60")),
+            
             # Macro Data Configuration
             macro_data_enabled=os.getenv("MACRO_DATA_ENABLED", "true").lower() == "true",
             crypto_macro_indicators=os.getenv("CRYPTO_MACRO_INDICATORS"),
@@ -185,7 +202,6 @@ class TradingConfig(BaseModel):
             
             # Data Collection
             finnhub_api_key=os.getenv("FINNHUB_API_KEY"),
-            eodhd_api_key=os.getenv("EODHD_API_KEY"),
             news_api_provider=os.getenv("NEWS_API_PROVIDER", "newsapi"),
             news_update_interval_minutes=int(os.getenv("NEWS_UPDATE_INTERVAL_MINUTES", "5")),
             sentiment_update_interval_minutes=int(os.getenv("SENTIMENT_UPDATE_INTERVAL_MINUTES", "10")),

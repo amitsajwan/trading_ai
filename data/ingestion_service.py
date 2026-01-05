@@ -58,32 +58,83 @@ class DataIngestionService:
         }
     
     def get_instrument_token(self, instrument: Optional[str] = None) -> Optional[int]:
-        """Get instrument token for the configured instrument symbol."""
+        """Get instrument token for the configured instrument symbol.
+
+        Handles:
+        - NSE indices (e.g., "NIFTY BANK")
+        - NFO futures (e.g., nearest monthly future for BANKNIFTY/NIFTY)
+        - Direct instrument tokens via env
+        """
         try:
             # Use configured instrument symbol if not provided
             if instrument is None:
                 instrument = settings.instrument_symbol
-            
+
             # If token is directly configured, use it
-            if settings.instrument_token and settings.instrument_token.isdigit():
-                return int(settings.instrument_token)
-            
-            # Get instrument list from configured exchange
-            exchange = settings.instrument_exchange
+            if settings.instrument_token and str(settings.instrument_token).isdigit():
+                return int(settings.instrument_token)  # type: ignore[arg-type]
+
+            exchange = (settings.instrument_exchange or "NSE").upper()
+
+            # Special handling for NFO futures: pick nearest monthly FUT
+            if exchange == "NFO":
+                all_instruments = self.kite.instruments("NFO")
+                symbol_root = instrument.replace(" ", "").upper()
+
+                # For BANKNIFTY/NIFTY, select nearest FUT contract for that root
+                candidates = []
+                for inst in all_instruments:
+                    try:
+                        seg = inst.get("segment") or inst.get("segment_name") or ""
+                        tsym = str(inst.get("tradingsymbol", "")).upper()
+                        name = str(inst.get("name", "")).upper()
+                        expiry = inst.get("expiry")
+                        if not expiry:
+                            continue
+                        # Normalize root (e.g., BANKNIFTY, NIFTY)
+                        if name in {"BANKNIFTY", "NIFTY"} and name in symbol_root and "FUT" in tsym and "-FUT" not in tsym:
+                            candidates.append(inst)
+                        elif tsym.startswith(symbol_root) and tsym.endswith("FUT"):
+                            candidates.append(inst)
+                    except Exception:
+                        continue
+
+                if candidates:
+                    # Pick the instrument with the nearest future expiry >= today
+                    from datetime import date
+                    today = date.today()
+                    def expiry_key(x):
+                        exp = x.get("expiry")
+                        # Kite returns date or str; normalize to date
+                        if hasattr(exp, "date"):
+                            expd = exp.date()  # type: ignore[attr-defined]
+                        else:
+                            try:
+                                expd = datetime.fromisoformat(str(exp)).date()
+                            except Exception:
+                                expd = today
+                        # Push past expiries to the end
+                        return (expd < today, expd)
+
+                    chosen = sorted(candidates, key=expiry_key)[0]
+                    return int(chosen.get("instrument_token"))
+
+                logger.warning(f"No NFO FUT contract found for '{instrument}'.")
+                return None
+
+            # Default path: pick by exact symbol/name on configured exchange
             instruments = self.kite.instruments(exchange)
-            
-            # Find instrument by symbol or name
             for inst in instruments:
-                if (inst.get("tradingsymbol") == instrument or 
+                if (inst.get("tradingsymbol") == instrument or
                     inst.get("name") == instrument or
                     inst.get("tradingsymbol") == settings.instrument_symbol or
                     inst.get("name") == settings.instrument_name):
                     return inst["instrument_token"]
-            
-            # Fallback: try to parse if it's already a token
-            if instrument.isdigit():
+
+            # Fallback: if instrument string is a token
+            if str(instrument).isdigit():
                 return int(instrument)
-            
+
             logger.warning(f"Instrument '{instrument}' not found in {exchange}")
             return None
         except Exception as e:
@@ -105,7 +156,16 @@ class DataIngestionService:
             try:
                 instrument_token = tick.get("instrument_token")
                 last_price = tick.get("last_price", 0.0)
-                volume = tick.get("volume", 0)
+                # Kite sends volume=0 for indices; fall back to last_traded_quantity or depth sums
+                raw_volume = tick.get("volume")
+                last_traded_qty = tick.get("last_traded_quantity", 0)
+                buy_qty = tick.get("buy_quantity", 0)
+                sell_qty = tick.get("sell_quantity", 0)
+                volume = raw_volume if raw_volume is not None else 0
+                if not volume and last_traded_qty:
+                    volume = last_traded_qty
+                if not volume and (buy_qty or sell_qty):
+                    volume = buy_qty + sell_qty
                 timestamp = datetime.now()
                 
                 if not last_price or last_price == 0:
@@ -116,13 +176,13 @@ class DataIngestionService:
                 
                 # Extract all available tick data (MODE_FULL provides more fields)
                 tick_ohlc = tick.get("ohlc", {})
-                buy_quantity = tick.get("buy_quantity", 0)
-                sell_quantity = tick.get("sell_quantity", 0)
+                buy_quantity = buy_qty
+                sell_quantity = sell_qty
                 average_price = tick.get("average_price", last_price)
                 change = tick.get("change", 0.0)
                 net_change = tick.get("net_change", 0.0)
                 last_traded_price = tick.get("last_traded_price", last_price)
-                last_traded_quantity = tick.get("last_traded_quantity", 0)
+                last_traded_quantity = last_traded_qty
                 
                 # Extract market depth (bid/ask)
                 depth = tick.get("depth", {})
@@ -135,14 +195,29 @@ class DataIngestionService:
                 best_ask_price = sell_depth[0].get("price") if sell_depth else None
                 best_ask_quantity = sell_depth[0].get("quantity") if sell_depth else 0
                 
+                # Calculate depth metrics (all 5 levels from Kite)
+                total_bid_qty = sum(level.get("quantity", 0) for level in buy_depth[:5]) if buy_depth else 0
+                total_ask_qty = sum(level.get("quantity", 0) for level in sell_depth[:5]) if sell_depth else 0
+                
+                # Weighted average prices (for slippage estimation)
+                weighted_bid_price = None
+                weighted_ask_price = None
+                if buy_depth and total_bid_qty > 0:
+                    weighted_bid_price = sum(level.get("price", 0) * level.get("quantity", 0) 
+                                            for level in buy_depth[:5]) / total_bid_qty
+                if sell_depth and total_ask_qty > 0:
+                    weighted_ask_price = sum(level.get("price", 0) * level.get("quantity", 0) 
+                                            for level in sell_depth[:5]) / total_ask_qty
+                
                 # Calculate derived signals
                 bid_ask_spread = (best_ask_price - best_bid_price) if (best_bid_price and best_ask_price) else None
                 buy_sell_imbalance = (buy_quantity / (buy_quantity + sell_quantity)) if (buy_quantity + sell_quantity > 0) else 0.5
+                depth_imbalance = (total_bid_qty / (total_bid_qty + total_ask_qty)) if (total_bid_qty + total_ask_qty > 0) else 0.5
                 
                 # Log first few ticks and then every 100th tick
                 if self._tick_count <= 10 or self._tick_count % 100 == 0:
                     logger.info(f"📊 Tick #{self._tick_count}: Price={last_price:.2f}, Volume={volume}, "
-                              f"Buy={buy_quantity}, Sell={sell_quantity}, Spread={bid_ask_spread}")
+                              f"Depth: Bid={total_bid_qty} Ask={total_ask_qty}, Spread={bid_ask_spread}")
                 
                 # Store comprehensive tick data
                 try:
@@ -170,9 +245,14 @@ class DataIngestionService:
                         "net_change": net_change,
                         "last_traded_price": last_traded_price,
                         "last_traded_quantity": last_traded_quantity,
-                        # Market depth (store top 3 levels)
-                        "depth_buy": buy_depth[:3] if buy_depth else [],
-                        "depth_sell": sell_depth[:3] if sell_depth else []
+                        # Market depth (store all 5 levels from Kite)
+                        "depth_buy": buy_depth[:5] if buy_depth else [],
+                        "depth_sell": sell_depth[:5] if sell_depth else [],
+                        "total_bid_quantity": total_bid_qty,
+                        "total_ask_quantity": total_ask_qty,
+                        "depth_imbalance": depth_imbalance,
+                        "weighted_bid_price": weighted_bid_price,
+                        "weighted_ask_price": weighted_ask_price
                     }
                     # Use configured instrument symbol for storage
                     instrument_key = settings.instrument_symbol.replace("-", "").replace(" ", "").upper()

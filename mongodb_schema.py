@@ -31,8 +31,8 @@ def setup_mongodb(db_name: Optional[str] = None):
 
     # 1. OHLC History Collection
     ohlc_history = db["ohlc_history"]
-    ohlc_history.create_index([("timestamp", DESCENDING), ("instrument", ASCENDING)])
-    ohlc_history.create_index([("instrument", ASCENDING), ("timeframe", ASCENDING)])
+    ohlc_history.create_index([("instrument", ASCENDING), ("timestamp", DESCENDING)])
+    ohlc_history.create_index([("instrument", ASCENDING), ("timeframe", ASCENDING), ("timestamp", DESCENDING)])
     ohlc_history.create_index("timestamp", expireAfterSeconds=2592000)  # 30-day TTL for raw ticks
     
     # 2. Trades Executed Collection

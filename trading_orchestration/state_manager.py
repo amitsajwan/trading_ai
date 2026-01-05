@@ -8,6 +8,7 @@ from data.market_memory import MarketMemory
 from data.macro_collector import MacroCollector
 from data.volume_analyzer import VolumeAnalyzer
 from data.order_flow_analyzer import OrderFlowAnalyzer
+from data.options_chain_fetcher import OptionsChainFetcher
 from mongodb_schema import get_mongo_client, get_collection
 from config.settings import settings
 
@@ -62,6 +63,29 @@ class StateManager:
         # Calculate order flow signals
         order_flow_signals = self._calculate_order_flow_signals(latest_tick)
         
+        # Get options chain if NFO instrument (enrich decision context)
+        options_chain = None
+        put_call_ratio = None
+        max_pain = None
+        try:
+            # Try to fetch from dashboard API (synchronous version)
+            import requests
+            dashboard_url = f"http://localhost:{getattr(settings, 'dashboard_port', 8000)}/api/options-chain"
+            response = requests.get(dashboard_url, timeout=3.0)
+            if response.status_code == 200:
+                chain_data = response.json()
+                if chain_data.get("available"):
+                    options_chain = chain_data
+                    # Calculate put-call ratio from OI
+                    strikes = chain_data.get("strikes", {})
+                    total_ce_oi = sum(s.get("ce_oi", 0) for s in strikes.values())
+                    total_pe_oi = sum(s.get("pe_oi", 0) for s in strikes.values())
+                    if total_ce_oi > 0:
+                        put_call_ratio = total_pe_oi / total_ce_oi
+                    logger.info(f"Options chain loaded: PCR={put_call_ratio:.2f if put_call_ratio else 'N/A'}")
+        except Exception as exc:
+            logger.debug(f"Options chain unavailable: {exc}")
+        
         # Initialize state
         state = AgentState(
             current_price=current_price,
@@ -91,11 +115,15 @@ class StateManager:
             vwap=volume_analysis.get("vwap"),
             obv=volume_analysis.get("obv"),
             # Order flow signals
-            order_flow_signals=order_flow_signals
+            order_flow_signals=order_flow_signals,
+            # Options chain (for NFO)
+            options_chain=options_chain,
+            put_call_ratio=put_call_ratio,
+            max_pain=max_pain
         )
         
         logger.info(f"State initialized: price={current_price}, sentiment={sentiment_score:.2f}, news_items={len(latest_news)}, "
-                   f"order_flow={'available' if latest_tick else 'unavailable'}")
+                   f"order_flow={'available' if latest_tick else 'unavailable'}, options={'available' if options_chain else 'unavailable'}")
         
         return state
     

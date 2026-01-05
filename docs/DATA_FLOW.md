@@ -18,7 +18,7 @@ The GenAI Trading System processes real-time market data through a multi-stage p
 
 | Data Type | Source | Update Frequency | Purpose |
 |-----------|--------|------------------|---------|
-| **News** | Finnhub/EODHD | 5-10 min | Sentiment Analysis |
+| **News** | Finnhub/Moneycontrol RSS | 5-10 min | Sentiment Analysis |
 | **Macro** | RBI, Trading Economics | Daily | Economic Context |
 | **Options** | Zerodha Kite | Real-time | Volatility, Open Interest |
 

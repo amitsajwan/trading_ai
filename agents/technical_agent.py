@@ -173,6 +173,14 @@ Analyze OHLC data and provide structured technical analysis."""
         logger.info("Processing technical analysis...")
         
         try:
+            # Add order-flow context to technical analysis
+            orderflow_context = ""
+            if state.order_flow_signals:
+                imb = state.order_flow_signals.get("imbalance", {})
+                spread = state.order_flow_signals.get("spread", {})
+                depth = state.order_flow_signals.get("depth", {})
+                orderflow_context = f"\nOrder Flow: Imbalance {imb.get('imbalance_status', 'NEUTRAL')}, Spread {spread.get('spread_status', 'NORMAL')}, Depth {depth.get('depth_imbalance', 'BALANCED')}"
+            
             # Convert OHLC data to DataFrame
             # Prefer 15-min data for bias over the next 15 minutes,
             # then fall back to 5-min, then 1-min.

@@ -105,8 +105,12 @@ def _safe_db():
 
 
 def _instrument_key() -> str:
-    symbol = getattr(settings, "instrument_symbol", "INSTRUMENT") if settings else "INSTRUMENT"
-    return symbol.replace("-", "").replace(" ", "").upper()
+    symbol = getattr(settings, "instrument_symbol", "NIFTY BANK") if settings else "NIFTY BANK"
+    sym = symbol.upper().replace(" ", "")
+    if "BANKNIFTY" in sym or "NIFTYBANK" in sym:
+        # Use NIFTYBANK as the normalized key for Bank Nifty
+        return "NIFTYBANK"
+    return "NIFTY"
 
 
 def _instrument_synonyms() -> Set[str]:
@@ -316,6 +320,7 @@ async def get_market_data() -> Dict[str, Any]:
     low_24h = None
     vwap = None
     change_24h = None
+    futures_oi = None
     now = datetime.now()
 
     def _parse_ts(value: Any) -> Optional[datetime]:
@@ -328,7 +333,7 @@ async def get_market_data() -> Dict[str, Any]:
                 return None
         return None
     
-    instrument_key = settings.instrument_symbol.replace("-", "").replace(" ", "").upper() if settings else "INSTRUMENT"
+    instrument_key = _instrument_key()
     try:
         if marketmemory and marketmemory._redis_available:
             current_price = marketmemory.get_current_price(instrument_key)
@@ -343,6 +348,12 @@ async def get_market_data() -> Dict[str, Any]:
                 vwap_str = marketmemory.redis_client.get(f"vwap:{instrument_key}:latest")
                 if vwap_str is not None:
                     vwap = float(vwap_str)
+            except Exception:
+                pass
+            try:
+                oi_str = marketmemory.redis_client.get(f"oi:{instrument_key}:latest")
+                if oi_str is not None:
+                    futures_oi = float(oi_str)
             except Exception:
                 pass
     except Exception as exc:
@@ -420,20 +431,26 @@ async def get_market_data() -> Dict[str, Any]:
         except Exception:
             market_open = True
 
-    return {
-        "currentprice": current_price,
-        "marketopen": market_open,
-        "instrumentname": getattr(settings, "instrument_name", "Unknown") if settings else "Unknown",
-        "instrumentsymbol": getattr(settings, "instrument_symbol", "INSTRUMENT") if settings else "INSTRUMENT",
-        "datasource": "Redis" if current_price else "MongoDB",
+    resp = {
+        "current_price": current_price,
+        "market_open": market_open,
+        "instrument_name": getattr(settings, "instrument_name", "Unknown") if settings else "Unknown",
+        "instrument_symbol": getattr(settings, "instrument_symbol", "INSTRUMENT") if settings else "INSTRUMENT",
+        "data_source": "Redis" if current_price else "MongoDB",
         # Use UTC timestamp to avoid client timezone skew in relative labels
         "timestamp": datetime.utcnow().isoformat() + "Z",
-        "volume24h": volume_24h,
-        "high24h": high_24h,
-        "low24h": low_24h,
+        "volume_24h": volume_24h,
+        "high_24h": high_24h,
+        "low_24h": low_24h,
         "vwap": vwap,
-        "change24h": change_24h
+        "change_24h": change_24h,
+        "futures": {
+            "volume": volume_24h,
+            "oi": futures_oi,
+            "average_price": vwap,
+        }
     }
+    return add_camel_aliases(resp)
 
 
 @app.get("/api/order-flow")

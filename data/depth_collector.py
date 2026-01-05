@@ -26,16 +26,51 @@ class DepthCollector:
     def _instrument_key(self) -> str:
         sym = (settings.instrument_symbol or "NIFTY BANK").upper().replace(" ", "")
         if "BANKNIFTY" in sym or "NIFTYBANK" in sym:
-            return "BANKNIFTY"
+            # Align with dashboard key normalization
+            return "NIFTYBANK"
         return "NIFTY"
 
     def _resolve_token(self) -> Optional[int]:
         key = self._instrument_key()
-        # Prefer NSE index exact match
+        # Respect module-level settings (enables tests to monkeypatch)
+        try:
+            prefer_fut = str(getattr(settings, "instrument_exchange", "")).upper() == "NFO"
+        except Exception:
+            prefer_fut = False
+
+        # Determine symbol family (BankNifty vs Nifty50)
+        is_banknifty = key in {"BANKNIFTY", "NIFTYBANK"}
+        # Order: prefer futures when configured, else NSE index first
+        if prefer_fut:
+            try:
+                today = datetime.now().date()
+                futs: List[Dict[str, Any]] = []
+                for inst in self.kite.instruments("NFO"):
+                    if inst.get("segment") != "NFO-FUT" or inst.get("instrument_type") != "FUT":
+                        continue
+                    ts = (inst.get("tradingsymbol") or "").upper()
+                    if is_banknifty:
+                        # Typical FUT TS contains 'BANKNIFTY'
+                        if "BANKNIFTY" not in ts:
+                            continue
+                    else:
+                        # Ensure plain NIFTY (not BANKNIFTY)
+                        if "NIFTY" not in ts or "BANKNIFTY" in ts:
+                            continue
+                    expiry = inst.get("expiry")
+                    if not expiry or expiry < today:
+                        continue
+                    futs.append(inst)
+                if futs:
+                    futs.sort(key=lambda x: x.get("expiry"))
+                    return futs[0].get("instrument_token")
+            except Exception:
+                pass
+        # Prefer NSE index exact match (fallback or when not preferring futures)
         try:
             for inst in self.kite.instruments("NSE"):
                 ts = (inst.get("tradingsymbol") or "").upper()
-                if ts == ("NIFTY BANK" if key == "BANKNIFTY" else "NIFTY 50"):
+                if ts == ("NIFTY BANK" if is_banknifty else "NIFTY 50"):
                     return inst.get("instrument_token")
         except Exception:
             pass
@@ -47,8 +82,12 @@ class DepthCollector:
                 if inst.get("segment") != "NFO-FUT" or inst.get("instrument_type") != "FUT":
                     continue
                 ts = (inst.get("tradingsymbol") or "").upper()
-                if key not in ts:
-                    continue
+                if is_banknifty:
+                    if "BANKNIFTY" not in ts:
+                        continue
+                else:
+                    if "NIFTY" not in ts or "BANKNIFTY" in ts:
+                        continue
                 expiry = inst.get("expiry")
                 if not expiry or expiry < today:
                     continue
@@ -85,6 +124,7 @@ class DepthCollector:
                         "last_price": data.get("last_price"),
                         "volume": data.get("volume"),
                         "average_price": data.get("average_price"),
+                        "oi": data.get("oi"),
                         "timestamp": datetime.now().isoformat(),
                     }
                     depth = data.get("depth") or {}

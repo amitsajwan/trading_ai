@@ -201,6 +201,57 @@
                     </div>
                 </div>
 
+                <div class="card" id="orderflow-card" style="display:none;">
+                    <div class="card-header">
+                        <span style="font-size: 18px;">📡</span>
+                        <h3 class="card-title">Order Flow & Depth</h3>
+                        <div style="font-size: 11px; color: #6b7280; margin-top: 2px;" id="orderflow-timestamp">Loading...</div>
+                    </div>
+                    <div class="card-content">
+                        <div class="metric-row"><span class="metric-label">Last Price</span><span class="metric-value" id="orderflow-lastprice">-</span></div>
+                        <div class="metric-row"><span class="metric-label">Imbalance</span><span class="metric-value" id="orderflow-imbalance">-</span></div>
+                        <div class="metric-row"><span class="metric-label">Spread</span><span class="metric-value" id="orderflow-spread">-</span></div>
+                        <div class="metric-row"><span class="metric-label">Total Depth (Bid/Ask)</span><span class="metric-value" id="orderflow-total-depth">-</span></div>
+                        
+                        <!-- Market Depth Ladder (Top 5 levels) -->
+                        <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid #e5e7eb;">
+                            <div style="font-size: 0.85rem; font-weight: 600; margin-bottom: 8px; color: #6b7280;">Market Depth (Top 5 Levels)</div>
+                            <table class="data-table" style="font-size: 0.8rem;">
+                                <thead>
+                                    <tr>
+                                        <th>Bid Qty</th>
+                                        <th>Bid Price</th>
+                                        <th>Ask Price</th>
+                                        <th>Ask Qty</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="depth-ladder-body">
+                                    <tr><td colspan="4" class="loading">Loading depth...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card" id="options-card" style="display:none;">
+                    <div class="card-header">
+                        <span style="font-size: 18px;">🧰</span>
+                        <h3 class="card-title">Options Chain</h3>
+                        <div style="font-size: 11px; color: #6b7280; margin-top: 2px;" id="options-timestamp">Loading...</div>
+                    </div>
+                    <div class="card-content" style="overflow:auto; max-height:220px;">
+                        <div class="metric-row"><span class="metric-label">Futures Price</span><span class="metric-value" id="options-fut-price">-</span></div>
+                        <table class="data-table" style="margin-top:8px;">
+                            <thead>
+                                <tr><th>Strike</th><th>CE LTP</th><th>CE OI</th><th>PE LTP</th><th>PE OI</th></tr>
+                            </thead>
+                            <tbody id="options-body">
+                                <tr><td colspan="5" class="loading">Loading chain...</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
                 <div class="card">
                     <div class="card-header">
                         <span style="font-size: 18px;">🏥</span>
@@ -287,6 +338,6 @@
         // Pass instrument symbol from backend to JavaScript
         window.INSTRUMENT_SYMBOL = '{{ INSTRUMENT }}';
     </script>
-    <script src="/static/js/dashboard.js"></script>
+    <script src="/static/js/dashboard.js?v=2"></script>
 </body>
 </html>
