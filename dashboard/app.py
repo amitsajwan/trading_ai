@@ -4,7 +4,7 @@ import asyncio
 from pathlib import Path
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 import csv
 from fastapi import FastAPI, HTTPException, Query
@@ -107,6 +107,23 @@ def _safe_db():
 def _instrument_key() -> str:
     symbol = getattr(settings, "instrument_symbol", "INSTRUMENT") if settings else "INSTRUMENT"
     return symbol.replace("-", "").replace(" ", "").upper()
+
+
+def _instrument_synonyms() -> Set[str]:
+    """Return accepted instrument names for Mongo queries (human-readable).
+
+    Handles cases where env uses compact keys like BANKNIFTY while
+    historical data was stored with display names like NIFTY BANK.
+    """
+    sym = getattr(settings, "instrument_symbol", "INSTRUMENT") if settings else "INSTRUMENT"
+    s = str(sym).strip().upper()
+    names: Set[str] = set()
+    names.add(sym)  # original as-is (case preserved for readability)
+    if s in {"BANKNIFTY", "NIFTYBANK", "NIFTY BANK"}:
+        names.update({"NIFTY BANK", "BANKNIFTY"})
+    if s in {"NIFTY", "NIFTY 50", "NIFTY50"}:
+        names.update({"NIFTY 50", "NIFTY"})
+    return names
 
 
 def _latest_tick() -> Optional[Dict[str, Any]]:
@@ -311,18 +328,46 @@ async def get_market_data() -> Dict[str, Any]:
                 return None
         return None
     
+    instrument_key = settings.instrument_symbol.replace("-", "").replace(" ", "").upper() if settings else "INSTRUMENT"
     try:
         if marketmemory and marketmemory._redis_available:
-            instrument_key = settings.instrument_symbol.replace("-", "").replace(" ", "").upper() if settings else "INSTRUMENT"
             current_price = marketmemory.get_current_price(instrument_key)
+            # Live volume and VWAP direct from Redis (if collectors running)
+            try:
+                vol_str = marketmemory.redis_client.get(f"volume:{instrument_key}:latest")
+                if vol_str is not None:
+                    volume_24h = float(vol_str)
+            except Exception:
+                pass
+            try:
+                vwap_str = marketmemory.redis_client.get(f"vwap:{instrument_key}:latest")
+                if vwap_str is not None:
+                    vwap = float(vwap_str)
+            except Exception:
+                pass
     except Exception as exc:
-        logger.debug(f"redis price fallback: {exc}")
+        logger.debug(f"redis price/volume fallback: {exc}")
 
     try:
         _, db = _safe_db()
         ohlc_collection = get_collection(db, "ohlc_history")
-        
-        raw_ohlc = list(ohlc_collection.find({"instrument": settings.instrument_symbol}).sort("timestamp", -1).limit(500))
+        # Query accepting synonyms to bridge BANKNIFTY/NIFTY BANK etc.
+        instr_names = list(_instrument_synonyms())
+        raw_ohlc: List[Dict[str, Any]] = []
+        # Primary attempt: exact match on configured symbol
+        try:
+            raw_ohlc = list(ohlc_collection.find({"instrument": getattr(settings, "instrument_symbol", None)}).sort("timestamp", -1).limit(500))
+        except Exception:
+            raw_ohlc = []
+        # Fallback attempts for synonyms (avoid $in due to occasional collation quirks)
+        if not raw_ohlc:
+            for name in instr_names:
+                try:
+                    raw_ohlc = list(ohlc_collection.find({"instrument": name}).sort("timestamp", -1).limit(500))
+                    if raw_ohlc:
+                        break
+                except Exception:
+                    continue
         parsed_ohlc = []
         for candle in raw_ohlc:
             ts = _parse_ts(candle.get("timestamp"))
@@ -340,7 +385,9 @@ async def get_market_data() -> Dict[str, Any]:
             high_24h = max(candle.get("high", 0) for candle in recent_ohlc)
             valid_lows = [candle.get("low") for candle in recent_ohlc if candle.get("low") not in (None, 0)]
             low_24h = min(valid_lows) if valid_lows else None
-            volume_24h = sum(candle.get("volume", 0) for candle in recent_ohlc)
+            # Only compute from OHLC if we don't have live volume
+            if volume_24h is None:
+                volume_24h = sum(candle.get("volume", 0) for candle in recent_ohlc)
             
             total_volume = 0
             vwap_sum = 0
@@ -350,7 +397,7 @@ async def get_market_data() -> Dict[str, Any]:
                     typical_price = (candle.get("high", 0) + candle.get("low", 0) + candle.get("close", 0)) / 3
                     vwap_sum += typical_price * vol
                     total_volume += vol
-            if total_volume > 0:
+            if total_volume > 0 and vwap is None:
                 vwap = vwap_sum / total_volume
             
             if current_price:
@@ -379,7 +426,8 @@ async def get_market_data() -> Dict[str, Any]:
         "instrumentname": getattr(settings, "instrument_name", "Unknown") if settings else "Unknown",
         "instrumentsymbol": getattr(settings, "instrument_symbol", "INSTRUMENT") if settings else "INSTRUMENT",
         "datasource": "Redis" if current_price else "MongoDB",
-        "timestamp": datetime.now().isoformat(),
+        # Use UTC timestamp to avoid client timezone skew in relative labels
+        "timestamp": datetime.utcnow().isoformat() + "Z",
         "volume24h": volume_24h,
         "high24h": high_24h,
         "low24h": low_24h,

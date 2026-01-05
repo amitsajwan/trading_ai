@@ -87,6 +87,25 @@ class MarketMemory:
                     logger.warning(f"Invalid price value in tick data: {price} ({e})")
             else:
                 logger.warning(f"No price found in tick data: {tick_data}")
+
+            # Cache volume and VWAP (average_price) if present
+            try:
+                vol = tick_data.get("volume")
+                if vol is not None:
+                    self.redis_client.setex(
+                        f"volume:{instrument}:latest",
+                        int(timedelta(minutes=5).total_seconds()),
+                        str(vol)
+                    )
+                vwap = tick_data.get("average_price") or tick_data.get("vwap")
+                if vwap is not None:
+                    self.redis_client.setex(
+                        f"vwap:{instrument}:latest",
+                        int(timedelta(minutes=5).total_seconds()),
+                        str(vwap)
+                    )
+            except Exception as e:
+                logger.debug(f"Could not cache volume/VWAP: {e}")
         except Exception as e:
             logger.error(f"Error storing tick: {e}", exc_info=True)
     

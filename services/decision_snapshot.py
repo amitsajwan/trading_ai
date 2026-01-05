@@ -5,7 +5,7 @@ into a compact snapshot for algo decision-making and API consumption.
 """
 import json
 import asyncio
-from datetime import datetime
+from datetime import datetime, UTC
 from typing import Any, Dict, Optional
 from pathlib import Path
 
@@ -136,7 +136,7 @@ async def build_snapshot(market_memory: Optional[MarketMemory] = None) -> Dict[s
 
     snapshot: Dict[str, Any] = {
         "instrument": instrument,
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": datetime.now(UTC).isoformat(),
         "ltp": ltp,
         "depth": {
             "best_bid": best_bid,
