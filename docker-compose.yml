@@ -78,7 +78,7 @@ services:
       - LLM_SOFT_THROTTLE_FACTOR=0.8
     volumes:
       - ./logs:/app/logs
-      # - ./credentials.json:/app/credentials.json:ro
+      - ./credentials.json:/app/credentials.json:ro
     restart: unless-stopped
     networks:
       - trading-network
@@ -102,7 +102,7 @@ services:
       - LLM_SOFT_THROTTLE_FACTOR=0.8
     volumes:
       - ./logs:/app/logs
-      # - ./credentials.json:/app/credentials.json:ro
+      - ./credentials.json:/app/credentials.json:ro
     restart: unless-stopped
     networks:
       - trading-network
@@ -142,6 +142,10 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      ltp-collector-banknifty:
+        condition: service_started
+      depth-collector-banknifty:
+        condition: service_started
     env_file:
       - .env.banknifty
     environment:
@@ -169,6 +173,10 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      ltp-collector-nifty:
+        condition: service_started
+      depth-collector-nifty:
+        condition: service_started
     env_file:
       - .env.nifty
     environment:
@@ -188,6 +196,114 @@ services:
     networks:
       - trading-network
 
+  # Collectors: Bank Nifty
+  ltp-collector-banknifty:
+    build: .
+    container_name: zerodha-ltp-collector-banknifty
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env.banknifty
+    environment:
+      - MONGODB_URI=mongodb://mongodb:27017/zerodha_trading
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    volumes:
+      - ./logs:/app/logs
+      - ./credentials.json:/app/credentials.json:ro
+    command: ["python", "-m", "data.ltp_data_collector"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,sys,redis,datetime as dt;h=os.getenv('REDIS_HOST','redis');p=int(os.getenv('REDIS_PORT','6379'));r=redis.Redis(host=h,port=p,db=0,decode_responses=True);sym=os.getenv('INSTRUMENT_SYMBOL','NIFTY BANK').upper().replace(' ','');key='BANKNIFTY' if ('BANKNIFTY' in sym or 'NIFTYBANK' in sym) else 'NIFTY';ts=r.get(f'price:{key}:latest_ts');sys.exit(0) if ts and (dt.datetime.now()-dt.datetime.fromisoformat(ts)).total_seconds()<120 else sys.exit(1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+    networks:
+      - trading-network
+
+  depth-collector-banknifty:
+    build: .
+    container_name: zerodha-depth-collector-banknifty
+    depends_on:
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env.banknifty
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    volumes:
+      - ./logs:/app/logs
+      - ./credentials.json:/app/credentials.json:ro
+    command: ["python", "scripts/run_depth_collector.py"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,sys,redis,datetime as dt;h=os.getenv('REDIS_HOST','redis');p=int(os.getenv('REDIS_PORT','6379'));r=redis.Redis(host=h,port=p,db=0,decode_responses=True);sym=os.getenv('INSTRUMENT_SYMBOL','NIFTY BANK').upper().replace(' ','');key='BANKNIFTY' if ('BANKNIFTY' in sym or 'NIFTYBANK' in sym) else 'NIFTY';ts=r.get(f'price:{key}:latest_ts');sys.exit(0) if ts and (dt.datetime.now()-dt.datetime.fromisoformat(ts)).total_seconds()<120 else sys.exit(1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+    networks:
+      - trading-network
+
+  # Collectors: Nifty 50
+  ltp-collector-nifty:
+    build: .
+    container_name: zerodha-ltp-collector-nifty
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env.nifty
+    environment:
+      - MONGODB_URI=mongodb://mongodb:27017/zerodha_trading
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    volumes:
+      - ./logs:/app/logs
+      - ./credentials.json:/app/credentials.json:ro
+    command: ["python", "-m", "data.ltp_data_collector"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,sys,redis,datetime as dt;h=os.getenv('REDIS_HOST','redis');p=int(os.getenv('REDIS_PORT','6379'));r=redis.Redis(host=h,port=p,db=0,decode_responses=True);sym=os.getenv('INSTRUMENT_SYMBOL','NIFTY 50').upper().replace(' ','');key='BANKNIFTY' if ('BANKNIFTY' in sym or 'NIFTYBANK' in sym) else 'NIFTY';ts=r.get(f'price:{key}:latest_ts');sys.exit(0) if ts and (dt.datetime.now()-dt.datetime.fromisoformat(ts)).total_seconds()<120 else sys.exit(1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+    networks:
+      - trading-network
+
+  depth-collector-nifty:
+    build: .
+    container_name: zerodha-depth-collector-nifty
+    depends_on:
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env.nifty
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    volumes:
+      - ./logs:/app/logs
+      - ./credentials.json:/app/credentials.json:ro
+    command: ["python", "scripts/run_depth_collector.py"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,sys,redis,datetime as dt;h=os.getenv('REDIS_HOST','redis');p=int(os.getenv('REDIS_PORT','6379'));r=redis.Redis(host=h,port=p,db=0,decode_responses=True);sym=os.getenv('INSTRUMENT_SYMBOL','NIFTY 50').upper().replace(' ','');key='BANKNIFTY' if ('BANKNIFTY' in sym or 'NIFTYBANK' in sym) else 'NIFTY';ts=r.get(f'price:{key}:latest_ts');sys.exit(0) if ts and (dt.datetime.now()-dt.datetime.fromisoformat(ts)).total_seconds()<120 else sys.exit(1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+    networks:
+      - trading-network
+
 volumes:
   mongo_data:
     driver: local
@@ -197,4 +313,6 @@ volumes:
 networks:
   trading-network:
     driver: bridge
+
+  
 
