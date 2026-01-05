@@ -5,7 +5,7 @@ print("This check script's original content was archived and the compressed back
 
 try:
     import pymongo
-    from config.settings import settings
+    from core_kernel.config.settings import settings
     client = pymongo.MongoClient(
         settings.mongodb_uri,
         serverSelectionTimeoutMS=2000

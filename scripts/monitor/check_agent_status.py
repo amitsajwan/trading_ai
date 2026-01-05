@@ -2,7 +2,7 @@
 
 print("This check script's original content was archived and the compressed backup was permanently deleted on 2026-01-03. Contact maintainers to request restoration.")},{
 
-from mongodb_schema import get_mongo_client, get_collection
+from core_kernel.mongodb_schema import get_mongo_client, get_collection
 from config.settings import settings
 from datetime import datetime
 

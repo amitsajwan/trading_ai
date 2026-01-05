@@ -32,7 +32,7 @@ async def monitor_service():
     
     try:
         from services.trading_service import TradingService
-        from config.settings import settings
+        from core_kernel.config.settings import settings
         
         print("[OK] Step 1: Imports successful")
         print(f"   - Data source: {settings.data_source}")

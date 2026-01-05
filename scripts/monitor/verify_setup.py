@@ -35,7 +35,7 @@ print()
 
 # Check MongoDB
 try:
-    from mongodb_schema import get_mongo_client
+    from core_kernel.mongodb_schema import get_mongo_client
     client = get_mongo_client()
     client.server_info()
     print("MongoDB:")

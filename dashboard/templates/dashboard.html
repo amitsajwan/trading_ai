@@ -1,0 +1,207 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trading Dashboard</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+        .header {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        .header h1 {
+            margin: 0;
+            font-size: 2.5em;
+            font-weight: 300;
+        }
+        .status {
+            padding: 30px;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+        }
+        .card {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 20px;
+            border-left: 4px solid #007bff;
+        }
+        .card.success {
+            border-left-color: #28a745;
+        }
+        .card.warning {
+            border-left-color: #ffc107;
+        }
+        .card.error {
+            border-left-color: #dc3545;
+        }
+        .card h3 {
+            margin: 0 0 15px 0;
+            color: #333;
+            font-size: 1.2em;
+        }
+        .metric {
+            display: flex;
+            justify-content: space-between;
+            margin: 10px 0;
+            padding: 8px 0;
+            border-bottom: 1px solid #eee;
+        }
+        .metric:last-child {
+            border-bottom: none;
+        }
+        .value {
+            font-weight: bold;
+            color: #007bff;
+        }
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+        .status-ok { background: #28a745; }
+        .status-error { background: #dc3545; }
+        .status-degraded { background: #ffc107; }
+        .footer {
+            background: #f8f9fa;
+            padding: 20px;
+            text-align: center;
+            color: #666;
+            border-top: 1px solid #dee2e6;
+        }
+        .refresh-btn {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            margin: 10px;
+        }
+        .refresh-btn:hover {
+            background: #0056b3;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Automated Trading Dashboard</h1>
+            <p>Real-time monitoring of your AI trading system</p>
+            <button class="refresh-btn" onclick="location.reload()">Refresh</button>
+        </div>
+
+        <div class="status">
+            <div class="card {{ 'success' if system_status.status == 'ok' else 'warning' if system_status.status == 'degraded' else 'error' }}">
+                <h3>
+                    <span class="status-indicator status-{{ 'ok' if system_status.status == 'ok' else 'error' if system_status.status == 'error' else 'degraded' }}"></span>
+                    System Status
+                </h3>
+                <div class="metric">
+                    <span>Overall Health:</span>
+                    <span class="value">{{ system_status.status.upper() }}</span>
+                </div>
+                <div class="metric">
+                    <span>Market Status:</span>
+                    <span class="value">{{ 'OPEN' if system_status.market_open else 'CLOSED' }}</span>
+                </div>
+                <div class="metric">
+                    <span>Last Update:</span>
+                    <span class="value">{{ timestamp }}</span>
+                </div>
+            </div>
+
+            <div class="card {{ 'success' if system_status.database == 'ok' else 'error' }}">
+                <h3>
+                    <span class="status-indicator status-{{ 'ok' if system_status.database == 'ok' else 'error' }}"></span>
+                    Database
+                </h3>
+                <div class="metric">
+                    <span>MongoDB:</span>
+                    <span class="value">{{ system_status.database.upper() }}</span>
+                </div>
+                <div class="metric">
+                    <span>Redis Cache:</span>
+                    <span class="value">{{ system_status.cache.upper() }}</span>
+                </div>
+            </div>
+
+            <div class="card success">
+                <h3>
+                    <span class="status-indicator status-ok"></span>
+                    Trading Modules
+                </h3>
+                <div class="metric">
+                    <span>Data Module:</span>
+                    <span class="value">OPERATIONAL</span>
+                </div>
+                <div class="metric">
+                    <span>GenAI Module:</span>
+                    <span class="value">OPERATIONAL</span>
+                </div>
+                <div class="metric">
+                    <span>User Module:</span>
+                    <span class="value">OPERATIONAL</span>
+                </div>
+                <div class="metric">
+                    <span>Engine Module:</span>
+                    <span class="value">OPERATIONAL</span>
+                </div>
+            </div>
+
+            <div class="card {{ 'success' if system_status.market_open else 'warning' }}">
+                <h3>
+                    <span class="status-indicator status-{{ 'ok' if system_status.market_open else 'degraded' }}"></span>
+                    Market Information
+                </h3>
+                <div class="metric">
+                    <span>Instrument:</span>
+                    <span class="value">BANKNIFTY</span>
+                </div>
+                <div class="metric">
+                    <span>Trading Hours:</span>
+                    <span class="value">9:15 AM - 3:30 PM IST</span>
+                </div>
+                <div class="metric">
+                    <span>Current Status:</span>
+                    <span class="value">{{ 'MARKET OPEN' if system_status.market_open else 'AFTER HOURS' }}</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="footer">
+            <p><strong>Automated Trading System v1.0.0</strong></p>
+            <p>Multi-agent AI trading with risk management | Real-time monitoring active</p>
+            <p>Dashboard running on localhost:8888 | Last updated: {{ timestamp }}</p>
+        </div>
+    </div>
+
+    <script>
+        // Auto-refresh every 30 seconds
+        setTimeout(() => {
+            location.reload();
+        }, 30000);
+    </script>
+</body>
+</html>

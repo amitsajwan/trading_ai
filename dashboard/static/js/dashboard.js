@@ -70,7 +70,7 @@ if (localStorage.getItem('darkMode') === 'true') {
 
 async function loadData() {
     try {
-        const [signal, market, metrics, risk, trades, agents, portfolio, health, technicals, latestAnalysis, llm, orderflow, optionsChain] = await Promise.all([
+        const [signal, market, metrics, risk, trades, agents, portfolio, health, technicals, latestAnalysis, llm, orderflow, optionsChain, optionsStrategy] = await Promise.all([
             fetch('/api/latest-signal').then(r => r.json()).catch(() => ({})),
             fetch('/api/market-data').then(r => r.json()).catch(() => ({})),
             fetch('/metrics/trading').then(r => r.json()).catch(() => ({})),
@@ -83,12 +83,22 @@ async function loadData() {
             fetch('/api/latest-analysis').then(r => r.json()).catch(() => ({})),
             fetch('/api/metrics/llm').then(r => r.json()).catch(() => ({})),
             fetch('/api/order-flow').then(r => r.json()).catch(() => ({available:false})),
-            fetch('/api/options-chain').then(r => r.json()).catch(() => ({available:false}))
+            fetch('/api/options-chain').then(r => r.json()).catch(() => ({available:false})),
+            // Prefer advanced strategy; fallback to basic
+            fetch('/api/options-strategy-advanced').then(r => r.json()).catch(() => ({available:false}))
         ]);
         
         // Update currency symbol based on instrument
         currencySymbol = detectCurrency(window.INSTRUMENT_SYMBOL);
         
+        // Calculate win/loss ratio from trading metrics
+        const avgWin = metrics.avg_win || metrics.avgwin || 0;
+        const avgLoss = Math.abs(metrics.avg_loss || metrics.avgloss || 0);
+        const winLossRatio = avgLoss > 0 ? avgWin / avgLoss : (avgWin > 0 ? avgWin : 0);
+
+        // Add win/loss ratio to risk data
+        risk.win_loss_ratio = winLossRatio;
+
         updateSignal(signal);
         updateMarketData(market);
         updateMetrics(metrics);
@@ -102,6 +112,9 @@ async function loadData() {
         updateLLMProviders(llm);
         displayOrderFlow(orderflow);
         displayOptionsChain(optionsChain);
+        // Persist latest strategy for trade button
+        window.LATEST_OPTIONS_STRATEGY = optionsStrategy || {};
+        displayOptionsStrategy(optionsStrategy);
         
         document.getElementById('last-update').textContent = 'Last updated: ' + new Date().toLocaleTimeString();
     } catch (error) {
@@ -116,9 +129,9 @@ function updateSignal(signal) {
     document.getElementById('signal-text').textContent = signal.signal || 'HOLD';
     document.getElementById('signal-reasoning').textContent = signal.reasoning || 'Analysis in progress';
     document.getElementById('signal-conf').textContent = signal.confidence ? formatPercent(signal.confidence) : '-';
-    document.getElementById('signal-entry').textContent = signal.entryprice ? formatCurrency(signal.entryprice) : '-';
-    document.getElementById('signal-sl').textContent = signal.stoploss ? formatCurrency(signal.stoploss) : '-';
-    document.getElementById('signal-tp').textContent = signal.takeprofit ? formatCurrency(signal.takeprofit) : '-';
+    document.getElementById('signal-entry').textContent = signal.entry_price ? formatCurrency(signal.entry_price) : '-';
+    document.getElementById('signal-sl').textContent = signal.stop_loss ? formatCurrency(signal.stop_loss) : '-';
+    document.getElementById('signal-tp').textContent = signal.take_profit ? formatCurrency(signal.take_profit) : '-';
     card.className = 'signal-banner ' + (signal.signal || 'HOLD').toLowerCase();
 }
 
@@ -130,10 +143,10 @@ function updateMarketData(market) {
     const hasData = market.currentprice || market.current_price || market.ltp;
     document.getElementById('current-price').textContent = hasData ? formatCurrency(market.currentprice || market.current_price || market.ltp) : 'No data';
     
-    const change = market.change24h || market.change_24h || market.change || 0;
+    const changePercent = market.changepercent24h || market.change_percent_24h || market.changePercent || 0;
     const changeEl = document.getElementById('change-24h');
-    changeEl.textContent = hasData ? formatPercent(change) : 'No data';
-    changeEl.className = 'metric-value ' + (change >= 0 ? 'metric-positive' : 'metric-negative');
+    changeEl.textContent = hasData ? formatPercent(changePercent) : 'No data';
+    changeEl.className = 'metric-value ' + (changePercent >= 0 ? 'metric-positive' : 'metric-negative');
     
     // Volume - format with K/M/B suffix
     const volume = (market.volume24h ?? market.volume_24h ?? market.volume);
@@ -157,10 +170,14 @@ function updateMetrics(m) {
     const timestamp = m.timestamp || m.updated_at || new Date().toISOString();
     dataTimestamps.metrics = timestamp;
     updateTimestamp('metrics-timestamp', timestamp);
-    
-    document.getElementById('total-pnl').textContent = m.totalpnl ? formatCurrency(m.totalpnl) : 'No trades yet';
-    document.getElementById('win-rate').textContent = m.winrate ? formatPercent(m.winrate) : 'No trades yet';
-    document.getElementById('total-trades').textContent = m.totaltrades || 0;
+
+    const totalPnl = m.total_pnl || m.totalpnl || 0;
+    const winRate = m.win_rate || m.winrate || 0;
+    const totalTrades = m.total_trades || m.totaltrades || 0;
+
+    document.getElementById('total-pnl').textContent = totalTrades > 0 ? formatCurrency(totalPnl) : 'No trades yet';
+    document.getElementById('win-rate').textContent = totalTrades > 0 ? formatPercent(winRate) : 'No trades yet';
+    document.getElementById('total-trades').textContent = totalTrades;
 }
 
 function updateRisk(r) {
@@ -170,11 +187,11 @@ function updateRisk(r) {
     
     const hasData = r.sharperatio || r.sharpe_ratio;
     document.getElementById('sharpe').textContent = hasData ? (r.sharperatio || r.sharpe_ratio).toFixed(2) : 'No data';
-    document.getElementById('drawdown').textContent = hasData ? formatPercent(r.maxdrawdown || r.max_drawdown || 0) : 'No data';
+    document.getElementById('drawdown').textContent = hasData ? formatCurrency(r.maxdrawdown || r.max_drawdown || 0) : 'No data';
     document.getElementById('var-95').textContent = r.var95 || r.var_95 ? formatCurrency(r.var95 || r.var_95) : 'Not calculated';
     document.getElementById('total-exposure').textContent = r.totalexposure || r.total_exposure ? formatCurrency(r.totalexposure || r.total_exposure) : 'Not calculated';
     document.getElementById('portfolio-value').textContent = r.portfoliovalue || r.portfolio_value ? formatCurrency(r.portfoliovalue || r.portfolio_value) : 'Not calculated';
-    const winLossRatio = r.winlossratio || r.win_loss_ratio || 0;
+    const winLossRatio = r.win_loss_ratio || r.winlossratio || 0;
     document.getElementById('win-loss-ratio').textContent = winLossRatio ? winLossRatio.toFixed(2) : 'Not calculated';
 }
 
@@ -188,10 +205,10 @@ function displayTrades(trades) {
     trades.forEach(t => {
         const pnl = t.pnl || 0;
         html += '<tr>' +
-            '<td>' + new Date(t.entrytimestamp).toLocaleTimeString() + '</td>' +
-            '<td><span class="badge-small badge-' + (t.signal || 'hold').toLowerCase() + '">' + (t.signal || 'HOLD') + '</span></td>' +
-            '<td>' + formatCurrency(t.entryprice || 0) + '</td>' +
-            '<td>' + (t.exitprice ? formatCurrency(t.exitprice) : '-') + '</td>' +
+            '<td>' + new Date(t.timestamp).toLocaleTimeString() + '</td>' +
+            '<td><span class="badge-small badge-' + (t.side || 'hold').toLowerCase() + '">' + (t.side || 'HOLD') + '</span></td>' +
+            '<td>' + formatCurrency(t.price || 0) + '</td>' +
+            '<td>' + (t.exit_price ? formatCurrency(t.exit_price) : '-') + '</td>' +
             '<td style="color: ' + (pnl >= 0 ? '#10b981' : '#ef4444') + '">' + formatCurrency(pnl) + '</td>' +
             '<td><span class="badge-small badge-' + (t.status || 'open').toLowerCase() + '">' + (t.status || 'OPEN') + '</span></td>' +
             '</tr>';
@@ -210,23 +227,39 @@ function displayAgents(agents, latestAnalysis) {
     
     // Overall agent system status + last analysis time
     try {
-        const overallStatus = agents.status || 'unknown';
+        const agentList = Object.values(agents.agents || {});
+        const activeAgents = agentList.filter(a => a.status === 'active').length;
+        const totalAgents = agentList.length;
+
+        // Determine overall status based on agent activity
+        let overallStatus = 'unknown';
+        if (totalAgents > 0) {
+            if (activeAgents === totalAgents) {
+                overallStatus = 'active';
+            } else if (activeAgents > 0) {
+                overallStatus = 'partial';
+            } else {
+                overallStatus = 'inactive';
+            }
+        }
+
         const lastTs = agents.last_analysis || agents.lastAnalysis || (latestAnalysis && (latestAnalysis.timestamp || latestAnalysis.analysisTimestamp));
         let statusLabel = 'Initializing';
         let statusColor = '#f59e0b';
         let statusText = 'Waiting for first analysis run';
+
         if (overallStatus === 'active') {
             statusLabel = 'Active';
             statusColor = '#10b981';
-            statusText = 'Agents are running analysis on schedule';
-        } else if (overallStatus === 'stale') {
-            statusLabel = 'Stale';
+            statusText = `All ${totalAgents} agents are running analysis on schedule`;
+        } else if (overallStatus === 'partial') {
+            statusLabel = 'Partial';
             statusColor = '#f59e0b';
-            statusText = 'Last full analysis is older than 15 minutes – waiting for next run';
-        } else if (overallStatus === 'error') {
-            statusLabel = 'Error';
+            statusText = `${activeAgents}/${totalAgents} agents active - some agents may be offline`;
+        } else if (overallStatus === 'inactive') {
+            statusLabel = 'Inactive';
             statusColor = '#ef4444';
-            statusText = 'Agent analysis service reported an error';
+            statusText = 'No agents are currently active';
         }
 
         let lastText = 'No analysis yet';
@@ -341,51 +374,46 @@ function displayAgents(agents, latestAnalysis) {
 
 function displayTechnicals(data) {
     const container = document.getElementById('technicals-container');
-    if (!data || !data.indicators || Object.keys(data.indicators).length === 0) {
+    if (!data || !data.indicators || data.indicators.length === 0) {
         container.innerHTML = '<div class="loading" style="grid-column: 1/-1;">No indicators available</div>';
         return;
     }
-    
+
     let html = '';
-    const indicators = data.indicators;
-    
-    // RSI
-    if (indicators.rsi !== undefined) {
-        const rsiStatus = indicators.rsi_status || 'NEUTRAL';
-        html += '<div class="indicator-card">';
-        html += '<div class="indicator-label">RSI (14)</div>';
-        html += '<div class="indicator-value">' + indicators.rsi.toFixed(1) + '</div>';
-        html += '<div class="indicator-status ' + rsiStatus.toLowerCase() + '">' + rsiStatus + '</div>';
+
+    // Overall trend indicator
+    if (data.trend) {
+        const trendColor = data.trend === 'bullish' ? '#10b981' : data.trend === 'bearish' ? '#ef4444' : '#6b7280';
+        html += '<div class="indicator-card" style="grid-column: 1/-1; background: #f8fafc; border: 2px solid ' + trendColor + ';">';
+        html += '<div class="indicator-label">Market Trend</div>';
+        html += '<div class="indicator-value" style="color: ' + trendColor + '; font-weight: bold;">' + data.trend.toUpperCase() + '</div>';
+        html += '<div class="indicator-status ' + data.strength + '">' + (data.strength || 'neutral').toUpperCase() + '</div>';
         html += '</div>';
     }
-    
-    // Moving Averages
-    ['sma_5', 'sma_10', 'sma_20'].forEach(ma => {
-        if (indicators[ma] !== undefined) {
-            const signal = indicators[ma + '_signal'] || 'NEUTRAL';
-            html += '<div class="indicator-card">';
-            html += '<div class="indicator-label">' + ma.replace('_', ' ').toUpperCase() + '</div>';
-            html += '<div class="indicator-value">' + indicators[ma].toFixed(2) + '</div>';
-            html += '<div class="indicator-status ' + signal.toLowerCase() + '">' + signal + '</div>';
-            html += '</div>';
+
+    // Individual indicators
+    data.indicators.forEach(indicator => {
+        const signalColor = indicator.signal === 'bullish' ? '#10b981' :
+                           indicator.signal === 'bearish' ? '#ef4444' : '#6b7280';
+
+        html += '<div class="indicator-card">';
+        html += '<div class="indicator-label">' + indicator.name + '</div>';
+
+        // Format value based on indicator type
+        let formattedValue;
+        if (indicator.name.includes('SMA') || indicator.name.includes('BB_')) {
+            formattedValue = formatCurrency(indicator.value);
+        } else if (indicator.name.includes('%') || indicator.value > 0 && indicator.value < 1) {
+            formattedValue = (indicator.value * 100).toFixed(1) + '%';
+        } else {
+            formattedValue = typeof indicator.value === 'number' ? indicator.value.toFixed(indicator.name.includes('RSI') || indicator.name.includes('STOCHASTIC') ? 1 : 2) : indicator.value;
         }
+
+        html += '<div class="indicator-value">' + formattedValue + '</div>';
+        html += '<div class="indicator-status" style="color: ' + signalColor + '; font-weight: bold;">' + indicator.signal.toUpperCase() + '</div>';
+        html += '</div>';
     });
-    
-    // Support/Resistance
-    if (indicators.support_level !== undefined) {
-        html += '<div class="indicator-card">';
-        html += '<div class="indicator-label">Support</div>';
-        html += '<div class="indicator-value">' + formatCurrency(indicators.support_level) + '</div>';
-        html += '</div>';
-    }
-    
-    if (indicators.resistance_level !== undefined) {
-        html += '<div class="indicator-card">';
-        html += '<div class="indicator-label">Resistance</div>';
-        html += '<div class="indicator-value">' + formatCurrency(indicators.resistance_level) + '</div>';
-        html += '</div>';
-    }
-    
+
     container.innerHTML = html;
 }
 
@@ -397,12 +425,12 @@ function displayPortfolio(portfolio) {
     }
     let html = '';
     portfolio.positions.forEach(p => {
-        const pnl = p.pnl || 0;
+        const pnl = p.unrealized_pnl || p.pnl || 0;
         html += '<tr>' +
-            '<td>' + p.symbol + '</td>' +
-            '<td>' + p.size + '</td>' +
-            '<td>' + formatCurrency(p.entry) + '</td>' +
-            '<td>' + formatCurrency(p.current) + '</td>' +
+            '<td>' + p.instrument + '</td>' +
+            '<td>' + p.quantity + '</td>' +
+            '<td>' + formatCurrency(p.entry_price) + '</td>' +
+            '<td>' + formatCurrency(p.current_price) + '</td>' +
             '<td style="color: ' + (pnl >= 0 ? '#10b981' : '#ef4444') + ';">' + formatCurrency(pnl) + '</td>' +
             '</tr>';
     });
@@ -416,9 +444,9 @@ function displayHealth(health) {
         return;
     }
     let html = '';
-    Object.entries(health.components).forEach(([name, comp]) => {
-        const color = comp.status === 'healthy' ? '#10b981' : '#f59e0b';
-        html += '<div class="metric-row"><span class="metric-label">' + name + '</span><span class="metric-value" style="color: ' + color + ';">' + (comp.status || 'unknown').toUpperCase() + '</span></div>';
+    Object.entries(health.components).forEach(([name, status]) => {
+        const color = status === 'operational' || status === 'healthy' ? '#10b981' : '#f59e0b';
+        html += '<div class="metric-row"><span class="metric-label">' + name + '</span><span class="metric-value" style="color: ' + color + ';">' + (status || 'unknown').toUpperCase() + '</span></div>';
     });
     container.innerHTML = html;
 }
@@ -474,39 +502,43 @@ function updateLLMProviders(metrics) {
         return;
     }
 
-    const providers = metrics.providers;
+    const providersObj = metrics.providers;
     const summary = metrics.summary || {};
+
+    // Convert providers object to array and calculate summary
+    const providers = Object.entries(providersObj).map(([name, data]) => ({ name, ...data }));
+    const healthy = providers.filter(p => p.status === 'active' || p.status === 'available').length;
+    const total = providers.length;
+    const totalTokens = providers.reduce((sum, p) => sum + (p.tokens_today || 0), 0);
 
     let html = '<div style="display:flex;flex-direction:column;gap:8px;">';
 
     // Summary row
     html += '<div style="display:flex;justify-content:space-between;padding:6px 8px;border-radius:6px;background:#eef2ff;font-size:12px;">';
-    const healthy = summary.healthy_providers || 0;
-    const total = summary.total_providers || providers.length;
-    const tokens = summary.total_tokens_today || 0;
     html += `<div>Providers: <strong>${healthy}/${total} healthy</strong></div>`;
-    html += `<div style="text-align:right;">Tokens today: <strong>${tokens}</strong></div>`;
+    html += `<div style="text-align:right;">Tokens today: <strong>${totalTokens.toLocaleString()}</strong></div>`;
     html += '</div>';
 
-    // Individual providers (show all, not just first 5)
+    // Individual providers
     providers.forEach(p => {
-        const color = (p.status === 'healthy' || p.status === 'available') ? '#10b981' : '#f59e0b';
+        const color = (p.status === 'active' || p.status === 'available') ? '#10b981' : '#f59e0b';
         const tokensToday = p.tokens_today || 0;
-        const dailyLimit = p.daily_limit || 0;
-        const usagePercent = p.usage_percent != null ? p.usage_percent : (dailyLimit ? (tokensToday / dailyLimit) * 100 : 0);
+        const dailyLimit = p.daily_token_quota || 0;
+        const usagePercent = dailyLimit ? (tokensToday / dailyLimit) * 100 : 0;
 
         html += '<div style="padding:6px 8px;border-radius:6px;background:#f9fafb;display:flex;flex-direction:column;gap:4px;">';
         html += `<div style="display:flex;justify-content:space-between;align-items:center;">` +
-            `<div style="font-weight:600;">${p.name}</div>` +
+            `<div style="font-weight:600;">${p.name.toUpperCase()}</div>` +
             `<div style="font-size:12px;color:${color};">${(p.status || 'unknown').toUpperCase()}</div>` +
             '</div>';
 
         html += '<div style="display:flex;justify-content:space-between;font-size:11px;color:#6b7280;">';
-        html += `<div>Model: <strong>${p.model || 'N/A'}</strong></div>`;
+        html += `<div>Requests: <strong>${p.requests_today || 0}</strong> (${(p.requests_per_minute || 0).toFixed(1)}/min)</div>`;
         if (dailyLimit) {
-            html += `<div>Tokens: <strong>${tokensToday}</strong> / ${dailyLimit}</div>`;
+            const usageColor = usagePercent > 80 ? '#ef4444' : usagePercent > 60 ? '#f59e0b' : '#10b981';
+            html += `<div style="color:${usageColor};">Tokens: <strong>${tokensToday.toLocaleString()}</strong> / ${dailyLimit.toLocaleString()}</div>`;
         } else {
-            html += `<div>Tokens: <strong>${tokensToday}</strong></div>`;
+            html += `<div>Tokens: <strong>${tokensToday.toLocaleString()}</strong></div>`;
         }
         html += '</div>';
 
@@ -534,17 +566,21 @@ function displayOrderFlow(data) {
     updateTimestamp('orderflow-timestamp', ts);
     document.getElementById('orderflow-lastprice').textContent = data.last_price ? formatCurrency(data.last_price) : '-';
 
-    const imbalance = data.imbalance || {};
-    const pct = imbalance.imbalance_pct != null ? imbalance.imbalance_pct.toFixed(2) + '%' : '-';
-    document.getElementById('orderflow-imbalance').textContent = `${pct} (${imbalance.imbalance_status || 'NEUTRAL'})`;
+    // Handle imbalance - could be object or number
+    const imbalanceVal = typeof data.imbalance === 'object' ? data.imbalance.imbalance_pct : data.imbalance;
+    const imbalanceStatus = typeof data.imbalance === 'object' ? data.imbalance.imbalance_status : 'NEUTRAL';
+    const pct = imbalanceVal != null ? (imbalanceVal * 100).toFixed(2) + '%' : '-';
+    document.getElementById('orderflow-imbalance').textContent = `${pct} (${imbalanceStatus || 'NEUTRAL'})`;
 
-    const spread = data.spread || {};
-    const spreadText = spread.spread_pct != null ? spread.spread_pct.toFixed(2) + '%' : 'n/a';
-    document.getElementById('orderflow-spread').textContent = `${spreadText} (${spread.spread_status || 'UNKNOWN'})`;
+    // Handle spread - could be object or number
+    const spreadVal = typeof data.spread === 'object' ? data.spread.spread_pct : data.spread;
+    const spreadStatus = typeof data.spread === 'object' ? data.spread.spread_status : 'UNKNOWN';
+    const spreadText = spreadVal != null ? (spreadVal * 100).toFixed(2) + '%' : 'n/a';
+    document.getElementById('orderflow-spread').textContent = `${spreadText} (${spreadStatus || 'UNKNOWN'})`;
 
     // Display total depth quantities
-    const totalBidQty = data.total_bid_quantity || 0;
-    const totalAskQty = data.total_ask_quantity || 0;
+    const totalBidQty = data.total_bid_quantity || data.total_depth_bid || 0;
+    const totalAskQty = data.total_ask_quantity || data.total_depth_ask || 0;
     document.getElementById('orderflow-total-depth').textContent = `${totalBidQty} / ${totalAskQty}`;
 
     // Render depth ladder (top 5 levels from Kite)
@@ -597,24 +633,130 @@ function displayOptionsChain(chain) {
     document.getElementById('options-fut-price').textContent = chain.futures_price ? formatCurrency(chain.futures_price) : '-';
 
     const tbody = document.getElementById('options-body');
-    const strikes = chain.strikes || {};
-    const strikeList = Object.keys(strikes).sort((a,b) => Number(a)-Number(b)).slice(0, 8);
+    const optionsData = chain.chain || chain.strikes || [];
+    let strikeList = [];
+
+    // Handle both array and object formats
+    if (Array.isArray(optionsData)) {
+        strikeList = optionsData.slice(0, 8);
+    } else {
+        // Object format (fallback)
+        strikeList = Object.keys(optionsData).sort((a,b) => Number(a)-Number(b)).slice(0, 8).map(s => ({strike: s, ...optionsData[s]}));
+    }
+
     if (!strikeList.length) {
         tbody.innerHTML = '<tr><td colspan="5" class="loading">No options data (market closed or no recent expiry)</td></tr>';
         return;
     }
+
     let html = '';
-    strikeList.forEach(s => {
-        const row = strikes[s] || {};
+    strikeList.forEach(row => {
         html += '<tr>' +
-            `<td>${s}</td>` +
+            `<td>${row.strike}</td>` +
             `<td>${row.ce_ltp != null ? formatCurrency(row.ce_ltp) : '-'}</td>` +
             `<td>${row.ce_oi != null ? row.ce_oi : '-'}</td>` +
             `<td>${row.pe_ltp != null ? formatCurrency(row.pe_ltp) : '-'}</td>` +
             `<td>${row.pe_oi != null ? row.pe_oi : '-'}</td>` +
-        '</tr>';
+            '</tr>';
     });
     tbody.innerHTML = html;
+}
+
+function displayOptionsStrategy(data) {
+    const card = document.getElementById('options-strategy-card');
+    if (!card) return;
+    if (!data || data.available === false || !data.recommendation) {
+        card.style.display = 'none';
+        return;
+    }
+    card.style.display = 'block';
+    updateTimestamp('options-strategy-timestamp', data.timestamp || new Date().toISOString());
+
+    const rec = data.recommendation || {};
+    const legs = data.legs || [];
+    const strategyType = data.strategy_type || '-';
+    const netDebit = (data.net_debit != null) ? data.net_debit : null;
+    const legsEl = document.getElementById('opt-legs');
+    document.getElementById('opt-strategy-type').textContent = strategyType;
+    document.getElementById('opt-side').textContent = rec.side || '-';
+    document.getElementById('opt-type').textContent = rec.option_type || '-';
+    document.getElementById('opt-strike').textContent = rec.strike != null ? rec.strike : '-';
+    document.getElementById('opt-premium').textContent = rec.premium != null ? formatCurrency(rec.premium) : '-';
+    document.getElementById('opt-sl').textContent = rec.stop_loss_price != null ? formatCurrency(rec.stop_loss_price) : '-';
+    document.getElementById('opt-tp').textContent = rec.take_profit_price != null ? formatCurrency(rec.take_profit_price) : '-';
+    document.getElementById('opt-qty').textContent = rec.quantity != null ? rec.quantity : '-';
+    document.getElementById('opt-expiry').textContent = data.expiry || '-';
+    document.getElementById('opt-reason').textContent = rec.reasoning || '-';
+    document.getElementById('opt-net-debit').textContent = netDebit != null ? formatCurrency(netDebit) : '-';
+
+    // Render legs list if available
+    if (legsEl) {
+        if (Array.isArray(legs) && legs.length) {
+            let html = '<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:6px;padding:6px;border:1px solid #e5e7eb;border-radius:6px;background:#f9fafb;">';
+            html += '<div style="font-weight:600;">Side</div><div style="font-weight:600;">Type</div><div style="font-weight:600;">Strike</div><div style="font-weight:600;">Premium</div><div style="font-weight:600;">Qty</div>';
+            legs.forEach(l => {
+                html += `<div>${l.side || '-'}</div>`;
+                html += `<div>${l.option_type || '-'}</div>`;
+                html += `<div>${(l.strike != null) ? l.strike : '-'}</div>`;
+                html += `<div>${(l.premium != null) ? formatCurrency(l.premium) : '-'}</div>`;
+                html += `<div>${(l.quantity != null) ? l.quantity : '-'}</div>`;
+            });
+            html += '</div>';
+            legsEl.innerHTML = html;
+        } else {
+            legsEl.innerHTML = '<div style="color:#6b7280;">No spread legs</div>';
+        }
+    }
+}
+
+async function executeOptionsPaperTrade() {
+    const statusEl = document.getElementById('opt-trade-status');
+    try {
+        statusEl.textContent = 'Submitting...';
+        const payload = window.LATEST_OPTIONS_STRATEGY || {};
+        const res = await fetch('/api/paper-trade/options', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload && payload.available ? payload : {})
+        });
+        const data = await res.json();
+        if (data && data.ok) {
+            if (Array.isArray(data.trades)) {
+                statusEl.textContent = `Created ${data.trades.length} legs` + (data.group_id ? ` | Spread ${data.group_id}` : '');
+            } else if (data.trade) {
+                statusEl.textContent = `Trade ${data.trade.id} created`;
+            } else {
+                statusEl.textContent = 'Trade created';
+            }
+            // Refresh trades and metrics
+            loadData();
+        } else {
+            statusEl.textContent = data.error || 'Trade failed';
+        }
+    } catch (e) {
+        statusEl.textContent = 'Error: ' + (e && e.message ? e.message : String(e));
+    }
+}
+
+async function closeLastPaperTrade() {
+    const statusEl = document.getElementById('opt-close-status');
+    try {
+        statusEl.textContent = 'Closing...';
+        const res = await fetch('/api/paper-trade/close', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({})
+        });
+        const data = await res.json();
+        if (data && data.ok) {
+            statusEl.textContent = `Closed ${data.id} | P&L: ${formatCurrency(data.pnl || 0)}`;
+            loadData();
+        } else {
+            statusEl.textContent = data.error || 'Close failed';
+        }
+    } catch (e) {
+        statusEl.textContent = 'Error: ' + (e && e.message ? e.message : String(e));
+    }
 }
 
 // Update refresh countdown every second

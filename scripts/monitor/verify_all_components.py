@@ -51,7 +51,7 @@ class ComponentVerifier:
     def verify_mongodb(self):
         """Verify MongoDB connection and collections."""
         try:
-            from mongodb_schema import get_mongo_client, get_collection
+            from core_kernel.mongodb_schema import get_mongo_client, get_collection
             from config.settings import settings
             
             client = get_mongo_client()
@@ -444,7 +444,7 @@ class ComponentVerifier:
                                     "LLM pattern recognition call likely failed. Check LLM logs for errors.")
             
             # Check results in MongoDB
-            from mongodb_schema import get_mongo_client, get_collection
+            from core_kernel.mongodb_schema import get_mongo_client, get_collection
             mongo_client = get_mongo_client()
             db = mongo_client[settings.mongodb_db_name]
             analysis_collection = get_collection(db, "agent_decisions")

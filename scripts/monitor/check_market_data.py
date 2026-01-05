@@ -3,7 +3,7 @@
 print("This check script's original content was archived and the compressed backup was permanently deleted on 2026-01-03. Contact maintainers to request restoration.")
 
 from data.market_memory import MarketMemory
-from config.settings import settings
+from core_kernel.config.settings import settings
 
 mm = MarketMemory()
 key = settings.instrument_symbol.replace('-', '').replace(' ', '').upper()

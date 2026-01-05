@@ -47,7 +47,7 @@ async def check_status():
     # Check MongoDB for last analysis
     print("2. Checking Last Analysis...")
     try:
-        from mongodb_schema import get_mongo_client, get_collection
+        from core_kernel.mongodb_schema import get_mongo_client, get_collection
         client = get_mongo_client()
         db = client[settings.mongodb_db_name]
         trades_collection = get_collection(db, "trades")

@@ -3,7 +3,7 @@
 print("This check script's original content was archived and the compressed backup was permanently deleted on 2026-01-03. Contact maintainers to request restoration.")
 
 try:
-    from config.settings import settings
+    from core_kernel.config.settings import settings
     provider = settings.llm_provider.lower() if hasattr(settings, 'llm_provider') else 'ollama'
     
     # First, always check Ollama (local LLM is preferred)

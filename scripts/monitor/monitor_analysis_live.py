@@ -29,7 +29,7 @@ def format_time_ago(seconds):
 def get_latest_analysis():
     """Get the latest analysis from MongoDB."""
     try:
-        from mongodb_schema import get_mongo_client, get_collection
+        from core_kernel.mongodb_schema import get_mongo_client, get_collection
         from config.settings import settings
         
         mongo_client = get_mongo_client()

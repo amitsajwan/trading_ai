@@ -5,8 +5,8 @@ from pathlib import Path
 from datetime import datetime
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from mongodb_schema import get_mongo_client, get_collection
-from config.settings import settings
+from core_kernel.mongodb_schema import get_mongo_client, get_collection
+from core_kernel.config.settings import settings
 
 client = get_mongo_client()
 db = client[settings.mongodb_db_name]

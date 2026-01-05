@@ -21,7 +21,7 @@ async def test_websocket_connection():
     try:
         import websockets
         import json
-        from config.settings import settings
+        from core_kernel.config.settings import settings
         
         # Get Binance symbol
         symbol_map = {
@@ -105,7 +105,7 @@ async def test_tick_storage():
     
     try:
         from data.market_memory import MarketMemory
-        from config.settings import settings
+        from core_kernel.config.settings import settings
         
         mm = MarketMemory()
         
