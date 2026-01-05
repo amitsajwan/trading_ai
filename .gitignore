@@ -75,3 +75,4 @@ htmlcov/
 # update_env_groq.py
 # scripts/update_env_multi_provider.py
 # scripts/update_api_credentials.py
+credentials.json.backup
