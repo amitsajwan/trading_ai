@@ -15,6 +15,67 @@ class PortfolioManagerAgent(BaseAgent):
     def __init__(self):
         """Initialize portfolio manager agent."""
         super().__init__("portfolio_manager", self._get_default_prompt())
+
+    def _llm_execution_veto(
+        self,
+        scenario_paths: Dict[str, Any],
+        signal: SignalType,
+        bullish_score: float,
+        bearish_score: float,
+        entry_price: float,
+        environment_bias: str
+    ) -> Dict[str, str]:
+        """Ask LLM for a light-touch execution veto or size adjustment based on scenarios.
+
+        Returns: {"decision": EXECUTE|REDUCE|HOLD, "reason": str}
+        Fallback: EXECUTE if anything fails.
+        """
+        try:
+            if signal != SignalType.BUY:
+                return {"decision": "EXECUTE", "reason": "Non-BUY signal"}
+
+            base_case = scenario_paths.get("base_case", {})
+            bull_case = scenario_paths.get("bull_case", {})
+            bear_case = scenario_paths.get("bear_case", {})
+
+            prompt = f"""
+You are the portfolio risk co-pilot. Decide if we should EXECUTE, REDUCE, or HOLD a BUY based on forward scenarios.
+
+Inputs:
+- Environment bias: {environment_bias}
+- Bullish score: {bullish_score:.2f}
+- Bearish score: {bearish_score:.2f}
+- Planned entry price: {entry_price}
+
+Scenario paths:
+BASE: prob={base_case.get('probability', 'NA')} target15m={base_case.get('target_15m', 'NA')} target60m={base_case.get('target_60m', 'NA')}
+BULL: prob={bull_case.get('probability', 'NA')} target15m={bull_case.get('target_15m', 'NA')} target60m={bull_case.get('target_60m', 'NA')}
+BEAR: prob={bear_case.get('probability', 'NA')} target15m={bear_case.get('target_15m', 'NA')} target60m={bear_case.get('target_60m', 'NA')}
+
+Rules of thumb (be concise):
+- If bear prob is high (>0.45) or upside is tiny (<0.25%), prefer HOLD.
+- If upside is modest (0.25%-0.60%) or bear prob is moderate (0.35-0.45), pick REDUCE.
+- Otherwise EXECUTE.
+
+Respond ONLY as JSON on one line like: {"decision": "EXECUTE", "reason": "..."}
+"""
+
+            raw = self._call_llm(prompt, temperature=0.1)
+            if not raw:
+                return {"decision": "EXECUTE", "reason": "LLM empty"}
+            import json
+            try:
+                data = json.loads(raw.strip())
+                decision = str(data.get("decision", "EXECUTE")).upper()
+                reason = str(data.get("reason", "LLM provided"))
+                if decision not in {"EXECUTE", "REDUCE", "HOLD"}:
+                    decision = "EXECUTE"
+                return {"decision": decision, "reason": reason}
+            except Exception:
+                return {"decision": "EXECUTE", "reason": "LLM parse fail"}
+        except Exception as e:
+            logger.debug(f"LLM veto failed: {e}")
+            return {"decision": "EXECUTE", "reason": "LLM error"}
     
     def _get_default_prompt(self) -> str:
         """Get default system prompt."""
@@ -298,6 +359,81 @@ Executive Summary:"""
         
         return strategy
     
+    def _generate_scenario_paths(
+        self,
+        current_price: float,
+        technical: Dict[str, Any],
+        fundamental: Dict[str, Any],
+        sentiment: Dict[str, Any],
+        macro: Dict[str, Any],
+        bull_thesis: str,
+        bear_thesis: str,
+        bull_confidence: float,
+        bear_confidence: float
+    ) -> Dict[str, Any]:
+        """Generate base/bull/bear scenario paths for next 15-60 minutes."""
+        # Get key technical levels
+        support = technical.get("support_level", current_price * 0.98)
+        resistance = technical.get("resistance_level", current_price * 1.02)
+        atr = technical.get("atr", current_price * 0.01)
+        
+        # Base case: most likely path based on current trend
+        trend = technical.get("trend_direction", "SIDEWAYS")
+        if trend == "UP":
+            base_target = current_price * 1.005  # +0.5%
+            base_probability = 0.5
+        elif trend == "DOWN":
+            base_target = current_price * 0.995  # -0.5%
+            base_probability = 0.5
+        else:
+            base_target = current_price  # Sideways
+            base_probability = 0.6
+        
+        # Bull case: optimistic scenario
+        bull_target_15m = min(resistance, current_price * 1.01)  # 1% or resistance
+        bull_target_60m = resistance * 1.005  # Slightly above resistance
+        bull_probability = bull_confidence * 0.8  # Conservative estimate
+        
+        # Bear case: pessimistic scenario
+        bear_target_15m = max(support, current_price * 0.99)  # -1% or support
+        bear_target_60m = support * 0.995  # Slightly below support
+        bear_probability = bear_confidence * 0.8  # Conservative estimate
+        
+        return {
+            "base_case": {
+                "scenario": "Base Case",
+                "description": f"Continuation of {trend} trend",
+                "target_15m": round(base_target, 2),
+                "target_60m": round(base_target * (1.01 if trend == "UP" else 0.99 if trend == "DOWN" else 1.0), 2),
+                "probability": round(base_probability, 2),
+                "key_levels": [round(current_price, 2), round(base_target, 2)],
+                "catalysts": [f"{trend} technical trend", "Current momentum"]
+            },
+            "bull_case": {
+                "scenario": "Bull Case",
+                "description": bull_thesis[:150] if bull_thesis else "Bullish breakout scenario",
+                "target_15m": round(bull_target_15m, 2),
+                "target_60m": round(bull_target_60m, 2),
+                "probability": round(bull_probability, 2),
+                "key_levels": [round(current_price, 2), round(resistance, 2), round(bull_target_60m, 2)],
+                "catalysts": fundamental.get("key_catalysts", [])[:2] or ["Bullish momentum", "Positive sentiment"]
+            },
+            "bear_case": {
+                "scenario": "Bear Case",
+                "description": bear_thesis[:150] if bear_thesis else "Bearish breakdown scenario",
+                "target_15m": round(bear_target_15m, 2),
+                "target_60m": round(bear_target_60m, 2),
+                "probability": round(bear_probability, 2),
+                "key_levels": [round(current_price, 2), round(support, 2), round(bear_target_60m, 2)],
+                "catalysts": fundamental.get("key_risk_factors", [])[:2] or ["Bearish pressure", "Negative sentiment"]
+            },
+            "volatility_range": {
+                "atr": round(atr, 2),
+                "expected_range_15m": [round(current_price - atr * 0.5, 2), round(current_price + atr * 0.5, 2)],
+                "expected_range_60m": [round(current_price - atr * 1.5, 2), round(current_price + atr * 1.5, 2)]
+            }
+        }
+    
     def _extract_key_factors(
         self,
         technical: Dict[str, Any],
@@ -397,6 +533,15 @@ Executive Summary:"""
                 trend_signal = TrendSignal.BEARISH
             else:
                 trend_signal = TrendSignal.NEUTRAL
+
+            # Derive an overall environment bias combining
+            # multi-agent scores for the next 15 minutes.
+            if bullish_score - bearish_score > 0.05:
+                environment_bias = "BULLISH"
+            elif bearish_score - bullish_score > 0.05:
+                environment_bias = "BEARISH"
+            else:
+                environment_bias = "NEUTRAL"
             
             # Decision logic with adaptive thresholds and tiered signals
             signal = SignalType.HOLD
@@ -470,7 +615,71 @@ Executive Summary:"""
                 stop_loss = risk_rec.get("stop_loss_price", current_price * 1.015)
                 take_profit = current_price * 0.98  # 2% target (more conservative)
             
-            # Update state
+            # Generate scenario paths (base/bull/bear)
+            scenario_paths = self._generate_scenario_paths(
+                current_price, technical, fundamental, sentiment, macro,
+                state.bull_thesis, state.bear_thesis,
+                state.bull_confidence, state.bear_confidence
+            )
+            
+            # Scenario-aware gating (LLM-first, then deterministic backstop)
+            gating_reasons = []
+            try:
+                if signal == SignalType.BUY and scenario_paths:
+                    # LLM veto head: EXECUTE / REDUCE / HOLD
+                    veto = self._llm_execution_veto(
+                        scenario_paths,
+                        signal,
+                        bullish_score,
+                        bearish_score,
+                        entry_price,
+                        environment_bias
+                    )
+                    decision = veto.get("decision", "EXECUTE")
+                    reason = veto.get("reason", "")
+                    if decision == "HOLD":
+                        gating_reasons.append(f"LLM veto -> HOLD: {reason}")
+                        signal = SignalType.HOLD
+                        signal_strength = "FILTERED_HOLD"
+                        position_size = 0
+                    elif decision == "REDUCE":
+                        gating_reasons.append(f"LLM veto -> REDUCE: {reason}")
+                        position_size = int(position_size * 0.5)
+                        signal_strength = f"REDUCED_{signal_strength}"
+
+                    # Deterministic backstop (safety net)
+                    bear_case = scenario_paths.get("bear_case") or {}
+                    bull_case = scenario_paths.get("bull_case") or {}
+                    bear_prob = float(bear_case.get("probability") or 0.0)
+                    bull_target_15m = bull_case.get("target_15m")
+
+                    bear_prob_threshold = 0.45   # stricter than before
+                    min_bull_upside_pct = 0.0025  # 0.25%
+
+                    if bear_prob > bear_prob_threshold:
+                        gating_reasons.append(
+                            f"Backstop HOLD: bear_case.probability={bear_prob:.2f} > {bear_prob_threshold:.2f}"
+                        )
+                        signal = SignalType.HOLD
+                        signal_strength = "FILTERED_HOLD"
+                        position_size = 0
+
+                    if signal == SignalType.BUY and bull_target_15m is not None and entry_price:
+                        try:
+                            upside_pct = (float(bull_target_15m) - float(entry_price)) / float(entry_price)
+                            if upside_pct < min_bull_upside_pct:
+                                gating_reasons.append(
+                                    f"Backstop HOLD: bull_case 15m upside={upside_pct:.4f} < {min_bull_upside_pct:.4f}"
+                                )
+                                signal = SignalType.HOLD
+                                signal_strength = "FILTERED_HOLD"
+                                position_size = 0
+                        except Exception:
+                            pass
+            except Exception as e:
+                logger.debug(f"Scenario gating failed, ignoring gating step: {e}")
+
+            # Update state with (potentially gated) decision
             state.final_signal = signal
             state.trend_signal = trend_signal
             state.position_size = position_size
@@ -498,8 +707,12 @@ Executive Summary:"""
                 "signal_strength": signal_strength,
                 "strategy": strategy_description,
                 "adaptive_strategy": adaptive_strategy,  # Comprehensive strategy for execution
+                "scenario_paths": scenario_paths,  # Base/bull/bear future scenarios
+                "gating_reasons": gating_reasons,
                 "bullish_score": bullish_score,
                 "bearish_score": bearish_score,
+                 "environment_bias": environment_bias,
+                 "time_horizon": "INTRADAY_15M",
                 "position_size": position_size,
                 "entry_price": entry_price,
                 "stop_loss": stop_loss,

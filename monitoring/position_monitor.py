@@ -82,10 +82,10 @@ class PositionMonitor:
                 # Try to get from Kite if available
                 if self.kite:
                     try:
-                        # Get Bank Nifty LTP
+                        # Get instrument LTP
                         instrument_token = self._get_instrument_token()
                         if instrument_token:
-                            ltp_data = self.kite.ltp([f"NSE:NIFTY BANK"])
+                            ltp_data = self.kite.ltp([f"{settings.instrument_exchange}:{settings.instrument_symbol}"])
                             if ltp_data:
                                 current_price = list(ltp_data.values())[0].get("last_price")
                     except Exception as e:
@@ -165,8 +165,22 @@ class PositionMonitor:
             if paper_trading and self.paper_trading:
                 # Paper trading exit
                 result = self.paper_trading.close_position(trade_id, exit_price, reason)
-                if result.get("status") != "CLOSED":
-                    logger.warning(f"Failed to close paper position {trade_id}")
+                if result.get("status") == "NOT_FOUND":
+                    # Position not in memory, update MongoDB directly
+                    logger.info(f"Position {trade_id} not in memory, updating MongoDB directly")
+                    self.trades_collection.update_one(
+                        {"trade_id": trade_id},
+                        {"$set": {
+                            "exit_price": exit_price,
+                            "exit_timestamp": datetime.now().isoformat(),
+                            "status": "CLOSED",
+                            "exit_reason": reason,
+                            "pnl": pnl,
+                            "pnl_percent": pnl_percent
+                        }}
+                    )
+                elif result.get("status") != "CLOSED":
+                    logger.warning(f"Failed to close paper position {trade_id}: {result}")
                     return
             elif self.kite:
                 # Live trading exit - place market order
@@ -178,8 +192,8 @@ class PositionMonitor:
                     
                     order_id = self.kite.place_order(
                         variety=self.kite.VARIETY_REGULAR,
-                        exchange=self.kite.EXCHANGE_NSE,
-                        tradingsymbol="NIFTY BANK",
+                        exchange=settings.instrument_exchange,
+                        tradingsymbol=settings.instrument_symbol,
                         transaction_type=transaction_type,
                         quantity=quantity,
                         product=self.kite.PRODUCT_MIS,
@@ -218,14 +232,14 @@ class PositionMonitor:
             logger.error(f"Error exiting position {trade_id}: {e}", exc_info=True)
     
     def _get_instrument_token(self) -> Optional[int]:
-        """Get Bank Nifty instrument token."""
+        """Get instrument token for configured symbol."""
         if not self.kite:
             return None
         
         try:
-            instruments = self.kite.instruments("NSE")
+            instruments = self.kite.instruments(settings.instrument_exchange)
             for inst in instruments:
-                if inst["tradingsymbol"] == "NIFTY BANK":
+                if inst["tradingsymbol"] == settings.instrument_symbol:
                     return inst["instrument_token"]
         except Exception as e:
             logger.error(f"Error getting instrument token: {e}")

@@ -24,6 +24,8 @@ class TradingConfig(BaseModel):
     together_api_key: Optional[str] = Field(default=None)
     google_api_key: Optional[str] = Field(default=None)
     openrouter_api_key: Optional[str] = Field(default=None)
+    cohere_api_key: Optional[str] = Field(default=None)
+    ai21_api_key: Optional[str] = Field(default=None)
     ollama_base_url: str = Field(default="http://localhost:11434")  # Local Ollama
     
     # Database Connections
@@ -76,7 +78,9 @@ class TradingConfig(BaseModel):
     market_24_7: bool = Field(default=False)  # true for crypto (24/7 trading)
     
     # Data Collection
-    news_api_key: Optional[str] = Field(default=None)
+    finnhub_api_key: Optional[str] = Field(default=None)
+    eodhd_api_key: Optional[str] = Field(default=None)
+    news_api_provider: str = Field(default="newsapi")  # "newsapi", "finnhub", "eodhd"
     news_update_interval_minutes: int = Field(default=5)
     sentiment_update_interval_minutes: int = Field(default=10)
     
@@ -126,6 +130,8 @@ class TradingConfig(BaseModel):
             together_api_key=os.getenv("TOGETHER_API_KEY"),
             google_api_key=os.getenv("GOOGLE_API_KEY"),
             openrouter_api_key=os.getenv("OPENROUTER_API_KEY"),
+            cohere_api_key=os.getenv("COHERE_API_KEY"),
+            ai21_api_key=os.getenv("AI21_API_KEY"),
             ollama_base_url=os.getenv("OLLAMA_BASE_URL", "http://localhost:11434"),
             
             # Database
@@ -178,7 +184,9 @@ class TradingConfig(BaseModel):
             market_24_7=os.getenv("MARKET_24_7", "false").lower() == "true",
             
             # Data Collection
-            news_api_key=os.getenv("NEWS_API_KEY"),
+            finnhub_api_key=os.getenv("FINNHUB_API_KEY"),
+            eodhd_api_key=os.getenv("EODHD_API_KEY"),
+            news_api_provider=os.getenv("NEWS_API_PROVIDER", "newsapi"),
             news_update_interval_minutes=int(os.getenv("NEWS_UPDATE_INTERVAL_MINUTES", "5")),
             sentiment_update_interval_minutes=int(os.getenv("SENTIMENT_UPDATE_INTERVAL_MINUTES", "10")),
             

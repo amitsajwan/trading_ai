@@ -83,16 +83,21 @@ Focus on:
 - Inflation hedge narrative
 """
                 response_format = {
-                    "macro_regime": "string (RISK_ON/RISK_OFF/MIXED)",
-                    "fed_cycle": "string (TIGHTENING/EASING/NEUTRAL) - Fed policy cycle (REQUIRED for crypto, NOT RBI)",
-                    "rate_cut_probability": "float (0-1) - probability of Fed rate cuts",
-                    "rate_hike_probability": "float (0-1) - probability of Fed rate hikes",
-                    "liquidity_condition": "string (EASY/NORMAL/TIGHT) - global liquidity",
-                    "dollar_strength": "string (STRONG/NEUTRAL/WEAK) - USD strength impact",
-                    "sector_headwind_score": "float (-1 to +1) - negative = headwind, positive = tailwind",
+                    "macro_regime": "RISK_ON | RISK_OFF | MIXED",
+                    "macro_regime_reasoning": "string",
+                    "monetary_cycle": "TIGHTENING | EASING | NEUTRAL",
+                    "monetary_cycle_reasoning": "string",
+                    "rate_cut_probability": "float (0-1)",
+                    "rate_hike_probability": "float (0-1)",
+                    "rate_probability_reasoning": "string",
+                    "risk_appetite": "HIGH | MEDIUM | LOW",
+                    "risk_reasoning": "string",
+                    "liquidity_condition": "EASY | NORMAL | TIGHT",
+                    "liquidity_reasoning": "string",
+                    "macro_headwind_score": "float (-1 to +1)",
+                    "headwind_reasoning": "string",
                     "confidence_score": "float (0-1)",
-                    "macro_regime_reasoning": "string explaining regime choice",
-                    "fed_cycle_reasoning": "string explaining Fed cycle assessment"
+                    "confidence_reasoning": "string"
                 }
             else:
                 # Indian stocks/banking sector context
@@ -103,30 +108,62 @@ Macro Economic Context:
 - Market Health Indicator: {npa_ratio if npa_ratio else 'Unknown'}
 
 Analyze the macro regime and its impact on {instrument_name}.
+Use a 15-minute to 1-day trading horizon and focus on how
+macro conditions change the odds of bullish vs bearish moves.
 """
                 response_format = {
-                    "macro_regime": "string (GROWTH/INFLATION/STRESS/MIXED)",
-                    "rbi_cycle": "string (TIGHTENING/EASING/NEUTRAL)",
+                    "macro_regime": "RISK_ON | RISK_OFF | MIXED",
+                    "macro_regime_reasoning": "string",
+                    "monetary_cycle": "TIGHTENING | EASING | NEUTRAL",
+                    "monetary_cycle_reasoning": "string",
                     "rate_cut_probability": "float (0-1)",
                     "rate_hike_probability": "float (0-1)",
-                    "npa_concern_level": "string (LOW/MEDIUM/HIGH)",
-                    "liquidity_condition": "string (EASY/NORMAL/TIGHT)",
-                    "sector_headwind_score": "float (-1 to +1)",
-                    "confidence_score": "float (0-1)"
+                    "rate_probability_reasoning": "string",
+                    "risk_appetite": "HIGH | MEDIUM | LOW",
+                    "risk_reasoning": "string",
+                    "liquidity_condition": "EASY | NORMAL | TIGHT",
+                    "liquidity_reasoning": "string",
+                    "macro_headwind_score": "float (-1 to +1)",
+                    "headwind_reasoning": "string",
+                    "confidence_score": "float (0-1)",
+                    "confidence_reasoning": "string"
                 }
             
             analysis = self._call_llm_structured(prompt, response_format)
             
-            headwind_score = analysis.get('sector_headwind_score', 0.0)
+            # Normalize schema for downstream agents
+            headwind_score = analysis.get('macro_headwind_score', analysis.get('sector_headwind_score', 0.0))
             # Ensure it's a float before formatting
             try:
                 headwind_score = float(headwind_score) if headwind_score is not None else 0.0
             except (ValueError, TypeError):
                 headwind_score = 0.0
+
+            # Derive a simple macro bias (BULLISH/BEARISH/NEUTRAL) for the
+            # near-term horizon based on regime and headwind score.
+            macro_regime = (analysis.get('macro_regime') or '').upper()
+            if headwind_score > 0.05 and macro_regime == 'RISK_ON':
+                macro_bias = "BULLISH"
+            elif headwind_score < -0.05 and macro_regime == 'RISK_OFF':
+                macro_bias = "BEARISH"
+            else:
+                macro_bias = "NEUTRAL"
+
+            normalized = dict(analysis)
+            # Keep backwards-compatible field names used by portfolio manager
+            normalized.setdefault('sector_headwind_score', headwind_score)
+            # RBI/Fed cycle compatible key
+            monetary_cycle = analysis.get('monetary_cycle')
+            if is_crypto:
+                normalized.setdefault('fed_cycle', monetary_cycle or 'NEUTRAL')
+            else:
+                normalized.setdefault('rbi_cycle', monetary_cycle or 'NEUTRAL')
+            normalized.setdefault('macro_bias', macro_bias)
+            normalized.setdefault('time_horizon', 'INTRADAY_15M')
             
             # Build human-readable explanation with points and reasoning
             if is_crypto:
-                fed_cycle = analysis.get('fed_cycle')
+                fed_cycle = normalized.get('fed_cycle')
                 if not fed_cycle:
                     fed_cycle = analysis.get('rbi_cycle', 'UNKNOWN')
                     logger.warning("LLM returned rbi_cycle for crypto, should return fed_cycle")
@@ -138,7 +175,7 @@ Analyze the macro regime and its impact on {instrument_name}.
                 confidence = analysis.get('confidence_score', 0.5)
                 
                 points = [
-                    ("Macro Regime", analysis.get('macro_regime', 'UNKNOWN'),
+                    ("Macro Regime", macro_regime or 'UNKNOWN',
                      f"Current market regime assessment"),
                     ("Fed Policy Cycle", fed_cycle,
                      f"Federal Reserve monetary policy stance"),
@@ -152,11 +189,13 @@ Analyze the macro regime and its impact on {instrument_name}.
                      f"Global liquidity and funding conditions"),
                     ("Headwind Score", f"{headwind_score:.2f}",
                      f"{'Headwind' if headwind_score < 0 else 'Tailwind'} for crypto sector"),
+                    ("Macro Bias (15m)", macro_bias,
+                     f"Near-term macro tilt for risk assets"),
                     ("Confidence", f"{confidence:.0%}",
                      f"Analysis confidence based on data quality")
                 ]
                 
-                summary = f"Overall: {analysis.get('macro_regime', 'UNKNOWN')} regime with {fed_cycle} Fed cycle"
+                summary = f"Overall: {macro_regime or 'UNKNOWN'} regime with {fed_cycle} Fed cycle ({macro_bias} bias, 15m horizon)"
             else:
                 rate_cut_prob = analysis.get('rate_cut_probability', 0.5)
                 rate_hike_prob = analysis.get('rate_hike_probability', 0.5)
@@ -165,7 +204,7 @@ Analyze the macro regime and its impact on {instrument_name}.
                 confidence = analysis.get('confidence_score', 0.5)
                 
                 points = [
-                    ("Macro Regime", analysis.get('macro_regime', 'UNKNOWN'),
+                    ("Macro Regime", macro_regime or 'UNKNOWN',
                      f"Current economic regime assessment"),
                     ("RBI Policy Cycle", analysis.get('rbi_cycle', 'UNKNOWN'),
                      f"RBI monetary policy stance"),
@@ -179,14 +218,16 @@ Analyze the macro regime and its impact on {instrument_name}.
                      f"Market liquidity and funding conditions"),
                     ("Headwind Score", f"{headwind_score:.2f}",
                      f"{'Headwind' if headwind_score < 0 else 'Tailwind'} for sector"),
+                    ("Macro Bias (15m)", macro_bias,
+                     f"Near-term macro tilt for risk assets"),
                     ("Confidence", f"{confidence:.0%}",
                      f"Analysis confidence based on data quality")
                 ]
                 
-                summary = f"Overall: {analysis.get('macro_regime', 'UNKNOWN')} regime with {analysis.get('rbi_cycle', 'UNKNOWN')} RBI cycle"
+                summary = f"Overall: {macro_regime or 'UNKNOWN'} regime with {normalized.get('rbi_cycle', 'UNKNOWN')} RBI cycle ({macro_bias} bias, 15m horizon)"
             
             explanation = self.format_explanation("Macro Analysis", points, summary)
-            self.update_state(state, analysis, explanation)
+            self.update_state(state, normalized, explanation)
         
         except Exception as e:
             # Check if it's a rate limit error - if so, log but don't use defaults immediately

@@ -7,46 +7,35 @@ Welcome to the GenAI Trading System documentation.
 | Document | Description |
 |----------|-------------|
 | [SETUP.md](SETUP.md) | Installation, configuration, and quick start |
+| [INSTRUMENT_CONFIGURATION.md](INSTRUMENT_CONFIGURATION.md) | **Docker multi-instrument setup** |
+| [DEPLOYMENT.md](DEPLOYMENT.md) | **Docker production deployment** |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | System architecture and design |
 | [AGENTS.md](AGENTS.md) | Agent documentation and responsibilities |
 | [DATA_FLOW.md](DATA_FLOW.md) | Data pipeline and signal flow |
 | [API.md](API.md) | REST API reference |
-| [DEPLOYMENT.md](DEPLOYMENT.md) | Production deployment guide |
 
 ## Configuration Guides
 
 | Document | Description |
 |----------|-------------|
 | [INSTRUMENT_CONFIGURATION.md](INSTRUMENT_CONFIGURATION.md) | How to configure different instruments (BTC, Bank Nifty) |
-| [CRYPTO_DATA_FEED.md](CRYPTO_DATA_FEED.md) | Crypto data feed setup (Binance WebSocket) |
 
-## Reference
+## Quick Reference
 
 | Document | Description |
 |----------|-------------|
-| [CURRENT_ISSUES.md](CURRENT_ISSUES.md) | Known issues and limitations |
-| [CHANGELOG.md](CHANGELOG.md) | Version history and changes |
+| [ESSENTIALS.md](ESSENTIALS.md) | Quick start essentials |
 
 ## Quick Links
 
 - **[Main README](../README.md)** - Project overview and quick start
 - **[Diagnostic Script](../scripts/diagnose_llm_system.py)** - Check system health
 
-## Archived Documents (Removed)
+## Archived Documents
 
-A set of historical or draft documents were archived and later **removed** from the top-level docs directory on 2026-01-03 to reduce clutter. The compressed backups were permanently deleted on 2026-01-03 and are no longer available in the repository; contact maintainers to request restores.
+Historical implementation and fix documentation has been archived in the `archived/` folder. These contain specific development notes, bug fixes, and implementation details that are no longer current but preserved for reference.
 
-If you need a specific archived document, extract the zip or contact the repository maintainers to restore it to `docs/`.
-
-
-## Getting Started
-
-1. **New Users**: Start with [SETUP.md](SETUP.md)
-2. **Understanding the System**: Read [ARCHITECTURE.md](ARCHITECTURE.md)
-3. **Configuring Instruments**: See [INSTRUMENT_CONFIGURATION.md](INSTRUMENT_CONFIGURATION.md)
-4. **Production Deployment**: Follow [DEPLOYMENT.md](DEPLOYMENT.md)
-
-## LLM Configuration
+If you need a specific archived document, check the `docs/archived/` folder.
 
 The system supports multiple LLM providers with automatic fallback:
 

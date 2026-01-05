@@ -29,7 +29,7 @@ pip install python-dotenv
 pip install cohere
 pip install groq
 pip install openai
-pip install google-generativeai
+pip install google-genai
 pip install requests
 ```
 
@@ -256,7 +256,7 @@ manager.reset_provider_usage("groq")  # Reset specific provider
 ### Missing Dependencies
 ```bash
 # Install all at once
-pip install cohere groq openai google-generativeai requests python-dotenv
+pip install cohere groq openai google-genai requests python-dotenv
 ```
 
 ## Advanced Features

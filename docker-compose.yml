@@ -5,7 +5,7 @@ services:
     image: mongo:7
     container_name: zerodha-mongodb
     ports:
-      - "27017:27017"
+      - "27018:27017"
     volumes:
       - mongo_data:/data/db
     environment:
@@ -16,12 +16,14 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - trading-network
 
   redis:
     image: redis:7-alpine
     container_name: zerodha-redis
     ports:
-      - "6379:6379"
+      - "6380:6379"
     volumes:
       - redis_data:/data
     restart: unless-stopped
@@ -30,20 +32,158 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - trading-network
 
-  trading-bot:
+  trading-bot-btc:
     build: .
-    container_name: zerodha-trading-bot
+    container_name: zerodha-trading-bot-btc
     depends_on:
       mongodb:
         condition: service_healthy
       redis:
         condition: service_healthy
     env_file:
-      - .env
+      - .env.btc
+    environment:
+      - MONGODB_URI=mongodb://mongodb:27017/zerodha_trading
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - DEBUG_AGENT_OUTPUT=true
+      - LLM_SELECTION_STRATEGY=weighted
+      - LLM_SOFT_THROTTLE_FACTOR=0.8
     volumes:
       - ./logs:/app/logs
-      - ./credentials.json:/app/credentials.json:ro
+      # - ./credentials.json:/app/credentials.json:ro
+    restart: unless-stopped
+    networks:
+      - trading-network
+
+  trading-bot-banknifty:
+    build: .
+    container_name: zerodha-trading-bot-banknifty
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env.banknifty
+    environment:
+      - MONGODB_URI=mongodb://mongodb:27017/zerodha_trading
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - DEBUG_AGENT_OUTPUT=true
+      - LLM_SELECTION_STRATEGY=weighted
+      - LLM_SOFT_THROTTLE_FACTOR=0.8
+    volumes:
+      - ./logs:/app/logs
+      # - ./credentials.json:/app/credentials.json:ro
+    restart: unless-stopped
+    networks:
+      - trading-network
+
+  trading-bot-nifty:
+    build: .
+    container_name: zerodha-trading-bot-nifty
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env.nifty
+    environment:
+      - MONGODB_URI=mongodb://mongodb:27017/zerodha_trading
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - DEBUG_AGENT_OUTPUT=true
+      - LLM_SELECTION_STRATEGY=weighted
+      - LLM_SOFT_THROTTLE_FACTOR=0.8
+    volumes:
+      - ./logs:/app/logs
+      # - ./credentials.json:/app/credentials.json:ro
+    restart: unless-stopped
+    networks:
+      - trading-network
+
+  backend-btc:
+    build: .
+    container_name: zerodha-backend-btc
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env.btc
+    environment:
+      - MONGODB_URI=mongodb://mongodb:27017/zerodha_trading
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - DEBUG_AGENT_OUTPUT=true
+      - LLM_SELECTION_STRATEGY=weighted
+      - LLM_SOFT_THROTTLE_FACTOR=0.8
+    ports:
+      - "8001:8000"
+    volumes:
+      - ./logs:/app/logs
+      # - ./credentials.json:/app/credentials.json:ro
+    command: ["python", "-m", "uvicorn", "dashboard_pro:app", "--host", "0.0.0.0", "--port", "8000"]
+    restart: unless-stopped
+    networks:
+      - trading-network
+
+  backend-banknifty:
+    build: .
+    container_name: zerodha-backend-banknifty
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env.banknifty
+    environment:
+      - MONGODB_URI=mongodb://mongodb:27017/zerodha_trading
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - DEBUG_AGENT_OUTPUT=true
+      - LLM_SELECTION_STRATEGY=weighted
+      - LLM_SOFT_THROTTLE_FACTOR=0.8
+    ports:
+      - "8002:8000"
+    volumes:
+      - ./logs:/app/logs
+      # - ./credentials.json:/app/credentials.json:ro
+    command: ["python", "-m", "uvicorn", "dashboard_pro:app", "--host", "0.0.0.0", "--port", "8000"]
+    restart: unless-stopped
+    networks:
+      - trading-network
+
+  backend-nifty:
+    build: .
+    container_name: zerodha-backend-nifty
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    env_file:
+      - .env.nifty
+    environment:
+      - MONGODB_URI=mongodb://mongodb:27017/zerodha_trading
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - DEBUG_AGENT_OUTPUT=true
+      - LLM_SELECTION_STRATEGY=weighted
+      - LLM_SOFT_THROTTLE_FACTOR=0.8
+    ports:
+      - "8003:8000"
+    volumes:
+      - ./logs:/app/logs
+      # - ./credentials.json:/app/credentials.json:ro
+    command: ["python", "-m", "uvicorn", "dashboard_pro:app", "--host", "0.0.0.0", "--port", "8000"]
     restart: unless-stopped
     networks:
       - trading-network

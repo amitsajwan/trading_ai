@@ -320,13 +320,13 @@ class DataIngestionService:
         else:
             logger.error(f"❌ Instrument token not available - trying to fetch now...")
             # Fallback: try to get token now (might be slow)
-            instrument_token = self.get_instrument_token("NIFTY BANK")
+            instrument_token = self.get_instrument_token(settings.instrument_symbol)
             if instrument_token:
                 self._instrument_token = instrument_token
                 logger.info(f"Subscribing to token: {instrument_token}")
                 ws.subscribe([instrument_token])
                 ws.set_mode(ws.MODE_FULL, [instrument_token])
-                logger.info(f"✅ Subscribed to Bank Nifty (token: {instrument_token})")
+                logger.info(f"✅ Subscribed to {settings.instrument_name} (token: {instrument_token})")
             else:
                 logger.error(f"❌ Could not find instrument token for {settings.instrument_name} ({settings.instrument_symbol})")
                 logger.error("Please check if market is open or instrument list is accessible")

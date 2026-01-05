@@ -119,12 +119,12 @@ class BaseAgent(ABC):
             if not settings.google_api_key:
                 raise ValueError("No Google API key configured. Set GOOGLE_API_KEY in .env file.")
             try:
-                import google.generativeai as genai
+                import google.genai as genai
                 genai.configure(api_key=settings.google_api_key)
                 # Return a wrapper that mimics OpenAI interface
                 return GeminiClient(api_key=settings.google_api_key)
             except ImportError:
-                raise ImportError("Google Generative AI package not installed. Run: pip install google-generativeai")
+                raise ImportError("Google Generative AI package not installed. Run: pip install google-genai")
         else:
             raise ValueError(f"Unknown LLM provider: {settings.llm_provider}. Use 'groq', 'openai', 'azure', 'ollama', 'huggingface', 'together', or 'gemini'.")
     

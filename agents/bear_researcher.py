@@ -64,8 +64,8 @@ Technical Analysis:
 - Resistance Level: {technical.get('resistance_level', 'N/A')}
 
 Sentiment Analysis:
-- Retail Sentiment: {float(sentiment.get('retail_sentiment') or 0.0):.2f}
-- Institutional Sentiment: {float(sentiment.get('institutional_sentiment') or 0.0):.2f}
+- Retail Sentiment: { ('N/A' if sentiment.get('confidence_score', 1.0) < 0.2 else f"{float(sentiment.get('retail_sentiment') or 0.0):.2f}") }
+- Institutional Sentiment: { ('N/A' if sentiment.get('confidence_score', 1.0) < 0.2 else f"{float(sentiment.get('institutional_sentiment') or 0.0):.2f}") }
 
 Macro Analysis:
 - Macro Regime: {macro.get('macro_regime', 'UNKNOWN')}

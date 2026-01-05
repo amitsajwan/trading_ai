@@ -94,6 +94,20 @@ def display_analysis(latest, prev_timestamp=None):
             bullish = pm_data.get("bullish_score", "N/A")
             bearish = pm_data.get("bearish_score", "N/A")
             print(f"Bullish Score: {bullish} | Bearish Score: {bearish}")
+
+            # Show scenario paths if available
+            scenarios = pm_data.get("scenario_paths") or {}
+            if scenarios:
+                base = scenarios.get("base_case", {})
+                bull = scenarios.get("bull_case", {})
+                bear = scenarios.get("bear_case", {})
+                print("Scenarios (15m/60m | prob):")
+                if base:
+                    print(f"  Base  : {base.get('target_15m', 'N/A')} / {base.get('target_60m', 'N/A')} | {base.get('probability', 'N/A')}")
+                if bull:
+                    print(f"  Bull  : {bull.get('target_15m', 'N/A')} / {bull.get('target_60m', 'N/A')} | {bull.get('probability', 'N/A')}")
+                if bear:
+                    print(f"  Bear  : {bear.get('target_15m', 'N/A')} / {bear.get('target_60m', 'N/A')} | {bear.get('probability', 'N/A')}")
     
     if "technical" in agent_decisions:
         tech_data = agent_decisions["technical"]

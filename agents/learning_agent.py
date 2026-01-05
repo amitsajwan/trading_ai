@@ -138,20 +138,100 @@ Your role: Analyze completed trades, identify patterns, and suggest improvements
         
         return recommendations
     
-    def process(self, state: AgentState) -> AgentState:
+    def update_prompts_from_performance(
+        self,
+        insights: Dict[str, Any],
+        auto_update: bool = True
+    ) -> Dict[str, str]:
+        """Update agent prompts based on performance insights."""
+        from config.prompt_manager import PromptManager
+        
+        prompt_manager = PromptManager()
+        updated_prompts = {}
+        
+        agent_accuracy = insights.get("agent_accuracy", {})
+        win_rate = insights.get("win_rate", 0)
+        
+        # Identify underperforming agents (accuracy < 50%)
+        for agent_name, accuracy in agent_accuracy.items():
+            if accuracy < 50 and auto_update:
+                # Generate improvement suggestion
+                suggestion = f"""
+# Performance Improvement Note (Auto-generated {datetime.now().strftime('%Y-%m-%d')})
+# Agent: {agent_name}
+# Recent Accuracy: {accuracy:.1f}%
+# Overall Win Rate: {win_rate:.1f}%
+
+Focus on:
+1. More conservative probability assessments
+2. Better identification of low-conviction scenarios
+3. Clearer distinction between strong vs weak signals
+4. Emphasis on risk management and capital preservation
+"""
+                try:
+                    updated_prompt = prompt_manager.update_prompt_from_learning(
+                        agent_name, suggestion
+                    )
+                    updated_prompts[agent_name] = "Updated with performance feedback"
+                    logger.info(f"Auto-updated prompt for {agent_name} (accuracy: {accuracy:.1f}%)")
+                except Exception as e:
+                    logger.error(f"Failed to update prompt for {agent_name}: {e}")
+                    updated_prompts[agent_name] = f"Update failed: {e}"
+        
+        # If overall win rate is low, suggest tightening entry criteria
+        if win_rate < 45 and auto_update:
+            for agent_name in ["technical", "fundamental", "sentiment", "macro"]:
+                if agent_name not in updated_prompts:  # Only if not already updated
+                    suggestion = f"""
+# System-wide Improvement (Auto-generated {datetime.now().strftime('%Y-%m-%d')})
+# Overall Win Rate: {win_rate:.1f}% (below target)
+
+Adjust analysis to be more selective:
+1. Raise conviction thresholds for BUY/SELL signals
+2. Prefer HOLD when conditions are mixed
+3. Require stronger confluence across multiple indicators
+4. Flag low-confidence scenarios explicitly
+"""
+                    try:
+                        prompt_manager.update_prompt_from_learning(agent_name, suggestion)
+                        updated_prompts[agent_name] = "Updated for system-wide improvement"
+                        logger.info(f"Auto-updated prompt for {agent_name} (system-wide low win rate)")
+                    except Exception as e:
+                        logger.error(f"Failed system-wide update for {agent_name}: {e}")
+        
+        return updated_prompts
+    
+    def process(self, state: AgentState, auto_update_prompts: bool = True) -> AgentState:
         """Process learning analysis (typically called post-market)."""
         logger.info("Processing learning analysis...")
         
         # Analyze recent trades
         analysis = self.analyze_trades(days=7)
         
+        # Automatically update prompts based on performance
+        updated_prompts = {}
+        if auto_update_prompts and analysis.get("trades_analyzed", 0) >= 5:
+            # Only auto-update if we have at least 5 trades to analyze
+            insights = analysis.get("insights", {})
+            if insights:
+                try:
+                    updated_prompts = self.update_prompts_from_performance(
+                        insights, auto_update=True
+                    )
+                    logger.info(f"Auto-updated {len(updated_prompts)} agent prompts based on performance")
+                except Exception as e:
+                    logger.error(f"Failed to auto-update prompts: {e}")
+        
         output = {
             "analysis": analysis,
+            "updated_prompts": updated_prompts,
             "timestamp": datetime.now().isoformat()
         }
         
         explanation = f"Learning analysis: {analysis.get('trades_analyzed', 0)} trades analyzed, "
         explanation += f"win_rate={analysis.get('insights', {}).get('win_rate', 0):.1f}%"
+        if updated_prompts:
+            explanation += f", updated {len(updated_prompts)} prompts"
         
         self.update_state(state, output, explanation)
         
