@@ -82,31 +82,34 @@ Get current status and analysis from all agents.
 ### Market Data
 
 #### GET `/api/market-data`
-Get current market data and recent OHLC.
+Get current market data and 24h aggregates. For Zerodha instruments, this endpoint prefers live fields from Redis collectors.
 
-**Query Parameters:**
-- `timeframe` (optional): `1min`, `5min`, `15min`, `1h`, `daily` (default: `5min`)
-- `limit` (optional): Number of candles to return (default: 100)
-
-**Response:**
+**Response (Zerodha example):**
 ```json
 {
-  "instrument": "BTC-USD",
-  "current_price": 45000.50,
-  "price_change_24h": 2.5,
-  "volume_24h": 1234567890,
-  "ohlc_data": [
-    {
-      "timestamp": "2024-01-01T10:00:00Z",
-      "open": 44900.00,
-      "high": 45100.00,
-      "low": 44800.00,
-      "close": 45050.00,
-      "volume": 1234567
-    }
-  ]
+  "currentprice": 60500.0,
+  "marketopen": true,
+  "instrumentname": "Bank Nifty",
+  "instrumentsymbol": "NIFTY BANK",
+  "datasource": "Redis",
+  "timestamp": "2026-01-05T10:00:00Z",
+  "volume24h": 123456.0,
+  "high24h": 60650.0,
+  "low24h": 59800.0,
+  "vwap": 60420.5,
+  "change24h": 0.85,
+  "futures": {
+    "volume": 123456.0,
+    "oi": 98765.0,
+    "average_price": 60420.5
+  }
 }
 ```
+
+Notes:
+- Redis key normalization: Bank Nifty uses `NIFTYBANK`, Nifty 50 uses `NIFTY` for internal keys.
+- Live fields populated by collectors: `volume24h` (from `volume:NIFTYBANK:latest`), `vwap` (from `vwap:NIFTYBANK:latest`), `futures.oi` (from `oi:NIFTYBANK:latest`).
+- When Redis is unavailable, fields fall back to OHLC aggregation from MongoDB.
 
 #### GET `/api/ticker`
 Get real-time ticker data.
@@ -124,6 +127,53 @@ Get real-time ticker data.
 ```
 
 ### Trading Data
+
+### Decision Snapshot
+
+#### GET `/api/decision-snapshot`
+Return a consolidated, single-call snapshot for trading decisions. Combines latest LTP, depth analytics, futures metrics, and options-chain summary. Cached in Redis for fast access.
+
+Notes:
+- Snapshot is cached at `snapshot:<KEY>:latest` with a short TTL (≈60s).
+- Zerodha key normalization: Bank Nifty uses `NIFTYBANK`, Nifty 50 uses `NIFTY`.
+- When data is not yet available, the endpoint can return `503`.
+
+Example response:
+```json
+{
+  "instrument": "NIFTYBANK",
+  "timestamp": "2026-01-05T10:00:00Z",
+  "ltp": 60500.0,
+  "futures": {
+    "volume": 123456.0,
+    "oi": 98765.0,
+    "average_price": 60420.5
+  },
+  "depth": {
+    "best_bid": 60490.0,
+    "best_ask": 60510.0,
+    "total_bid_qty": 120000,
+    "total_ask_qty": 115000,
+    "spread": {"bps": 33.0, "value": 20.0},
+    "view": {"buy": [], "sell": []},
+    "large_orders": {"buy": [], "sell": []},
+    "imbalance": {"ratio": 0.52}
+  },
+  "options": {
+    "available": true,
+    "futures_price": 60510.0,
+    "atm_strike": 60500,
+    "ce_ltp": 350.0,
+    "pe_ltp": 420.0,
+    "ce_oi": 1200000,
+    "pe_oi": 1300000,
+    "pcr": 1.08,
+    "total_ce_oi": 12000000,
+    "total_pe_oi": 13000000,
+    "strikes_sampled": 50
+  }
+}
+```
 
 #### GET `/api/positions`
 Get current open positions.

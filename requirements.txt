@@ -43,3 +43,4 @@ psutil>=5.9.0  # Process management (optional, used by start scripts)
 # Web Scraping
 beautifulsoup4>=4.12.0
 lxml>=4.9.0
+feedparser>=6.0.10  # For RSS feed parsing

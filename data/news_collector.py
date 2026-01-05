@@ -5,6 +5,7 @@ import logging
 from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional
 import httpx
+import feedparser
 from data.market_memory import MarketMemory
 from mongodb_schema import get_mongo_client, get_collection
 from config.settings import settings
@@ -22,9 +23,18 @@ class NewsCollector:
         """Initialize news collector."""
         self.market_memory = market_memory
         self.finnhub_api_key = settings.finnhub_api_key
-        self.eodhd_api_key = settings.eodhd_api_key
         self.news_api_provider = settings.news_api_provider
         self.running = False
+        
+        # RSS Configuration
+        self.rss_feeds_enabled = settings.rss_feeds_enabled
+        self.rss_keywords = [kw.strip().lower() for kw in settings.rss_keywords.split(",")]
+        self.rss_feed_urls = [
+            settings.rss_moneycontrol_latest,
+            settings.rss_moneycontrol_economy,
+            settings.rss_moneycontrol_markets,
+            settings.rss_moneycontrol_business
+        ]
         
         # MongoDB connection
         self.mongo_client = get_mongo_client()
@@ -37,13 +47,13 @@ class NewsCollector:
         if query is None:
             query = settings.news_query
         
-        # Fetch from both EODHD and Finnhub if keys are available
+        # Fetch from RSS feeds and Finnhub if keys are available
         all_news_items = []
         
-        # Fetch from EODHD
-        if self.eodhd_api_key:
-            eodhd_news = await self._fetch_from_provider("eodhd", self.eodhd_api_key, query, max_results // 2)
-            all_news_items.extend(eodhd_news)
+        # Fetch from RSS feeds first (Moneycontrol)
+        if self.rss_feeds_enabled:
+            rss_news = await self._fetch_from_rss_feeds(max_results // 2)  # Allocate 1/2 to RSS
+            all_news_items.extend(rss_news)
         
         # Fetch from Finnhub
         if self.finnhub_api_key:
@@ -67,20 +77,6 @@ class NewsCollector:
                         "category": category,
                         "token": api_key
                     }
-                elif provider == "eodhd":
-                    # EODHD API for financial news
-                    url = "https://eodhd.com/api/news"
-                    # Use appropriate topics based on instrument
-                    if "BTC" in settings.instrument_symbol.upper():
-                        topics = "crypto,blockchain,finance"
-                    else:
-                        topics = "finance,markets,economy"
-                    params = {
-                        "api_token": api_key,
-                        "t": topics,
-                        "limit": max_results,
-                        "from": (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-                    }
                 else:
                     # Default to NewsAPI
                     url = "https://newsapi.org/v2/everything"
@@ -100,8 +96,6 @@ class NewsCollector:
                 
                 if provider == "finnhub":
                     articles = data  # Finnhub returns direct array
-                elif provider == "eodhd":
-                    articles = data  # EODHD returns direct array
                 else:
                     articles = data.get("articles", [])
                 
@@ -114,16 +108,6 @@ class NewsCollector:
                             "source": article.get("source", "finnhub"),
                             "url": article.get("url", ""),
                             "published_at": datetime.fromtimestamp(article.get("datetime", 0)).isoformat() if article.get("datetime") else "",
-                            "timestamp": datetime.now().isoformat(),
-                            "event_type": "NEWS"
-                        }
-                    elif provider == "eodhd":
-                        news_item = {
-                            "title": article.get("title", ""),
-                            "content": article.get("content", ""),
-                            "source": article.get("source", "eodhd"),
-                            "url": article.get("link", ""),
-                            "published_at": article.get("date", ""),
                             "timestamp": datetime.now().isoformat(),
                             "event_type": "NEWS"
                         }
@@ -149,19 +133,92 @@ class NewsCollector:
             logger.error(f"Error fetching news from {provider}: {e}")
             return []
     
+    async def _fetch_from_rss_feeds(self, max_results: int) -> List[Dict[str, Any]]:
+        """Fetch news from Moneycontrol RSS feeds."""
+        try:
+            all_rss_items = []
+            
+            for feed_url in self.rss_feed_urls:
+                try:
+                    # Parse RSS feed (feedparser is synchronous, so run in thread pool)
+                    feed = await asyncio.get_event_loop().run_in_executor(None, feedparser.parse, feed_url)
+                    
+                    # Check up to 5 entries per feed, we'll limit total later
+                    entries_to_check = min(5, len(feed.entries))
+                    for entry in feed.entries[:entries_to_check]:
+                        title = entry.title.lower()
+                        
+                        # Filter by keywords - be more inclusive
+                        if any(kw in title for kw in self.rss_keywords):
+                            news_item = {
+                                "title": entry.title,
+                                "content": getattr(entry, 'summary', '')[:500],  # Limit content length
+                                "source": "moneycontrol-rss",
+                                "url": entry.link,
+                                "published_at": getattr(entry, 'published', ''),
+                                "timestamp": datetime.now().isoformat(),
+                                "event_type": "NEWS",
+                                "feed_url": feed_url
+                            }
+                            
+                            # Enhanced sentiment analysis for Indian markets
+                            news_item["sentiment_score"] = self._calculate_rss_sentiment(entry.title + " " + getattr(entry, 'summary', ''))
+                            
+                            all_rss_items.append(news_item)
+                            
+                except Exception as e:
+                    logger.error(f"Error parsing RSS feed {feed_url}: {e}")
+                    continue
+            
+            # Sort by published date (most recent first) and limit results
+            all_rss_items.sort(key=lambda x: x.get("published_at", ""), reverse=True)
+            return all_rss_items[:max_results]
+            
+        except Exception as e:
+            logger.error(f"Error fetching RSS feeds: {e}")
+            return []
+    
     def _calculate_sentiment(self, text: str) -> float:
         """
         Simple sentiment calculation based on keywords.
         Returns -1.0 (very negative) to +1.0 (very positive).
         """
+        return self._calculate_rss_sentiment(text)
+    
+    def _calculate_rss_sentiment(self, text: str) -> float:
+        """
+        Enhanced sentiment calculation for Indian markets with RSS-specific keywords.
+        Returns -1.0 (very negative) to +1.0 (very positive).
+        """
         text_lower = text.lower()
         
-        # Positive keywords
-        positive_words = ["surge", "rally", "gain", "profit", "growth", "up", "rise", "boost", "positive"]
-        negative_words = ["fall", "drop", "decline", "loss", "crash", "down", "negative", "worry", "concern"]
+        # Positive keywords (Indian market specific)
+        positive_words = [
+            "surge", "rally", "gain", "profit", "growth", "up", "rise", "boost", "positive",
+            "bullish", "buy", "long", "green", "higher", "record", "breakout", "momentum",
+            "fii buying", "dii buying", "inflow", "support", "recovery", "rebound"
+        ]
+        
+        # Negative keywords (Indian market specific)
+        negative_words = [
+            "fall", "drop", "decline", "loss", "crash", "down", "negative", "worry", "concern",
+            "bearish", "sell", "short", "red", "lower", "slump", "volatility", "fear",
+            "fii selling", "dii selling", "outflow", "resistance", "correction", "bearish"
+        ]
+        
+        # Indian market specific terms with sentiment
+        positive_phrases = ["bank nifty up", "nifty up", "sensex up", "rbi cut", "rate cut", "policy easing"]
+        negative_phrases = ["bank nifty down", "nifty down", "sensex down", "rbi hike", "rate hike", "policy tightening"]
         
         positive_count = sum(1 for word in positive_words if word in text_lower)
         negative_count = sum(1 for word in negative_words if word in text_lower)
+        
+        # Add phrase-based scoring
+        positive_phrase_count = sum(1 for phrase in positive_phrases if phrase in text_lower)
+        negative_phrase_count = sum(1 for phrase in negative_phrases if phrase in text_lower)
+        
+        positive_count += positive_phrase_count * 2  # Weight phrases higher
+        negative_count += negative_phrase_count * 2
         
         if positive_count == 0 and negative_count == 0:
             return 0.0

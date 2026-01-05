@@ -77,13 +77,79 @@ Respond ONLY as JSON on one line like: {"decision": "EXECUTE", "reason": "..."}
             logger.debug(f"LLM veto failed: {e}")
             return {"decision": "EXECUTE", "reason": "LLM error"}
     
+    def _detect_option_strategies(self, state: AgentState) -> List[Dict[str, Any]]:
+        """Detect viable option strategies from chain data."""
+        strategies = []
+        if not state.options_chain or not state.options_chain.get("available"):
+            return strategies
+        
+        try:
+            strikes = state.options_chain.get("strikes", {})
+            fut_price = state.options_chain.get("futures_price", 0)
+            if not strikes or not fut_price:
+                return strategies
+            
+            strike_list = sorted([int(s) for s in strikes.keys()])
+            atm_idx = min(range(len(strike_list)), key=lambda i: abs(strike_list[i] - fut_price))
+            
+            # Iron Condor detection (sell ATM, buy OTM)
+            if len(strike_list) >= 4 and atm_idx >= 2 and atm_idx < len(strike_list) - 2:
+                sell_put_strike = strike_list[atm_idx - 1]
+                buy_put_strike = strike_list[atm_idx - 2]
+                sell_call_strike = strike_list[atm_idx + 1]
+                buy_call_strike = strike_list[atm_idx + 2]
+                
+                sell_put_premium = strikes[str(sell_put_strike)].get("pe_ltp", 0)
+                buy_put_premium = strikes[str(buy_put_strike)].get("pe_ltp", 0)
+                sell_call_premium = strikes[str(sell_call_strike)].get("ce_ltp", 0)
+                buy_call_premium = strikes[str(buy_call_strike)].get("ce_ltp", 0)
+                
+                net_credit = sell_put_premium + sell_call_premium - buy_put_premium - buy_call_premium
+                if net_credit > 0:
+                    strategies.append({
+                        "type": "iron_condor",
+                        "strikes": [buy_put_strike, sell_put_strike, sell_call_strike, buy_call_strike],
+                        "net_credit": net_credit,
+                        "confidence": 0.7 if net_credit > fut_price * 0.005 else 0.5
+                    })
+        except Exception as exc:
+            logger.debug(f"Option strategy detection failed: {exc}")
+        
+        return strategies
+    
+    def _pre_trade_risk_check(self, signal: SignalType, position_size: int, entry_price: float) -> Dict[str, Any]:
+        """Pre-trade risk validation."""
+        checks = {"passed": True, "warnings": [], "errors": []}
+        
+        try:
+            # Position size check
+            if position_size <= 0:
+                checks["errors"].append("Invalid position size")
+                checks["passed"] = False
+            
+            # Price sanity check
+            if entry_price <= 0:
+                checks["errors"].append("Invalid entry price")
+                checks["passed"] = False
+            
+            # Circuit breaker: max daily loss (check MongoDB for today's PnL)
+            # Placeholder - implement if needed
+            
+        except Exception as exc:
+            logger.error(f"Risk check failed: {exc}")
+            checks["errors"].append(f"Risk check error: {exc}")
+            checks["passed"] = False
+        
+        return checks
+    
     def _get_default_prompt(self) -> str:
         """Get default system prompt."""
         instrument_name = settings.instrument_name
         return f"""You are the Portfolio Manager Agent for a {instrument_name} trading system.
 Your role: Synthesize all agent analyses and make final trading decisions.
 You receive inputs from technical, fundamental, sentiment, macro, bull/bear researchers, and risk agents.
-Make decisions based on consensus and risk management."""
+You have access to order-flow data, options chain (if available), and detected strategy opportunities.
+Make decisions based on consensus, risk management, and market microstructure."""
     
     def _generate_strategy_description(
         self, signal, signal_strength, trend_signal, bullish_score, bearish_score,
@@ -474,8 +540,12 @@ Executive Summary:"""
         """Process portfolio management decision."""
         logger.info("Processing portfolio manager decision...")
         
-        try:
-            # Gather all inputs
+        try:            # Detect option strategies if chain available
+            detected_strats = self._detect_option_strategies(state)
+            state.detected_strategies = detected_strats
+            if detected_strats:
+                logger.info(f"Detected {len(detected_strats)} option strategies")
+                        # Gather all inputs
             technical = state.technical_analysis
             fundamental = state.fundamental_analysis
             sentiment = state.sentiment_analysis

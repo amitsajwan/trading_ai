@@ -96,6 +96,25 @@ REDIS_HOST=redis
 PAPER_TRADING_MODE=true
 ```
 
+## Instrument Key Normalization (Important)
+
+For Zerodha instruments, all internal Redis keys and cache lookups use a single, normalized symbol family key:
+
+- Bank Nifty → NIFTYBANK
+- Nifty 50 → NIFTY
+
+This affects Redis key prefixes such as `price:<KEY>:latest`, `tick:<KEY>:*`, `volume:<KEY>:latest`, `vwap:<KEY>:latest`, `oi:<KEY>:latest`, and `snapshot:<KEY>:latest`.
+
+Why this matters:
+- Consistency across collectors, APIs, and snapshot builders.
+- Avoids mixing similar variants like "BANKNIFTY" vs "NIFTY BANK".
+- Prevents stale or wrong data when switching environments.
+
+Implications:
+- Do not write or depend on `BANKNIFTY` keys. Use `NIFTYBANK` for Bank Nifty.
+- The reset script and all collectors/APIs already use this normalization.
+
+
 ### Nifty 50 (.env.nifty)
 ```bash
 # Instrument

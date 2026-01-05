@@ -104,6 +104,13 @@ class MarketMemory:
                         int(timedelta(minutes=5).total_seconds()),
                         str(vwap)
                     )
+                oi = tick_data.get("oi")
+                if oi is not None:
+                    self.redis_client.setex(
+                        f"oi:{instrument}:latest",
+                        int(timedelta(minutes=5).total_seconds()),
+                        str(oi)
+                    )
             except Exception as e:
                 logger.debug(f"Could not cache volume/VWAP: {e}")
         except Exception as e:

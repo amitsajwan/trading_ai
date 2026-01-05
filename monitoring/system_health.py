@@ -38,6 +38,15 @@ class SystemHealthChecker:
         # Check Market Data
         health["components"]["market_data"] = self._check_market_data()
         
+        # Check Data Freshness (NEW)
+        health["components"]["data_freshness"] = self._check_data_freshness()
+        
+        # Check Recent Trades (NEW)
+        health["components"]["recent_trades"] = self._check_recent_trades()
+        
+        # Check Circuit Breakers (NEW)
+        health["components"]["circuit_breakers"] = self._check_circuit_breakers()
+        
         # Check Agents
         health["components"]["agents"] = self._check_agents()
         
@@ -238,6 +247,114 @@ class SystemHealthChecker:
                 "error": str(e),
                 "message": f"Agent check failed: {e}"
             }
+    
+    def _check_data_freshness(self) -> Dict[str, Any]:
+        """Check if market data is fresh (within 90 seconds)."""
+        try:
+            instrument_key = settings.instrument_symbol.replace("-", "").replace(" ", "").upper()
+            last_tick = self.market_memory.get_latest_tick(instrument_key)
+            
+            if not last_tick:
+                return {"status": "degraded", "message": "No tick data available", "age_seconds": None}
+            
+            tick_time = last_tick.get("timestamp")
+            if not tick_time:
+                return {"status": "degraded", "message": "Tick has no timestamp", "age_seconds": None}
+            
+            if isinstance(tick_time, str):
+                tick_time = datetime.fromisoformat(tick_time)
+            
+            age_seconds = (datetime.now() - tick_time).total_seconds()
+            
+            if age_seconds > 90:
+                return {
+                    "status": "degraded",
+                    "age_seconds": age_seconds,
+                    "threshold": 90,
+                    "message": f"Data stale: {age_seconds:.0f}s old (threshold: 90s)"
+                }
+            
+            return {
+                "status": "healthy",
+                "age_seconds": age_seconds,
+                "message": f"Data fresh: {age_seconds:.0f}s old"
+            }
+            
+        except Exception as exc:
+            logger.error(f"Data freshness check failed: {exc}")
+            return {"status": "unhealthy", "error": str(exc), "message": f"Check failed: {exc}"}
+    
+    def _check_recent_trades(self) -> Dict[str, Any]:
+        """Check for recent trade execution errors."""
+        try:
+            mongo_client = get_mongo_client()
+            db = mongo_client[settings.mongodb_db_name]
+            trades_coll = get_collection(db, "trades_executed")
+            
+            recent_trades = list(trades_coll.find({}).sort("entry_timestamp", -1).limit(10))
+            
+            if not recent_trades:
+                return {"status": "healthy", "message": "No trades executed yet"}
+            
+            failed_trades = [t for t in recent_trades if t.get("status") == "FAILED"]
+            
+            if failed_trades:
+                return {
+                    "status": "degraded",
+                    "failed_count": len(failed_trades),
+                    "total_count": len(recent_trades),
+                    "last_error": failed_trades[0].get("error_message"),
+                    "message": f"{len(failed_trades)}/{len(recent_trades)} recent trades failed"
+                }
+            
+            return {
+                "status": "healthy",
+                "failed_count": 0,
+                "total_count": len(recent_trades),
+                "message": f"All {len(recent_trades)} recent trades healthy"
+            }
+            
+        except Exception as exc:
+            logger.error(f"Trade check failed: {exc}")
+            return {"status": "unhealthy", "error": str(exc), "message": f"Check failed: {exc}"}
+    
+    def _check_circuit_breakers(self) -> Dict[str, Any]:
+        """Check if circuit breakers are triggered."""
+        try:
+            mongo_client = get_mongo_client()
+            db = mongo_client[settings.mongodb_db_name]
+            trades_coll = get_collection(db, "trades_executed")
+            
+            today_start = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            today_trades = list(trades_coll.find({"entry_timestamp": {"$gte": today_start}}))
+            
+            closed_trades = [t for t in today_trades if t.get("status") == "CLOSED"]
+            daily_pnl = sum(t.get("pnl", 0) for t in closed_trades)
+            
+            # Default max daily loss: ₹5000
+            max_daily_loss = getattr(settings, "max_daily_loss", -5000)
+            
+            if daily_pnl < max_daily_loss:
+                return {
+                    "status": "degraded",
+                    "triggered": True,
+                    "reason": "max_daily_loss_exceeded",
+                    "daily_pnl": daily_pnl,
+                    "threshold": max_daily_loss,
+                    "message": f"Circuit breaker TRIGGERED: PnL ₹{daily_pnl:.2f} < threshold ₹{max_daily_loss:.2f}"
+                }
+            
+            return {
+                "status": "healthy",
+                "triggered": False,
+                "daily_pnl": daily_pnl,
+                "threshold": max_daily_loss,
+                "message": f"Circuit breakers OK: PnL ₹{daily_pnl:.2f}"
+            }
+            
+        except Exception as exc:
+            logger.error(f"Circuit breaker check failed: {exc}")
+            return {"status": "unhealthy", "error": str(exc), "message": f"Check failed: {exc}"}
     
     def check_endpoint(self, url: str, timeout: int = 3, max_retries: int = 2) -> Dict[str, Any]:
         """Check an external HTTP endpoint using retries and a circuit breaker.

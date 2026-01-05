@@ -23,7 +23,8 @@ except Exception:  # pragma: no cover - optional at runtime
 def _instrument_key() -> str:
     sym = (settings.instrument_symbol or "NIFTY BANK").upper().replace(" ", "")
     if "BANKNIFTY" in sym or "NIFTYBANK" in sym:
-        return "BANKNIFTY"
+        # Normalize to NIFTYBANK for Redis keys
+        return "NIFTYBANK"
     return "NIFTY"
 
 
@@ -94,12 +95,12 @@ async def build_snapshot(market_memory: Optional[MarketMemory] = None) -> Dict[s
         sell_q = int(latest_tick.get("total_ask_quantity") or total_ask_qty or 0)
         imbalance = OrderFlowAnalyzer.calculate_buy_sell_imbalance(buy_q, sell_q)
 
-    # Options chain summary
+    # Options chain summary + futures OI/volume (from Redis if present)
     options_summary: Dict[str, Any] = {"available": False}
     try:
         kite = _make_kite()
         if kite:
-            fetcher = OptionsChainFetcher(kite, mm, instrument_symbol=("NIFTY BANK" if instrument == "BANKNIFTY" else "NIFTY"))
+            fetcher = OptionsChainFetcher(kite, mm, instrument_symbol=("NIFTY BANK" if instrument in {"NIFTYBANK"} else "NIFTY"))
             await fetcher.initialize()
             chain = await fetcher.fetch_options_chain()
             if chain.get("available"):
@@ -138,6 +139,11 @@ async def build_snapshot(market_memory: Optional[MarketMemory] = None) -> Dict[s
         "instrument": instrument,
         "timestamp": datetime.now(UTC).isoformat(),
         "ltp": ltp,
+        "futures": {
+            "volume": None,
+            "oi": None,
+            "average_price": None,
+        },
         "depth": {
             "best_bid": best_bid,
             "best_ask": best_ask,
@@ -154,6 +160,15 @@ async def build_snapshot(market_memory: Optional[MarketMemory] = None) -> Dict[s
     # store in Redis for fast API use
     try:
         if mm._redis_available and mm.redis_client:
+            try:
+                vol = mm.redis_client.get(f"volume:{instrument}:latest")
+                oi = mm.redis_client.get(f"oi:{instrument}:latest")
+                vwap = mm.redis_client.get(f"vwap:{instrument}:latest")
+                snapshot["futures"]["volume"] = float(vol) if vol is not None else None
+                snapshot["futures"]["oi"] = float(oi) if oi is not None else None
+                snapshot["futures"]["average_price"] = float(vwap) if vwap is not None else None
+            except Exception:
+                pass
             mm.redis_client.setex(
                 f"snapshot:{instrument}:latest",
                 60,

@@ -75,6 +75,14 @@ class AgentState(BaseModel):
     # Order flow signals
     order_flow_signals: Dict[str, Any] = Field(default_factory=dict)
     
+    # Options chain data (for NFO instruments)
+    options_chain: Optional[Dict[str, Any]] = None
+    put_call_ratio: Optional[float] = None
+    max_pain: Optional[float] = None
+    
+    # Strategy opportunities
+    detected_strategies: List[Dict[str, Any]] = Field(default_factory=list)
+    
     # News & sentiment
     latest_news: List[Dict[str, Any]] = Field(default_factory=list)  # News items with sentiment
     sentiment_score: float = Field(default=0.0, ge=-1.0, le=1.0)  # Overall sentiment -1 to +1
