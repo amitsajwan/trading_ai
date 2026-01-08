@@ -71,3 +71,4 @@ if empty_count > 0:
     print("  3. Prompts need adjustment")
     print("  4. Market data format doesn't match what agents expect")
 
+

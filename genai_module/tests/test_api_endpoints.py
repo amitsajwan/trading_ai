@@ -108,3 +108,4 @@ def test_usage_endpoint(app):
     body = r.json()
     assert body["total_requests_today"] == 25
     assert "groq" in body["providers"]
+

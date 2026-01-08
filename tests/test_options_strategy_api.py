@@ -36,3 +36,4 @@ def test_paper_trade_options_handles_spread_payload():
             assert isinstance(out['trades'], list) and len(out['trades']) >= 1
         else:
             assert 'trade' in out
+

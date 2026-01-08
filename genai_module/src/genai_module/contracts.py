@@ -40,3 +40,4 @@ class PromptStore(Protocol):
 
     async def list_versions(self, agent_name: str) -> Iterable[str]:
         ...
+

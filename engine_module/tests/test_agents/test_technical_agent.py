@@ -32,3 +32,4 @@ async def test_missing_columns_returns_hold():
     assert res.decision == "HOLD"
     assert res.confidence == 0.0
     assert res.details["note"].startswith("MISSING_COLUMN_")
+

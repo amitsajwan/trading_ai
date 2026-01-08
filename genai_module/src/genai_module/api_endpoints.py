@@ -118,3 +118,4 @@ def get_health_fragment() -> Dict[str, Any]:
         return {"genai": {"status": "degraded", "error": "unreachable"}}
 
     return {"genai": {"status": "ok" if overall_ok else "degraded", "providers": providers}}
+

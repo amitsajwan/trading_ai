@@ -1,0 +1,39 @@
+version: '3.8'
+
+services:
+  # Override env to force mock provider for collectors and backends
+  ltp-collector-banknifty:
+    environment:
+      - TRADING_PROVIDER=mock
+      - USE_MOCK_KITE=1
+
+  depth-collector-banknifty:
+    environment:
+      - TRADING_PROVIDER=mock
+      - USE_MOCK_KITE=1
+
+  ltp-collector-nifty:
+    environment:
+      - TRADING_PROVIDER=mock
+      - USE_MOCK_KITE=1
+
+  depth-collector-nifty:
+    environment:
+      - TRADING_PROVIDER=mock
+      - USE_MOCK_KITE=1
+
+  backend-banknifty:
+    environment:
+      - TRADING_PROVIDER=mock
+      - USE_MOCK_KITE=1
+
+  backend-nifty:
+    environment:
+      - TRADING_PROVIDER=mock
+      - USE_MOCK_KITE=1
+
+  # Optionally ensure dashboard and other services use mock provider
+  zerodha-dashboard-service:
+    environment:
+      - TRADING_PROVIDER=mock
+      - USE_MOCK_KITE=1

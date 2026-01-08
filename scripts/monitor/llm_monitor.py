@@ -57,3 +57,4 @@ class LLMMonitor:
                     logger.warning(f"Alert: Provider {name} nearing token quota: {tokens}/{quota} ({pct:.2%})")
 
         return status
+

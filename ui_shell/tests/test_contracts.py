@@ -117,3 +117,4 @@ class TestBaseUserAction:
         assert action.param1 == "value1"
         assert action.param2 == 42
         assert isinstance(action.timestamp, datetime)
+

@@ -86,3 +86,4 @@ if __name__ == "__main__":
         print("Refresh http://localhost:8888 to see the real AI analysis results.")
     except Exception as e:
         print(f"Failed to insert analysis: {e}")
+

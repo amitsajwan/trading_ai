@@ -91,7 +91,7 @@
                         <div class="signal-metric-value" id="signal-conf">-</div>
                     </div>
                     <div class="signal-metric">
-                        <div class="signal-metric-label">Entry Price</div>
+                        <div class="signal-metric-label">Option Premium (₹)</div>
                         <div class="signal-metric-value" id="signal-entry">-</div>
                     </div>
                     <div class="signal-metric">
@@ -263,7 +263,7 @@
                         <div class="metric-row"><span class="metric-label">Side</span><span class="metric-value" id="opt-side">-</span></div>
                         <div class="metric-row"><span class="metric-label">Type</span><span class="metric-value" id="opt-type">-</span></div>
                         <div class="metric-row"><span class="metric-label">Strike</span><span class="metric-value" id="opt-strike">-</span></div>
-                        <div class="metric-row"><span class="metric-label">Premium</span><span class="metric-value" id="opt-premium">-</span></div>
+                        <div class="metric-row"><span class="metric-label">Option Premium (₹)</span><span class="metric-value" id="opt-premium">-</span></div>
                         <div class="metric-row"><span class="metric-label">Stop Loss</span><span class="metric-value metric-negative" id="opt-sl">-</span></div>
                         <div class="metric-row"><span class="metric-label">Take Profit</span><span class="metric-value metric-positive" id="opt-tp">-</span></div>
                         <div class="metric-row"><span class="metric-label">Qty</span><span class="metric-value" id="opt-qty">-</span></div>
@@ -316,7 +316,9 @@
                         <tr>
                             <th>Time</th>
                             <th>Signal</th>
-                            <th>Entry</th>
+                            <th>Strike</th>
+                            <th>Type</th>
+                            <th>Premium (₹)</th>
                             <th>Exit</th>
                             <th>P&L</th>
                             <th>Status</th>
@@ -324,7 +326,7 @@
                     </thead>
                     <tbody id="trades-body">
                         <tr>
-                            <td colspan="6" class="loading">Loading trades...</td>
+                            <td colspan="7" class="loading">Loading trades...</td>
                         </tr>
                     </tbody>
                 </table>

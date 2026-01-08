@@ -46,8 +46,8 @@ def test_build_orchestrator_returns_orchestrator_instance(
     assert orchestrator is not None
     assert hasattr(orchestrator, "run_cycle")
     assert orchestrator.llm_client is mock_llm_client
-    assert orchestrator.market_store is mock_market_store
-    assert orchestrator.options_data is mock_options_data
+    assert orchestrator.market_data_provider is mock_market_store  # Updated attribute name
+    assert orchestrator.options_data_provider is mock_options_data  # Updated attribute name
 
 
 def test_build_orchestrator_accepts_optional_agents(
@@ -103,3 +103,4 @@ async def test_orchestrator_run_cycle_with_default_context(
 
     assert result.details["instrument"] == "BANKNIFTY"  # Default instrument for options
     assert "timestamp" in result.details
+

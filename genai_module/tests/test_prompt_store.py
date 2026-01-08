@@ -45,3 +45,4 @@ async def test_prompt_manager_store_wraps_legacy():
     assert got == "world"
     versions = await store.list_versions("agentB")
     assert "v2" in versions
+

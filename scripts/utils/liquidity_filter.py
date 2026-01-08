@@ -190,3 +190,4 @@ class LiquidityFilter:
         except Exception as exc:
             logger.error(f"Depth imbalance error: {exc}")
             return {"signal": "ERROR", "error": str(exc)}
+

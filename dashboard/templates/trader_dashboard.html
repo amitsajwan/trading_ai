@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trading Cockpit - {{ INSTRUMENT }}</title>
+    <link rel="stylesheet" href="/static/css/trader.css">
+</head>
+<body>
+    <!-- Main Trading Cockpit Layout -->
+    <div class="trading-cockpit">
+        <!-- Top Bar: Critical Time & Status Info -->
+        <header class="cockpit-header">
+            <div class="header-left">
+                <h1 class="cockpit-title">🏦 BANKNIFTY Trading Cockpit</h1>
+                <div class="time-display">
+                    <div class="time-item">
+                        <span class="time-label">System Time:</span>
+                        <span class="time-value" id="system-time">Loading...</span>
+                    </div>
+                    <div class="time-item">
+                        <span class="time-label">Market Data:</span>
+                        <span class="time-value" id="market-data-time">Loading...</span>
+                    </div>
+                    <div class="time-item">
+                        <span class="time-label">Agent Run:</span>
+                        <span class="time-value" id="agent-last-run">Loading...</span>
+                    </div>
+                </div>
+            </div>
+            <div class="header-right">
+                <div class="status-badges">
+                    <span id="mode-badge" class="badge badge-mode">📄 PAPER</span>
+                    <span id="market-badge" class="badge badge-market">🔴 CLOSED</span>
+                    <span id="connection-badge" class="badge badge-connection">⚪ CONNECTING</span>
+                </div>
+                <button class="btn-refresh" onclick="refreshAll()">🔄 Refresh</button>
+            </div>
+        </header>
+
+        <!-- Main Grid Layout -->
+        <div class="cockpit-grid">
+            <!-- LEFT COLUMN: Market Data & Signals -->
+            <div class="grid-left">
+                <!-- Current Signal Card -->
+                <div class="card signal-card" id="current-signal">
+                    <div class="signal-header">
+                        <span id="signal-icon" class="signal-icon">📊</span>
+                        <div class="signal-content">
+                            <h2 id="signal-action" class="signal-action">HOLD</h2>
+                            <p id="signal-reason" class="signal-reason">Waiting for market conditions...</p>
+                        </div>
+                        <div class="signal-confidence">
+                            <span class="conf-label">Confidence</span>
+                            <span id="signal-conf-value" class="conf-value">--</span>
+                        </div>
+                    </div>
+                    <div class="signal-metrics">
+                        <div class="metric-item">
+                            <span class="metric-label">Entry</span>
+                            <span id="signal-entry" class="metric-value">--</span>
+                        </div>
+                        <div class="metric-item">
+                            <span class="metric-label">Stop Loss</span>
+                            <span id="signal-sl" class="metric-value">--</span>
+                        </div>
+                        <div class="metric-item">
+                            <span class="metric-label">Take Profit</span>
+                            <span id="signal-tp" class="metric-value">--</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Market Data Card -->
+                <div class="card market-card">
+                    <h3 class="card-title">📈 Live Market Data</h3>
+                    <div class="market-grid">
+                        <div class="market-primary">
+                            <div class="price-display">
+                                <span class="price-label">BANKNIFTY</span>
+                                <span id="current-price" class="price-value">--</span>
+                                <span id="price-change" class="price-change">--</span>
+                            </div>
+                        </div>
+                        <div class="market-stats">
+                            <div class="stat-item">
+                                <span class="stat-label">High</span>
+                                <span id="day-high" class="stat-value">--</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-label">Low</span>
+                                <span id="day-low" class="stat-value">--</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-label">Volume</span>
+                                <span id="volume" class="stat-value">--</span>
+                            </div>
+                            <div class="stat-item">
+                                <span class="stat-label">VWAP</span>
+                                <span id="vwap" class="stat-value">--</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Technical Indicators -->
+                <div class="card technicals-card">
+                    <h3 class="card-title">📊 Technical Indicators</h3>
+                    <div class="indicators-grid">
+                        <div class="indicator-item">
+                            <span class="ind-label">RSI (14)</span>
+                            <span id="rsi-value" class="ind-value">--</span>
+                            <span id="rsi-signal" class="ind-signal">--</span>
+                        </div>
+                        <div class="indicator-item">
+                            <span class="ind-label">MACD</span>
+                            <span id="macd-value" class="ind-value">--</span>
+                            <span id="macd-signal" class="ind-signal">--</span>
+                        </div>
+                        <div class="indicator-item">
+                            <span class="ind-label">SMA (20)</span>
+                            <span id="sma-value" class="ind-value">--</span>
+                            <span id="sma-signal" class="ind-signal">--</span>
+                        </div>
+                        <div class="indicator-item">
+                            <span class="ind-label">ADX</span>
+                            <span id="adx-value" class="ind-value">--</span>
+                            <span id="adx-signal" class="ind-signal">--</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Active Positions -->
+                <div class="card positions-card">
+                    <h3 class="card-title">💼 Active Positions <span id="positions-count" class="count-badge">0</span></h3>
+                    <div id="positions-container" class="positions-list">
+                        <div class="empty-state">No active positions</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- CENTER COLUMN: Performance & Trading -->
+            <div class="grid-center">
+                <!-- Performance Metrics -->
+                <div class="card performance-card">
+                    <h3 class="card-title">📊 Today's Performance</h3>
+                    <div class="perf-grid">
+                        <div class="perf-item perf-primary">
+                            <span class="perf-label">Total P&L</span>
+                            <span id="total-pnl" class="perf-value">--</span>
+                        </div>
+                        <div class="perf-item">
+                            <span class="perf-label">Win Rate</span>
+                            <span id="win-rate" class="perf-value">--</span>
+                        </div>
+                        <div class="perf-item">
+                            <span class="perf-label">Trades</span>
+                            <span id="total-trades" class="perf-value">--</span>
+                        </div>
+                        <div class="perf-item">
+                            <span class="perf-label">Sharpe</span>
+                            <span id="sharpe-ratio" class="perf-value">--</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Recent Trades -->
+                <div class="card trades-card">
+                    <h3 class="card-title">📝 Recent Trades</h3>
+                    <div class="trades-table-container">
+                        <table class="trades-table">
+                            <thead>
+                                <tr>
+                                    <th>Time</th>
+                                    <th>Type</th>
+                                    <th>Strike</th>
+                                    <th>Entry</th>
+                                    <th>Exit</th>
+                                    <th>P&L</th>
+                                </tr>
+                            </thead>
+                            <tbody id="trades-tbody">
+                                <tr>
+                                    <td colspan="6" class="empty-state">No trades yet</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- Pending Signals -->
+                <div class="card pending-signals-card">
+                    <h3 class="card-title">⏳ Pending Signals <span id="pending-count" class="count-badge">0</span></h3>
+                    <div id="pending-signals-container" class="pending-signals-list">
+                        <div class="empty-state">No pending signals</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- RIGHT COLUMN: Agents & Risk -->
+            <div class="grid-right">
+                <!-- Agent Status -->
+                <div class="card agents-card">
+                    <h3 class="card-title">🤖 Multi-Agent System</h3>
+                    <div class="agent-consensus">
+                        <div class="consensus-header">
+                            <span class="consensus-label">Consensus:</span>
+                            <span id="consensus-signal" class="consensus-value">HOLD</span>
+                        </div>
+                        <div class="consensus-meta">
+                            <span id="consensus-agreement">-- agents agree</span>
+                        </div>
+                    </div>
+                    <div class="agents-list">
+                        <div class="agent-item">
+                            <div class="agent-name">Momentum Agent</div>
+                            <div class="agent-status">
+                                <span id="momentum-status" class="status-badge">⚪ WAITING</span>
+                                <span id="momentum-signal" class="agent-signal">--</span>
+                            </div>
+                            <div id="momentum-reasoning" class="agent-reasoning">Initializing...</div>
+                        </div>
+                        <div class="agent-item">
+                            <div class="agent-name">Trend Agent</div>
+                            <div class="agent-status">
+                                <span id="trend-status" class="status-badge">⚪ WAITING</span>
+                                <span id="trend-signal" class="agent-signal">--</span>
+                            </div>
+                            <div id="trend-reasoning" class="agent-reasoning">Initializing...</div>
+                        </div>
+                        <div class="agent-item">
+                            <div class="agent-name">Mean Reversion Agent</div>
+                            <div class="agent-status">
+                                <span id="reversion-status" class="status-badge">⚪ WAITING</span>
+                                <span id="reversion-signal" class="agent-signal">--</span>
+                            </div>
+                            <div id="reversion-reasoning" class="agent-reasoning">Initializing...</div>
+                        </div>
+                        <div class="agent-item">
+                            <div class="agent-name">Volume Agent</div>
+                            <div class="agent-status">
+                                <span id="volume-agent-status" class="status-badge">⚪ WAITING</span>
+                                <span id="volume-agent-signal" class="agent-signal">--</span>
+                            </div>
+                            <div id="volume-agent-reasoning" class="agent-reasoning">Initializing...</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Risk Monitor -->
+                <div class="card risk-card">
+                    <h3 class="card-title">⚠️ Risk Monitor</h3>
+                    <div class="risk-metrics">
+                        <div class="risk-item">
+                            <span class="risk-label">Exposure</span>
+                            <span id="risk-exposure" class="risk-value">--</span>
+                        </div>
+                        <div class="risk-item">
+                            <span class="risk-label">Max Drawdown</span>
+                            <span id="risk-drawdown" class="risk-value">--</span>
+                        </div>
+                        <div class="risk-item">
+                            <span class="risk-label">Win/Loss Ratio</span>
+                            <span id="risk-ratio" class="risk-value">--</span>
+                        </div>
+                        <div class="risk-item">
+                            <span class="risk-label">Portfolio Value</span>
+                            <span id="risk-portfolio" class="risk-value">--</span>
+                        </div>
+                    </div>
+                    <div class="risk-status">
+                        <span id="risk-status-text" class="risk-status-text">All risk parameters within limits</span>
+                    </div>
+                </div>
+
+                <!-- System Health -->
+                <div class="card system-card">
+                    <h3 class="card-title">💚 System Health</h3>
+                    <div class="health-list">
+                        <div class="health-item">
+                            <span class="health-label">Database</span>
+                            <span id="health-db" class="health-status">⚪ Checking...</span>
+                        </div>
+                        <div class="health-item">
+                            <span class="health-label">Data Feed</span>
+                            <span id="health-feed" class="health-status">⚪ Checking...</span>
+                        </div>
+                        <div class="health-item">
+                            <span class="health-label">LLM Provider</span>
+                            <span id="health-llm" class="health-status">⚪ Checking...</span>
+                        </div>
+                        <div class="health-item">
+                            <span class="health-label">Agents</span>
+                            <span id="health-agents" class="health-status">⚪ Checking...</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Quick Actions -->
+                <div class="card actions-card">
+                    <h3 class="card-title">⚡ Quick Actions</h3>
+                    <div class="actions-grid">
+                        <button class="action-btn action-primary" onclick="runTradingCycle()">
+                            <span class="btn-icon">🚀</span>
+                            <span class="btn-text">Run Cycle</span>
+                        </button>
+                        <button class="action-btn action-secondary" onclick="openOptionsChain()">
+                            <span class="btn-icon">📊</span>
+                            <span class="btn-text">Options Chain</span>
+                        </button>
+                        <button class="action-btn action-secondary" onclick="viewFullDashboard()" title="Advanced multi-tab dashboard for deep analysis">
+                            <span class="btn-icon">📈</span>
+                            <span class="btn-text">Advanced View</span>
+                        </button>
+                        <button class="action-btn action-warning" onclick="openControlPanel()">
+                            <span class="btn-icon">⚙️</span>
+                            <span class="btn-text">Settings</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/trader_dashboard.js"></script>
+</body>
+</html>

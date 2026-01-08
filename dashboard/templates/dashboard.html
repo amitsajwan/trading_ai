@@ -9,12 +9,12 @@
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             margin: 0;
-            padding: 20px;
+            padding: 10px;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             min-height: 100vh;
         }
         .container {
-            max-width: 1200px;
+            max-width: 1800px;
             margin: 0 auto;
             background: white;
             border-radius: 10px;
@@ -24,24 +24,24 @@
         .header {
             background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
             color: white;
-            padding: 30px;
+            padding: 20px;
             text-align: center;
         }
         .header h1 {
             margin: 0;
-            font-size: 2.5em;
+            font-size: 2em;
             font-weight: 300;
         }
         .status {
-            padding: 30px;
+            padding: 20px;
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            gap: 20px;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 15px;
         }
         .card {
             background: #f8f9fa;
             border-radius: 8px;
-            padding: 20px;
+            padding: 15px;
             border-left: 4px solid #007bff;
         }
         .card.success {
@@ -102,16 +102,397 @@
         .refresh-btn:hover {
             background: #0056b3;
         }
+        /* Tab Navigation */
+        .tab-navigation {
+            background: #f8f9fa;
+            border-bottom: 1px solid #dee2e6;
+            display: flex;
+        }
+        .tab-button {
+            background: none;
+            border: none;
+            padding: 15px 25px;
+            cursor: pointer;
+            font-size: 16px;
+            font-weight: 500;
+            color: #666;
+            border-bottom: 3px solid transparent;
+            transition: all 0.3s ease;
+        }
+        .tab-button:hover {
+            background: #e9ecef;
+            color: #333;
+        }
+        .tab-button.active {
+            color: #007bff;
+            border-bottom-color: #007bff;
+            background: white;
+        }
+        .tab-content {
+            display: none;
+        }
+        .tab-content.active {
+            display: block;
+        }
+        /* Trading Interface */
+        .trading-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            padding: 20px;
+        }
+        .trading-panel {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 20px;
+            border: 1px solid #dee2e6;
+        }
+        .trading-panel h3 {
+            margin: 0 0 15px 0;
+            color: #333;
+            font-size: 1.3em;
+            display: flex;
+            align-items: center;
+        }
+        .trading-panel h3::before {
+            content: '';
+            display: inline-block;
+            width: 6px;
+            height: 20px;
+            background: #007bff;
+            margin-right: 10px;
+            border-radius: 3px;
+        }
+        .signal-item, .position-item {
+            background: white;
+            border-radius: 6px;
+            padding: 15px;
+            margin: 10px 0;
+            border-left: 4px solid #007bff;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .signal-item.pending {
+            border-left-color: #ffc107;
+        }
+        .signal-item.approved {
+            border-left-color: #28a745;
+        }
+        .signal-item.rejected {
+            border-left-color: #dc3545;
+        }
+        .signal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 10px;
+        }
+        .signal-symbol {
+            font-weight: bold;
+            font-size: 1.1em;
+            color: #333;
+        }
+        .signal-confidence {
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 0.9em;
+            font-weight: bold;
+        }
+        .confidence-high { background: #d4edda; color: #155724; }
+        .confidence-medium { background: #fff3cd; color: #856404; }
+        .confidence-low { background: #f8d7da; color: #721c24; }
+        .signal-details {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            font-size: 0.9em;
+        }
+        .signal-action {
+            display: flex;
+            gap: 10px;
+            margin-top: 10px;
+        }
+        .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.9em;
+            font-weight: 500;
+            transition: all 0.2s ease;
+        }
+        .btn-primary { background: #007bff; color: white; }
+        .btn-primary:hover { background: #0056b3; }
+        .btn-success { background: #28a745; color: white; }
+        .btn-success:hover { background: #1e7e34; }
+        .btn-danger { background: #dc3545; color: white; }
+        .btn-danger:hover { background: #c82333; }
+        .btn-secondary { background: #6c757d; color: white; }
+        .btn-secondary:hover { background: #545b62; }
+        /* Status Badges */
+        .status-badge {
+            display: inline-block;
+            padding: 6px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 500;
+            margin-right: 8px;
+        }
+        .status-live { background: #d4edda; color: #155724; }
+        .status-paper { background: #fff3cd; color: #856404; }
+        .status-banknifty { background: #cce5ff; color: #004085; }
+
+        /* Signal Banner */
+        .signal-banner {
+            padding: 20px 30px;
+            margin: 20px;
+            border-radius: 8px;
+            color: white;
+            font-weight: 500;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        }
+        .signal-banner.buy { background: linear-gradient(135deg, #28a745 0%, #20c997 100%); }
+        .signal-banner.sell { background: linear-gradient(135deg, #dc3545 0%, #fd7e14 100%); }
+        .signal-banner.hold { background: linear-gradient(135deg, #6c757d 0%, #495057 100%); }
+
+        /* Data freshness indicators */
+        .data-fresh { color: #28a745; }
+        .data-stale { color: #ffc107; }
+        .data-old { color: #dc3545; }
+        .data-refreshing { color: #007bff; }
+
+        .connection-connected { color: #28a745; }
+        .connection-disconnected { color: #dc3545; }
+        .connection-connecting { color: #ffc107; }
+        .empty-state {
+            text-align: center;
+            color: #666;
+            padding: 40px 20px;
+        }
+        .empty-state h4 {
+            margin: 0 0 10px 0;
+            color: #333;
+        }
+        .metric-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+        }
+        .metric-card {
+            background: white;
+            padding: 15px;
+            border-radius: 6px;
+            text-align: center;
+            border: 1px solid #dee2e6;
+        }
+        /* Badges for table cells and statuses */
+        .badge-small {
+            display: inline-block;
+            padding: 3px 8px;
+            font-size: 0.8em;
+            border-radius: 12px;
+            border: 1px solid #e5e7eb;
+            background: #f9fafb;
+            color: #374151;
+        }
+        .badge-buy { background: #ecfdf5; color: #065f46; border-color: #a7f3d0; }
+        .badge-sell { background: #fee2e2; color: #991b1b; border-color: #fecaca; }
+        .badge-hold { background: #fef3c7; color: #92400e; border-color: #fde68a; }
+        .badge-open { background: #eef2ff; color: #3730a3; border-color: #c7d2fe; }
+        .badge-closed { background: #f3f4f6; color: #1f2937; border-color: #e5e7eb; }
+        .metric-value {
+            font-size: 1.8em;
+            font-weight: bold;
+            color: #007bff;
+            display: block;
+        }
+        .metric-label {
+            font-size: 0.9em;
+            color: #666;
+            margin-top: 5px;
+        }
+        .performance-chart {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+            border: 1px solid #dee2e6;
+        }
+        .chart-placeholder {
+            height: 200px;
+            background: #f8f9fa;
+            border: 2px dashed #dee2e6;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #666;
+            font-style: italic;
+        }
+        .risk-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+        .risk-low { background: #28a745; }
+        .risk-medium { background: #ffc107; }
+        .risk-high { background: #fd7e14; }
+        .risk-critical { background: #dc3545; }
+        /* Onboarding Banner */
+        .onboarding-banner { background: #fffbea; color: #593e00; border: 1px solid #ffe58f; border-left: 4px solid #f0ad4e; margin: 0 20px 20px 20px; padding: 16px; border-radius: 6px; display: none; }
+        .onboarding-actions { display: flex; gap: 10px; margin-top: 8px; }
+        .onboarding-btn { background: #007bff; color: white; border: none; padding: 8px 12px; border-radius: 4px; cursor: pointer; }
+        .onboarding-dismiss { background: #6c757d; }
+        /* Info icon + tooltips */
+        .info-icon { display: inline-block; margin-left: 6px; width: 16px; height: 16px; line-height: 16px; text-align: center; border-radius: 50%; background: #e9ecef; color: #495057; font-size: 12px; cursor: help; }
+        /* Modal (Glossary) */
+        .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.45); display: none; align-items: center; justify-content: center; z-index: 9999; }
+        .modal { background: #fff; width: min(900px, 92%); max-height: 85vh; overflow: auto; border-radius: 8px; box-shadow: 0 10px 30px rgba(0,0,0,0.2); }
+        .modal-header { display: flex; justify-content: space-between; align-items: center; padding: 14px 18px; border-bottom: 1px solid #dee2e6; }
+        .modal-title { font-size: 1.1em; font-weight: 600; }
+        .modal-close { background: #f8f9fa; border: 1px solid #dee2e6; color: #333; padding: 6px 10px; border-radius: 4px; cursor: pointer; }
+        .modal-body { padding: 16px 18px; }
+        .glossary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+        .glossary-item { background: #f8f9fa; border: 1px solid #e9ecef; border-left: 4px solid #007bff; border-radius: 6px; padding: 12px; }
+        .glossary-term { font-weight: 600; color: #007bff; margin-bottom: 6px; }
+        /* Beginner mode helpers */
+        body.beginner .beginner-hide { display: none !important; }
+        body:not(.beginner) .beginner-only { display: none !important; }
+        .header-actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-top: 12px; }
+        .toggle-btn { background: #17a2b8; color: white; border: none; padding: 8px 12px; border-radius: 4px; cursor: pointer; }
+        .help-btn { background: #20c997; color: white; border: none; padding: 8px 12px; border-radius: 4px; cursor: pointer; }
+        /* Market Data API Styles */
+        .api-section {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 10px 0;
+        }
+        .api-endpoint {
+            font-family: 'Courier New', monospace;
+            background: #e9ecef;
+            padding: 5px 10px;
+            border-radius: 3px;
+            display: inline-block;
+            margin: 5px 0;
+            color: #007bff;
+            font-size: 0.9em;
+        }
+        .json-response {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 10px;
+            border-radius: 5px;
+            font-family: 'Courier New', monospace;
+            font-size: 11px;
+            white-space: pre-wrap;
+            overflow-x: auto;
+            border: 1px solid #333;
+            margin-top: 10px;
+        }
+        .options-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 10px;
+            font-size: 0.9em;
+        }
+        .options-table th,
+        .options-table td {
+            border: 1px solid #dee2e6;
+            padding: 8px;
+            text-align: left;
+        }
+        .options-table th {
+            background: #007bff;
+            color: white;
+            font-weight: 600;
+        }
+        .options-table tbody tr:nth-child(even) {
+            background: #f8f9fa;
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
-            <h1>Automated Trading Dashboard</h1>
-            <p>Real-time monitoring of your AI trading system</p>
-            <button class="refresh-btn" onclick="location.reload()">Refresh</button>
+            <h1>Live Bank Nifty Paper Trading Dashboard</h1>
+            <p>Advanced conditional execution with real-time technical analysis</p>
+            <div class="header-actions">
+                <span id="mode-badge" class="status-badge status-live">🟢 Loading Mode...</span>
+                <span id="market-status" class="status-badge" style="background: #666;">⏰ Market Status</span>
+                <span id="historical-replay-time" class="status-badge" style="display: none; background: #f59e0b; color: #ffffff;">📅 Replay Time</span>
+                <span id="database-badge" class="status-badge" style="background: #555;">📊 Database</span>
+                <span class="status-badge status-banknifty">🏦 BANK NIFTY</span>
+                <span id="refresh-indicator" style="display: none; color: #007bff; font-size: 12px; margin-right: 10px;">⟳ Refreshing...</span>
+                <button class="refresh-btn" onclick="location.reload()">Refresh</button>
+                <button id="beginnerToggle" class="toggle-btn" aria-pressed="false" title="Toggle simplified labels and guidance">Enable Beginner Mode</button>
+                <button id="openGlossary" class="help-btn" title="Open trading glossary and explanations">Help / Glossary</button>
+            </div>
         </div>
 
+        <!-- Onboarding Banner (first run) -->
+        <div id="onboarding-banner" class="onboarding-banner" role="region" aria-label="Getting Started">
+            <strong>Welcome! Quick guide for first-time users:</strong>
+            <ul style="margin:8px 0 0 18px;">
+                <li>Use <em>Trading Cockpit</em> to run a cycle and generate signals.</li>
+                <li>Check <em>Pending Signals</em>, then Execute to open a position.</li>
+                <li>Track <em>Active Positions</em> for SL/TP and P&L updates.</li>
+                <li>See <em>Performance</em> for win rate, P&L, and risk metrics.</li>
+            </ul>
+            <div class="onboarding-actions">
+                <button id="startTour" class="onboarding-btn">Start Guided Tour</button>
+                <button id="dismissOnboarding" class="onboarding-btn onboarding-dismiss">Got it</button>
+            </div>
+        </div>
+
+        <!-- Tab Navigation -->
+        <div class="tab-navigation">
+            <button class="tab-button active" onclick="showTab('overview')" title="Overall system health and market status">System Overview</button>
+            <button class="tab-button" onclick="showTab('control')" title="Trading mode, auth, and account management">⚙️ Control Panel</button>
+            <button class="tab-button" onclick="showTab('trading')" title="Run cycles, pause trading, and view risk">Trading Cockpit</button>
+            <button class="tab-button" onclick="showTab('signals')" title="Signals that are ready to execute when conditions are met">Pending Signals</button>
+            <button class="tab-button" onclick="showTab('positions')" title="Open trades with live P&L, SL and TP">Active Positions</button>
+            <button class="tab-button" onclick="showTab('performance')" title="Win rate, total P&L, risk-adjusted returns">Performance</button>
+            <button class="tab-button" onclick="showTab('agent')" title="Agent latest work and today's decisions history">🤖 Agent</button>
+            <button class="tab-button" onclick="showTab('options')" title="Options chain data with IV, Delta, OI, and strategy recommendations">📊 Options Chain</button>
+            <button class="tab-button" onclick="showTab('market-data')" title="Market data APIs - price, options, technical indicators from market_data module">📈 Market Data APIs</button>
+            <button class="tab-button" onclick="showTab('dashboard')" title="Detailed, full dashboard view">Full Dashboard</button>
+        </div>
+
+        <!-- Tab Content -->
+        <div id="overview" class="tab-content active">
+        <!-- Signal Banner -->
+        <div id="signal-card" class="signal-banner hold">
+            <div style="display: flex; align-items: center; justify-content: space-between;">
+                <div style="display: flex; align-items: center; gap: 15px;">
+                    <div id="signal-icon" style="font-size: 2em;">📊</div>
+                    <div>
+                        <div style="font-size: 1.8em; font-weight: bold;" id="signal-text">HOLD</div>
+                        <div style="font-size: 0.9em; opacity: 0.9; margin-top: 4px;" id="signal-reasoning">Waiting for analysis...</div>
+                    </div>
+                </div>
+                <div style="display: flex; gap: 20px; align-items: center;">
+                    <div style="text-align: center;">
+                        <div style="font-size: 0.8em; opacity: 0.8;">Confidence</div>
+                        <div style="font-size: 1.2em; font-weight: bold;" id="signal-conf">-</div>
+                    </div>
+                    <div style="text-align: center;">
+                        <div style="font-size: 0.8em; opacity: 0.8;">Entry</div>
+                        <div style="font-size: 1.2em; font-weight: bold;" id="signal-entry">-</div>
+                    </div>
+                    <div style="text-align: center;">
+                        <div style="font-size: 0.8em; opacity: 0.8;">SL</div>
+                        <div style="font-size: 1.2em; font-weight: bold;" id="signal-sl">-</div>
+                    </div>
+                    <div style="text-align: center;">
+                        <div style="font-size: 0.8em; opacity: 0.8;">TP</div>
+                        <div style="font-size: 1.2em; font-weight: bold;" id="signal-tp">-</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
         <div class="status">
             <div class="card {{ 'success' if system_status.status == 'ok' else 'warning' if system_status.status == 'degraded' else 'error' }}">
                 <h3>
@@ -128,7 +509,10 @@
                 </div>
                 <div class="metric">
                     <span>Last Update:</span>
-                    <span class="value">{{ timestamp }}</span>
+                    <span class="value" id="last-update">{{ timestamp }}</span>
+                </div>
+                <div id="health-content" style="margin-top: 10px; border-top: 1px dashed #e5e7eb; padding-top: 10px;">
+                    <!-- Dynamic system health details will render here -->
                 </div>
             </div>
 
@@ -173,19 +557,857 @@
             <div class="card {{ 'success' if system_status.market_open else 'warning' }}">
                 <h3>
                     <span class="status-indicator status-{{ 'ok' if system_status.market_open else 'degraded' }}"></span>
-                    Market Information
+                    Time & Market Status
                 </h3>
+                <div class="metric" title="Current trading time - can be real-time or historical replay">
+                    <span>📅 Trading Date:</span>
+                    <span class="value" id="system-date">Loading...</span>
+                </div>
+                <div class="metric" title="Current trading time - can be real-time or historical replay">
+                    <span>🕐 Trading Time:</span>
+                    <span class="value" id="system-time">Loading...</span>
+                </div>
+                <div class="metric" title="Time mode: Real-time or Virtual (historical replay)">
+                    <span>⏱️ Mode:</span>
+                    <span class="value" id="time-mode" style="font-weight: 600;">Loading...</span>
+                </div>
                 <div class="metric">
-                    <span>Instrument:</span>
+                    <span>📊 Instrument:</span>
                     <span class="value">BANKNIFTY</span>
                 </div>
                 <div class="metric">
-                    <span>Trading Hours:</span>
+                    <span>🕒 Market Hours:</span>
                     <span class="value">9:15 AM - 3:30 PM IST</span>
                 </div>
                 <div class="metric">
-                    <span>Current Status:</span>
-                    <span class="value">{{ 'MARKET OPEN' if system_status.market_open else 'AFTER HOURS' }}</span>
+                    <span>🟢 Status:</span>
+                    <span class="value" id="market-status">{{ 'MARKET OPEN' if system_status.market_open else 'AFTER HOURS' }}</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Control Panel Tab -->
+        <div id="control" class="tab-content">
+            <div class="trading-grid">
+                <!-- Historical Replay Configuration -->
+                <div class="trading-panel">
+                    <h3>📅 Historical Replay Configuration</h3>
+                    <p style="color: #666; margin: 0 0 15px 0;">Configure historical data replay for backtesting (used when switching to Paper Mock mode)</p>
+                    
+                    <div style="background: white; padding: 15px; border-radius: 6px; margin-bottom: 15px;">
+                        <div style="margin-bottom: 12px;">
+                            <label style="display: flex; align-items: center; cursor: pointer;">
+                                <input type="checkbox" id="enable-historical-replay" onchange="toggleHistoricalDateInputs()" style="margin-right: 8px;">
+                                <strong>Enable Historical Replay</strong>
+                            </label>
+                            <small style="color: #666; display: block; margin-left: 24px; margin-top: 4px;">
+                                When enabled, Paper Mock mode will replay past Zerodha data instead of simulated data
+                            </small>
+                        </div>
+                        
+                        <div id="historical-date-inputs" style="display: none; margin-top: 12px; padding-top: 12px; border-top: 1px solid #dee2e6;">
+                            <div style="margin-bottom: 12px;">
+                                <label style="display: block; margin-bottom: 6px; font-weight: 600; color: #495057;">Start Date:</label>
+                                <input type="date" id="historical-start-date" style="width: 100%; padding: 8px; border: 1px solid #dee2e6; border-radius: 4px; font-size: 0.9em;">
+                                <small style="color: #666; display: block; margin-top: 4px;">Date to start replaying from (YYYY-MM-DD)</small>
+                            </div>
+                            
+                            <div style="margin-bottom: 12px;">
+                                <label style="display: block; margin-bottom: 6px; font-weight: 600; color: #495057;">End Date (Optional):</label>
+                                <input type="date" id="historical-end-date" style="width: 100%; padding: 8px; border: 1px solid #dee2e6; border-radius: 4px; font-size: 0.9em;">
+                                <small style="color: #666; display: block; margin-top: 4px;">End date (defaults to today if not specified)</small>
+                            </div>
+                            
+                            <div style="margin-bottom: 12px;">
+                                <label style="display: block; margin-bottom: 6px; font-weight: 600; color: #495057;">Data Interval:</label>
+                                <select id="historical-interval" style="width: 100%; padding: 8px; border: 1px solid #dee2e6; border-radius: 4px; font-size: 0.9em;">
+                                    <option value="minute">1 Minute</option>
+                                    <option value="3minute">3 Minutes</option>
+                                    <option value="5minute">5 Minutes</option>
+                                    <option value="15minute">15 Minutes</option>
+                                    <option value="30minute">30 Minutes</option>
+                                    <option value="60minute">1 Hour</option>
+                                    <option value="day">Daily</option>
+                                </select>
+                                <small style="color: #666; display: block; margin-top: 4px;">Candle timeframe for historical data</small>
+                            </div>
+                            
+                            <div style="padding: 10px; background: #e7f3ff; border-radius: 4px; font-size: 0.85em; color: #004085; margin-top: 12px;">
+                                <strong>ℹ️ Note:</strong> Historical replay requires:
+                                <ul style="margin: 6px 0 0 20px; padding: 0;">
+                                    <li>Paper Mock mode selected when applying</li>
+                                    <li>Zerodha authentication (for real data)</li>
+                                    <li>Data will be fetched from Zerodha API and replayed in chronological order</li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div style="background: #f8f9fa; padding: 12px; border-radius: 6px; font-size: 0.9em; color: #666; margin-bottom: 15px;">
+                        <strong>💡 Quick Presets:</strong>
+                        <div style="display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap;">
+                            <button class="btn btn-sm btn-secondary" onclick="setHistoricalPreset('last7days')" style="font-size: 0.85em; padding: 6px 12px;">Last 7 Days</button>
+                            <button class="btn btn-sm btn-secondary" onclick="setHistoricalPreset('last30days')" style="font-size: 0.85em; padding: 6px 12px;">Last 30 Days</button>
+                            <button class="btn btn-sm btn-secondary" onclick="setHistoricalPreset('last90days')" style="font-size: 0.85em; padding: 6px 12px;">Last 90 Days</button>
+                            <button class="btn btn-sm btn-secondary" onclick="setHistoricalPreset('lastyear')" style="font-size: 0.85em; padding: 6px 12px;">Last Year</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Trading Mode Selection -->
+                <div class="trading-panel">
+                    <h3>⚙️ Trading Mode</h3>
+                    <p style="color: #666; margin: 0 0 15px 0;">Select your trading environment</p>
+                    
+                    <div style="background: white; padding: 15px; border-radius: 6px; margin-bottom: 15px;">
+                        <div style="margin-bottom: 12px;">
+                            <label style="display: flex; align-items: center; cursor: pointer; padding: 10px; border: 2px solid #dee2e6; border-radius: 6px;">
+                                <input type="radio" name="tradingMode" value="paper_mock" id="mode_paper_mock" style="margin-right: 10px;">
+                                <div style="flex: 1;">
+                                    <strong>Paper (Mock Data)</strong><br>
+                                    <small style="color: #666;">Uses Historical Replay if enabled above, otherwise simulated data</small>
+                                </div>
+                            </label>
+                        </div>
+                        
+                        <div style="margin-bottom: 12px;">
+                            <label style="display: flex; align-items: center; cursor: pointer; padding: 10px; border: 2px solid #dee2e6; border-radius: 6px;">
+                                <input type="radio" name="tradingMode" value="paper_live" id="mode_paper_live" style="margin-right: 10px;">
+                                <div>
+                                    <strong>Paper (Live Data)</strong><br>
+                                    <small style="color: #666;">Real Zerodha data + paper trading - Test with live market</small>
+                                </div>
+                            </label>
+                        </div>
+                        
+                        <div style="margin-bottom: 12px;">
+                            <label style="display: flex; align-items: center; cursor: pointer; padding: 10px; border: 2px solid #dee2e6; border-radius: 6px;">
+                                <input type="radio" name="tradingMode" value="live" id="mode_live" style="margin-right: 10px;">
+                                <div>
+                                    <strong>Live Trading ⚠️</strong><br>
+                                    <small style="color: #dc3545;">Real money - Use with caution!</small>
+                                </div>
+                            </label>
+                        </div>
+                    </div>
+                    
+                    <div id="mode-switch-info" style="background: #fff3cd; padding: 12px; border-left: 4px solid #ffc107; border-radius: 4px; margin-bottom: 15px; display: none;">
+                        <strong>📅 Historical Replay Active:</strong>
+                        <div id="historical-info-text" style="font-size: 0.9em; margin-top: 4px;"></div>
+                    </div>
+                    
+                    <div style="display: flex; gap: 10px;">
+                        <button class="btn btn-primary" onclick="applyTradingMode()" style="flex: 1;">Apply Mode</button>
+                        <button class="btn btn-secondary" onclick="loadControlStatus()" style="flex: 0;">🔄</button>
+                    </div>
+                    
+                    <div id="mode-status" style="margin-top: 15px; padding: 12px; background: #e7f3ff; border-left: 4px solid #007bff; border-radius: 4px; display: none;">
+                        <div style="font-weight: 600; color: #007bff;">Current Mode: <span id="current-mode-display">Loading...</span></div>
+                        <div style="font-size: 0.9em; color: #666; margin-top: 4px;" id="mode-description"></div>
+                    </div>
+                </div>
+
+                <!-- Zerodha Connection -->
+                <div class="trading-panel">
+                    <h3>🔗 Zerodha Connection</h3>
+                    <p style="color: #666; margin: 0 0 15px 0;">Manage authentication for live data</p>
+                    
+                    <div id="auth-status-panel" style="background: white; padding: 15px; border-radius: 6px; margin-bottom: 15px;">
+                        <div class="metric">
+                            <span>Status:</span>
+                            <span class="value" id="auth-connection-status">Checking...</span>
+                        </div>
+                        <div class="metric">
+                            <span>Credentials:</span>
+                            <span class="value" id="auth-credentials-status">Checking...</span>
+                        </div>
+                        <div class="metric">
+                            <span>Token Expiry:</span>
+                            <span class="value" id="auth-token-expiry">N/A</span>
+                        </div>
+                    </div>
+                    
+                    <div style="display: flex; gap: 10px; margin-bottom: 15px;">
+                        <button class="btn btn-success" onclick="connectZerodha()" id="connect-btn" style="flex: 1;">Connect to Zerodha</button>
+                        <button class="btn btn-secondary" onclick="disconnectZerodha()" id="disconnect-btn" style="flex: 1; display: none;">Disconnect</button>
+                    </div>
+                    
+                    <div id="auth-instructions" style="padding: 12px; background: #e7f3ff; border-left: 4px solid #007bff; border-radius: 4px; display: none;">
+                        <strong>📝 After Login - Complete Authentication:</strong>
+                        <ol style="margin: 8px 0 0 18px; font-size: 0.9em;">
+                            <li>After Zerodha login, you'll be redirected with a <strong>request_token</strong> in URL</li>
+                            <li>Copy the <strong>entire URL</strong> from your browser</li>
+                            <li>Paste it in the field below and click "Complete Auth"</li>
+                        </ol>
+                        <div style="margin-top: 12px;">
+                            <input type="text" id="request-token-url" placeholder="Paste redirect URL here (https://127.0.0.1:5000?request_token=...)" 
+                                   style="width: 100%; padding: 8px; margin-bottom: 8px; border: 1px solid #dee2e6; border-radius: 4px; font-size: 0.9em;">
+                            <button class="btn btn-primary" onclick="completeZerodhaAuth()" style="width: 100%;">Complete Authentication</button>
+                        </div>
+                        <div style="margin-top: 10px; padding: 8px; background: #fff3cd; border-radius: 4px; font-size: 0.85em;">
+                            <strong>Alternative:</strong> Run this command in terminal:
+                            <code style="display: block; margin-top: 4px; padding: 6px; background: white; border-radius: 3px; font-family: monospace;">python data_niftybank/src/data_niftybank/tools/kite_auth.py</code>
+                        </div>
+                    </div>
+                    
+                    <div id="login-url-panel" style="display: none; margin-top: 10px;">
+                        <input type="text" id="login-url-input" readonly style="width: 100%; padding: 8px; margin-bottom: 8px; border: 1px solid #dee2e6; border-radius: 4px; font-size: 0.9em;">
+                        <button class="btn btn-primary" onclick="openLoginUrl()">Open Login Page</button>
+                    </div>
+                </div>
+
+                <!-- Account Balances -->
+                <div class="trading-panel">
+                    <h3>💰 Account Balances</h3>
+                    <p style="color: #666; margin: 0 0 15px 0;">Current balances by mode</p>
+                    
+                    <div style="background: white; padding: 15px; border-radius: 6px; margin-bottom: 15px;">
+                        <div class="metric">
+                            <span>Paper (Mock):</span>
+                            <span class="value" id="balance-paper-mock">₹0</span>
+                        </div>
+                        <div class="metric">
+                            <span>Paper (Live):</span>
+                            <span class="value" id="balance-paper-live">₹0</span>
+                        </div>
+                        <div class="metric">
+                            <span>Live Trading:</span>
+                            <span class="value" id="balance-live">₹0</span>
+                        </div>
+                        <div class="metric" style="border-top: 2px solid #007bff; padding-top: 10px; margin-top: 10px;">
+                            <span style="font-weight: 600;">Active Balance:</span>
+                            <span class="value" style="color: #007bff; font-size: 1.2em;" id="balance-current">₹0</span>
+                        </div>
+                    </div>
+                    
+                    <div style="background: #e7f3ff; padding: 12px; border-left: 4px solid #007bff; border-radius: 4px; margin-bottom: 10px;">
+                        <strong>Set Paper Trading Balance:</strong>
+                        <div style="display: flex; gap: 8px; margin-top: 8px;">
+                            <input type="number" id="paper-balance-input" placeholder="100000" value="100000" 
+                                   style="flex: 1; padding: 8px; border: 1px solid #dee2e6; border-radius: 4px;" min="1000" step="1000">
+                            <button class="btn btn-primary" onclick="setPaperBalance()" style="white-space: nowrap;">Set Balance</button>
+                        </div>
+                        <small style="color: #666; font-size: 0.85em;">Enter amount in ₹ (e.g., 100000 for ₹1 lakh)</small>
+                    </div>
+                </div>
+
+                <!-- Portfolio Reset -->
+                <div class="trading-panel">
+                    <h3>🔄 Portfolio Management</h3>
+                    <p style="color: #666; margin: 0 0 15px 0;">Reset paper trading portfolios</p>
+                    
+                    <div style="background: white; padding: 15px; border-radius: 6px; margin-bottom: 15px;">
+                        <div class="metric">
+                            <span>Paper Trades:</span>
+                            <span class="value" id="portfolio-trades-count">0</span>
+                        </div>
+                        <div class="metric">
+                            <span>Active Positions:</span>
+                            <span class="value" id="portfolio-positions-count">0</span>
+                        </div>
+                    </div>
+                    
+                    <div style="background: #fff3cd; padding: 12px; border-left: 4px solid #ffc107; border-radius: 4px; margin-bottom: 15px;">
+                        <strong>⚠️ Warning:</strong> Resetting will permanently delete all trades and positions for the selected mode.
+                    </div>
+                    
+                    <div style="margin-bottom: 10px;">
+                        <label style="display: block; margin-bottom: 6px; font-weight: 500;">Reset Mode:</label>
+                        <select id="reset-mode-select" style="width: 100%; padding: 8px; border: 1px solid #dee2e6; border-radius: 4px;">
+                            <option value="paper_mock">Paper (Mock Data)</option>
+                            <option value="paper_live">Paper (Live Data)</option>
+                        </select>
+                    </div>
+                    
+                    <button class="btn btn-danger" onclick="resetPortfolio()" style="width: 100%;">Reset Portfolio</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="trading" class="tab-content">
+            <div class="trading-grid">
+                <div class="trading-panel">
+                    <h3>Quick Actions</h3>
+                    <div class="signal-action">
+                        <button class="btn btn-primary" onclick="runTradingCycle()">Run Trading Cycle</button>
+                        <button class="btn btn-secondary" onclick="pauseTrading()">Pause Trading</button>
+                        <button class="btn btn-success" onclick="refreshSignals()">Refresh Data</button>
+                    </div>
+
+                    <h3 style="margin-top: 30px;">Risk Monitor
+                        <span id="risk-monitor-timestamp" style="font-size: 0.8em; color: #666; float: right;"></span>
+                    </h3>
+                    <div class="metric-grid">
+                        <div class="metric-card">
+                            <span class="metric-value" style="color: #28a745;">85%</span>
+                            <div class="metric-label">Portfolio Health</div>
+                        </div>
+                        <div class="metric-card">
+                            <span class="metric-value" style="color: #ffc107;">2.3%</span>
+                            <div class="metric-label">Daily Risk Used</div>
+                        </div>
+                        <div class="metric-card">
+                            <span class="metric-value" style="color: #dc3545;">0</span>
+                            <div class="metric-label">Active Positions</div>
+                        </div>
+                        <div class="metric-card">
+                            <span class="metric-value" style="color: #007bff;">3</span>
+                            <div class="metric-label">Signals Today</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="trading-panel">
+                    <h3>Market Conditions
+                        <span id="market-conditions-timestamp" style="font-size: 0.8em; color: #666; float: right;"></span>
+                    </h3>
+                    <div class="metric-grid">
+                        <div class="metric-card">
+                            <span class="metric-value">45,230</span>
+                            <div class="metric-label">BANKNIFTY Spot</div>
+                        </div>
+                        <div class="metric-card">
+                            <span class="metric-value" style="color: #28a745;">+125.50</span>
+                            <div class="metric-label">Change</div>
+                        </div>
+                        <div class="metric-card">
+                            <span class="metric-value">12.5M</span>
+                            <div class="metric-label">Volume</div>
+                        </div>
+                        <div class="metric-card" title="Put/Call Ratio (PCR): volume of put options vs call options. >1 can indicate bearish positioning; <1 bullish.">
+                            <span class="metric-value">1.15</span>
+                            <div class="metric-label">PCR Ratio</div>
+                        </div>
+                    </div>
+
+                    <h3 style="margin-top: 30px;">System Status</h3>
+                    <div class="metric">
+                        <span>Trading Engine:</span>
+                        <span class="value" style="color: #28a745;">ACTIVE</span>
+                    </div>
+                    <div class="metric">
+                        <span>Risk Management:</span>
+                        <span class="value" style="color: #28a745;">ENABLED</span>
+                    </div>
+                    <div class="metric">
+                        <span>Auto Execution:</span>
+                        <span class="value" style="color: #28a745;">ENABLED</span>
+                    </div>
+                    <div class="metric" title="FRESH (<30s) = Live data, STALE (30s-2min) = Recent data, OLD (>2min) = Check connection">
+                        <span>Data Status:</span>
+                        <span class="value" id="data-status" style="color: #28a745;">FRESH</span>
+                    </div>
+                    <div class="metric" title="Last time market data was successfully refreshed">
+                        <span>Last Updated:</span>
+                        <span class="value" id="last-updated">Loading...</span>
+                    </div>
+                    <div class="metric" title="Timestamp of market data (trade execution time)">
+                        <span>Market Data Time:</span>
+                        <span class="value" id="market-data-time" style="font-size: 0.9em;">Loading...</span>
+                    </div>
+                    <div class="metric" title="Connection to data sources (API/database)">
+                        <span>Connection:</span>
+                        <span class="value" id="connection-status" style="color: #28a745;">● CONNECTED</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="signals" class="tab-content">
+            <div class="trading-panel">
+                <h3>Pending Trading Signals
+                    <span id="signals-timestamp" style="font-size: 0.8em; color: #666; float: right;"></span>
+                </h3>
+                <p style="color: #666; margin: 10px 0;">Signals generated by the enhanced trading engine that require execution.</p>
+                <div id="signals-container">
+                    <!-- Signals will be loaded dynamically -->
+                    <div class="empty-state">
+                        <h4>Loading Signals...</h4>
+                        <p>Fetching latest signals from trading engine.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="positions" class="tab-content">
+            <div class="trading-panel">
+                <h3>Active Positions & Monitoring
+                    <span id="positions-timestamp" style="font-size: 0.8em; color: #666; float: right;"></span>
+                </h3>
+                <p style="color: #666; margin: 10px 0;">Currently open positions being monitored for exit conditions.</p>
+
+                <div class="position-item" id="sample-position" style="display: none;">
+                    <div class="signal-header">
+                        <span class="signal-symbol">{{ INSTRUMENT }} LONG</span>
+                        <span style="color: #28a745; font-weight: bold;" id="sample-pnl">+₹1,250 P&L</span>
+                    </div>
+                    <div class="signal-details">
+                        <div><strong>Entry:</strong> <span id="sample-entry">₹23,450</span></div>
+                        <div><strong>Current:</strong> <span id="sample-current">₹23,520</span></div>
+                        <div><strong title="Stop Loss (SL): price where the trade exits to limit loss">Stop Loss:</strong> <span id="sample-sl">₹23,300</span></div>
+                        <div><strong title="Take Profit (TP): target price to lock in gains">Take Profit:</strong> <span id="sample-tp">₹23,600</span></div>
+                    </div>
+                    <div class="signal-action">
+                        <button class="btn btn-primary" onclick="modifyPosition('nifty_long')">Modify SL/TP</button>
+                        <button class="btn btn-danger" onclick="closePosition('nifty_long')">Close Position</button>
+                    </div>
+                </div>
+
+                <div class="empty-state" id="positions-empty" style="display: none;">
+                    <h4>No Active Positions</h4>
+                    <p>No positions are currently open. Executed trades will appear here for monitoring.</p>
+                </div>
+
+                <div style="overflow-x: auto; margin-top: 10px;">
+                    <table style="width: 100%; border-collapse: collapse;">
+                        <thead>
+                            <tr style="background: #f8f9fa;">
+                                <th style="padding: 8px; text-align: left; border-bottom: 1px solid #dee2e6;">Time</th>
+                                <th style="padding: 8px; text-align: left; border-bottom: 1px solid #dee2e6;">Symbol</th>
+                                <th style="padding: 8px; text-align: left; border-bottom: 1px solid #dee2e6;">Side</th>
+                                <th style="padding: 8px; text-align: left; border-bottom: 1px solid #dee2e6;">Strike</th>
+                                <th style="padding: 8px; text-align: left; border-bottom: 1px solid #dee2e6;">Type</th>
+                                <th style="padding: 8px; text-align: left; border-bottom: 1px solid #dee2e6;">Entry</th>
+                                <th style="padding: 8px; text-align: left; border-bottom: 1px solid #dee2e6;">Exit</th>
+                                <th style="padding: 8px; text-align: left; border-bottom: 1px solid #dee2e6;">P&L</th>
+                                <th style="padding: 8px; text-align: left; border-bottom: 1px solid #dee2e6;">Status</th>
+                            </tr>
+                        </thead>
+                        <tbody id="portfolio-body">
+                            <!-- Positions will render here -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <div id="performance" class="tab-content">
+            <div class="trading-panel">
+                <h3>Strategy Performance & Analytics
+                    <span id="performance-timestamp" style="font-size: 0.8em; color: #666; float: right;"></span>
+                </h3>
+
+                <div class="metric-grid">
+                    <div class="metric-card">
+                        <span class="metric-value" id="win-rate">Loading...</span>
+                        <div class="metric-label">Win Rate</div>
+                    </div>
+                    <div class="metric-card">
+                        <span class="metric-value" id="profit-factor">Loading...</span>
+                        <div class="metric-label">Profit Factor</div>
+                    </div>
+                    <div class="metric-card">
+                        <span class="metric-value" id="total-pnl">Loading...</span>
+                        <div class="metric-label">Total P&L</div>
+                    </div>
+                    <div class="metric-card">
+                        <span class="metric-value" id="sharpe-ratio">Loading...</span>
+                        <div class="metric-label">Sharpe Ratio</div>
+                    </div>
+                    <div class="metric-card">
+                        <span class="metric-value" id="total-trades">Loading...</span>
+                        <div class="metric-label">Total Trades</div>
+                    </div>
+                    <div class="metric-card">
+                        <span class="metric-value" id="avg-win">Loading...</span>
+                        <div class="metric-label">Avg Win</div>
+                    </div>
+                </div>
+                <div style="margin-top: 10px; font-size: 0.85em; color: #666;">
+                    <span id="metrics-timestamp" style="font-size: 0.8em; color: #666;"></span>
+                    <span id="risk-timestamp" style="font-size: 0.8em; color: #666; margin-left: 15px;"></span>
+                </div>
+
+                <div class="performance-chart">
+                    <h4 style="margin: 0 0 15px 0;">Equity Curve</h4>
+                    <div class="chart-placeholder" id="equity-curve-chart">
+                        Loading equity curve data...
+                    </div>
+                </div>
+
+                <div class="performance-chart">
+                    <h4 style="margin: 0 0 15px 0;">Agent Performance</h4>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
+                        <div style="background: #f8f9fa; padding: 15px; border-radius: 6px; text-align: center;">
+                            <h5 style="margin: 0 0 10px 0; color: #007bff;">Momentum Agent</h5>
+                            <div style="font-size: 1.5em; font-weight: bold; color: #666;">No data</div>
+                            <div style="font-size: 0.9em; color: #666;">Waiting for trades</div>
+                        </div>
+                        <div style="background: #f8f9fa; padding: 15px; border-radius: 6px; text-align: center;">
+                            <h5 style="margin: 0 0 10px 0; color: #007bff;">Trend Agent</h5>
+                            <div style="font-size: 1.5em; font-weight: bold; color: #666;">No data</div>
+                            <div style="font-size: 0.9em; color: #666;">Waiting for trades</div>
+                        </div>
+                        <div style="background: #f8f9fa; padding: 15px; border-radius: 6px; text-align: center;">
+                            <h5 style="margin: 0 0 10px 0; color: #007bff;">Mean Reversion Agent</h5>
+                            <div style="font-size: 1.5em; font-weight: bold; color: #666;">No data</div>
+                            <div style="font-size: 0.9em; color: #666;">Waiting for trades</div>
+                        </div>
+                        <div style="background: #f8f9fa; padding: 15px; border-radius: 6px; text-align: center;">
+                            <h5 style="margin: 0 0 10px 0; color: #007bff;">Volume Agent</h5>
+                            <div style="font-size: 1.5em; font-weight: bold; color: #666;">No data</div>
+                            <div style="font-size: 0.9em; color: #666;">Waiting for trades</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Agent Tab -->
+        <div id="agent" class="tab-content">
+            <div class="trading-panel">
+                <h3>🤖 Agent Latest Work
+                    <span id="agent-work-timestamp" style="font-size: 0.8em; color: #666; float: right;"></span>
+                </h3>
+                <div id="agent-latest-work" style="min-height: 200px;">
+                    <div style="text-align: center; padding: 40px; color: #666;">
+                        <div style="font-size: 1.2em;">Loading agent work...</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="trading-panel" style="margin-top: 20px;">
+                <h3>📊 Today's Decisions History
+                    <span id="decisions-count" style="font-size: 0.8em; color: #666; float: right;"></span>
+                </h3>
+                <div id="agent-decisions-history" style="min-height: 300px;">
+                    <div style="text-align: center; padding: 40px; color: #666;">
+                        <div style="font-size: 1.2em;">Loading decisions history...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Options Chain Tab -->
+        <div id="options" class="tab-content">
+            <div class="trading-panel">
+                <h3>📊 Options Chain
+                    <span id="options-chain-timestamp" style="font-size: 0.8em; color: #666; float: right;"></span>
+                    <button onclick="loadOptionsChain()" style="float: right; margin-right: 15px; padding: 6px 12px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85em;">🔄 Refresh</button>
+                </h3>
+                <div id="options-data-source" style="margin-bottom: 10px; padding: 8px; background: #fff3cd; border-radius: 4px; font-size: 0.85em; color: #856404; border-left: 4px solid #ffc107;">
+                    <strong>Data Source:</strong> <span id="options-data-source-text">Loading...</span>
+                </div>
+                <div style="margin-bottom: 15px; padding: 12px; background: #f8f9fa; border-radius: 6px;">
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
+                        <div>
+                            <strong>Futures Price:</strong>
+                            <div style="font-size: 1.3em; font-weight: bold; color: #007bff;" id="options-fut-price-main">-</div>
+                        </div>
+                        <div>
+                            <strong>Expiry:</strong>
+                            <div style="font-size: 1.1em; color: #666;" id="options-expiry-main">-</div>
+                        </div>
+                        <div>
+                            <strong>PCR Ratio:</strong>
+                            <div style="font-size: 1.1em; font-weight: bold; color: #28a745;" id="options-pcr-main">-</div>
+                        </div>
+                        <div>
+                            <strong>Max Pain:</strong>
+                            <div style="font-size: 1.1em; font-weight: bold; color: #dc3545;" id="options-max-pain-main">-</div>
+                        </div>
+                    </div>
+                </div>
+                <div style="overflow-x: auto; max-height: 700px; overflow-y: auto;">
+                    <table style="width: 100%; border-collapse: collapse; font-size: 0.9em; background: white;">
+                        <thead style="position: sticky; top: 0; background: #f8f9fa; z-index: 10;">
+                            <tr style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white;">
+                                <th style="padding: 12px; text-align: center; border: 1px solid #ddd; font-weight: bold;">Strike</th>
+                                <th style="padding: 12px; text-align: center; border: 1px solid #ddd; font-weight: bold;">Call LTP</th>
+                                <th style="padding: 12px; text-align: center; border: 1px solid #ddd; font-weight: bold;">Call OI</th>
+                                <th style="padding: 12px; text-align: center; border: 1px solid #ddd; font-weight: bold;">Call IV</th>
+                                <th style="padding: 12px; text-align: center; border: 1px solid #ddd; font-weight: bold;">Call Δ</th>
+                                <th style="padding: 12px; text-align: center; border: 1px solid #ddd; font-weight: bold;">Put Δ</th>
+                                <th style="padding: 12px; text-align: center; border: 1px solid #ddd; font-weight: bold;">Put IV</th>
+                                <th style="padding: 12px; text-align: center; border: 1px solid #ddd; font-weight: bold;">Put OI</th>
+                                <th style="padding: 12px; text-align: center; border: 1px solid #ddd; font-weight: bold;">Put LTP</th>
+                            </tr>
+                        </thead>
+                        <tbody id="options-chain-body">
+                            <tr>
+                                <td colspan="9" style="padding: 40px; text-align: center; color: #666;">
+                                    <div style="font-size: 1.2em; margin-bottom: 10px;">Loading options chain data...</div>
+                                    <div style="font-size: 0.9em;">Please wait while we fetch the latest options data</div>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="trading-panel" style="margin-top: 20px;">
+                <h3>💡 Options Strategy Recommendation
+                    <span id="options-strategy-timestamp-main" style="font-size: 0.8em; color: #666; float: right;"></span>
+                    <button onclick="loadOptionsStrategy()" style="float: right; margin-right: 15px; padding: 6px 12px; background: #28a745; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 0.85em;">🔄 Refresh</button>
+                </h3>
+                <div id="options-strategy-content" style="min-height: 200px;">
+                    <div style="text-align: center; padding: 40px; color: #666;">
+                        <div style="font-size: 1.2em;">Loading strategy recommendation...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="dashboard" class="tab-content">
+            <div class="status">
+                <div class="card" style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none;">
+                    <h3 style="margin: 0 0 15px 0;">🚀 System Status
+                        <span id="system-status-timestamp" style="font-size: 0.8em; color: rgba(255,255,255,0.8); float: right;"></span>
+                    </h3>
+                    <p style="margin: 0.5rem 0 0 0; opacity: 0.9; font-size: 0.9rem;" id="system-status-text">All systems operational</p>
+                    <div class="metric-grid">
+                        <div class="metric-card" style="background: rgba(255,255,255,0.1);">
+                            <span class="metric-value" id="llm-provider">Loading...</span>
+                            <div class="metric-label">LLM Provider</div>
+                        </div>
+                        <div class="metric-card" style="background: rgba(255,255,255,0.1);">
+                            <span class="metric-value" id="data-feed-status">Loading...</span>
+                            <div class="metric-label">Data Feed</div>
+                        </div>
+                        <div class="metric-card" style="background: rgba(255,255,255,0.1);">
+                            <span class="metric-value" id="agents-status">Loading...</span>
+                            <div class="metric-label">Active Agents</div>
+                            <div class="metric-subtext" id="agent-profile" style="font-size: 0.7em; color: rgba(255,255,255,0.6); margin-top: 4px;"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card success">
+                    <h3>
+                        <span class="status-indicator status-ok"></span>
+                        Market Context - {{ INSTRUMENT }}
+                        <span id="market-context-timestamp" style="font-size: 0.8em; color: #666; float: right;"></span>
+                    </h3>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 15px;">
+                        <div class="metric-card" style="text-align: center;">
+                            <span class="metric-value" style="font-size: 1.3em;" id="current-price">Loading...</span>
+                            <div class="metric-label">Current Price</div>
+                            <div style="font-size: 0.8em; color: #28a745; margin-top: 2px;" id="change-24h">Loading...</div>
+                        </div>
+                        <div class="metric-card" style="text-align: center;">
+                            <span class="metric-value" style="font-size: 1.3em; color: #28a745;" id="daily-change">Loading...</span>
+                            <div class="metric-label">Daily Change</div>
+                            <div style="font-size: 0.8em; color: #28a745; margin-top: 2px;" id="change-percent">Loading...</div>
+                        </div>
+                        <div class="metric-card" style="text-align: center;">
+                            <span class="metric-value" style="font-size: 1.3em;" id="low-24h">Loading...</span>
+                            <div class="metric-label">Day Low</div>
+                            <div style="font-size: 0.8em; color: #666; margin-top: 2px;">Loading...</div>
+                        </div>
+                        <div class="metric-card" style="text-align: center;">
+                            <span class="metric-value" style="font-size: 1.3em;" id="high-24h">Loading...</span>
+                            <div class="metric-label">Day High</div>
+                            <div style="font-size: 0.8em; color: #666; margin-top: 2px;">Loading...</div>
+                        </div>
+                    </div>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 12px;">
+                        <div class="metric-card">
+                            <span class="metric-value" id="volume-24h">Loading...</span>
+                            <div class="metric-label">Volume</div>
+                        </div>
+                        <div class="metric-card" title="PCR Ratio: Put/Call Ratio — a sentiment gauge from options markets.">
+                            <span class="metric-value">-</span>
+                            <div class="metric-label">PCR Ratio</div>
+                        </div>
+                        <div class="metric-card" title="VWAP: Volume Weighted Average Price — average price adjusted for volume.">
+                            <span class="metric-value" id="vwap">-</span>
+                            <div class="metric-label">VWAP</div>
+                        </div>
+                        <div class="metric-card">
+                            <span class="metric-value" style="color: #666;">-</span>
+                            <div class="metric-label">Market Bias</div>
+                        </div>
+                    </div>
+                    <div style="margin-top: 12px; padding: 8px; background: #f8f9fa; border-radius: 4px; font-size: 0.9em; color: #666;">
+                        <strong>📈 Market Analysis:</strong> No analysis available yet. Waiting for market data and agent processing.
+                    </div>
+                </div>
+
+                <div class="card success">
+                    <h3>
+                        <span class="status-indicator status-ok"></span>
+                        Auto Execution: ENABLED
+                    </h3>
+                    <div class="metric">
+                        <span>Status:</span>
+                        <span class="value" style="color: #28a745;">ACTIVE</span>
+                    </div>
+                    <div class="metric">
+                        <span>Mode:</span>
+                        <span class="value">Semi-Automatic</span>
+                    </div>
+                    <div class="metric">
+                        <span>Last Cycle:</span>
+                        <span class="value">{{ timestamp }}</span>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h3>
+                        <span class="status-indicator status-ok"></span>
+                        Agent Executive Summary
+                        <span id="agent-summary-timestamp" style="font-size: 0.8em; color: #666; float: right;"></span>
+                    </h3>
+                    <div style="margin-bottom: 15px;">
+                        <strong>Consensus Signal:</strong>
+                        <span id="consensus-signal" style="color: #666; font-weight: bold; margin-left: 10px;">WAITING</span>
+                        <span id="consensus-agreement" style="color: #666; margin-left: 10px;">(0 of 0 agents agree)</span>
+                        <div id="weighted-votes" style="margin-top: 8px; font-size: 0.85em; color: #888;"></div>
+                    </div>
+                    <div style="margin-bottom: 15px;">
+                        <strong>Last Agent Discussion:</strong>
+                        <span id="agent-discussion-time" style="color: #007bff; margin-left: 10px;">Loading...</span>
+                        <span style="color: #666; margin-left: 10px;" title="When agents last analyzed market conditions and made decisions">ⓘ</span>
+                    </div>
+                    
+                    <!-- Dynamic Agent Cards Container -->
+                    <div id="agent-cards-container" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; font-size: 0.9em;">
+                        <!-- Agent cards will be dynamically inserted here -->
+                        <div style="background: #f8f9fa; padding: 20px; border-radius: 6px; text-align: center; color: #999;">
+                            <div style="font-size: 2em; margin-bottom: 10px;">🤖</div>
+                            <div>Awaiting live agent data...</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h3>
+                        <span class="status-indicator status-ok"></span>
+                        Performance Metrics
+                        <span id="performance-metrics-timestamp" style="font-size: 0.8em; color: #666; float: right;"></span>
+                    </h3>
+                    <div class="metric-grid">
+                        <div class="metric-card">
+                            <span class="metric-value" id="total-pnl-full">Loading...</span>
+                            <div class="metric-label">Total P&L</div>
+                        </div>
+                        <div class="metric-card">
+                            <span class="metric-value" id="win-rate-full">Loading...</span>
+                            <div class="metric-label">Win Rate</div>
+                        </div>
+                        <div class="metric-card" title="Sharpe Ratio: risk-adjusted return. Higher is generally better.">
+                            <span class="metric-value" id="sharpe-ratio-full">Loading...</span>
+                            <div class="metric-label">Sharpe Ratio</div>
+                        </div>
+                        <div class="metric-card" title="Max Drawdown: worst peak-to-trough drop in equity. Lower is better.">
+                            <span class="metric-value" id="max-drawdown-full">Loading...</span>
+                            <div class="metric-label">Max Drawdown</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h3>
+                        <span class="status-indicator status-ok"></span>
+                        Live Technical Indicators
+                        <span id="technical-indicators-timestamp" style="font-size: 0.8em; color: #666; float: right;"></span>
+                    </h3>
+                    <div style="margin-bottom: 15px;">
+                        <select id="symbol-select" onchange="loadTechnicalData()" style="padding: 8px; border-radius: 4px; border: 1px solid #ddd;">
+                            <option value="{{ INSTRUMENT }}">{{ INSTRUMENT }}</option>
+                        </select>
+                        <button onclick="loadTechnicalData()" style="margin-left: 10px; padding: 8px 16px; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer;">Refresh</button>
+                    </div>
+                    <div id="technical-indicators" class="metric-grid">
+                        <!-- Technical indicators will be loaded dynamically -->
+                        <div class="metric-card">
+                            <span class="metric-value">Loading...</span>
+                            <div class="metric-label">Loading indicators...</div>
+                        </div>
+                    </div>
+                    <div id="technical-analysis" style="margin-top: 12px; padding: 8px; background: #f8f9fa; border-radius: 4px; font-size: 0.9em;">
+                        <strong>📊 Analysis:</strong> Loading market analysis...
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h3>
+                        <span class="status-indicator status-ok"></span>
+                        Agent Condition Monitoring
+                        <span id="agent-conditions-timestamp" style="font-size: 0.8em; color: #666; float: right;"></span>
+                    </h3>
+                    <div id="agent-conditions" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px;">
+                        <div style="background: #f8f9fa; padding: 12px; border-radius: 6px; border-left: 4px solid #28a745;">
+                            <div style="font-weight: bold; color: #007bff; margin-bottom: 8px;">Momentum Agent</div>
+                            <div id="momentum-status" style="font-weight: bold;">Loading...</div>
+                            <div id="momentum-condition" style="font-size: 0.8em; color: #666;">Loading conditions...</div>
+                        </div>
+                        <div style="background: #f8f9fa; padding: 12px; border-radius: 6px; border-left: 4px solid #28a745;">
+                            <div style="font-weight: bold; color: #007bff; margin-bottom: 8px;">Trend Agent</div>
+                            <div id="trend-status" style="font-weight: bold;">Loading...</div>
+                            <div id="trend-condition" style="font-size: 0.8em; color: #666;">Loading conditions...</div>
+                        </div>
+                        <div style="background: #f8f9fa; padding: 12px; border-radius: 6px; border-left: 4px solid #ffc107;">
+                            <div style="font-weight: bold; color: #dc3545; margin-bottom: 8px;">Mean Reversion</div>
+                            <div id="reversion-status" style="font-weight: bold;">Loading...</div>
+                            <div id="reversion-condition" style="font-size: 0.8em; color: #666;">Loading conditions...</div>
+                        </div>
+                        <div style="background: #f8f9fa; padding: 12px; border-radius: 6px; border-left: 4px solid #28a745;">
+                            <div style="font-weight: bold; color: #007bff; margin-bottom: 8px;">Volume Agent</div>
+                            <div id="volume-status" style="font-weight: bold;">Loading...</div>
+                            <div id="volume-condition" style="font-size: 0.8em; color: #666;">Loading conditions...</div>
+                        </div>
+                    </div>
+                    <div style="margin-top: 15px; padding: 10px; background: #e8f5e8; border-radius: 4px; font-size: 0.9em;" id="agent-status-message">
+                        <strong>🔄 Live Status:</strong> Loading agent status...
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h3>
+                        <span class="status-indicator status-ok"></span>
+                        Agent Decisions
+                        <span id="agent-decisions-timestamp" style="font-size: 0.8em; color: #666; float: right;"></span>
+                    </h3>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px;">
+                        <div style="background: #f8f9fa; padding: 15px; border-radius: 6px; text-align: center;">
+                            <h5 style="margin: 0 0 10px 0; color: #007bff;">Momentum Agent</h5>
+                            <div style="font-size: 1.2em; font-weight: bold; color: #666;">WAITING</div>
+                            <div style="font-size: 0.9em; color: #666;">No analysis yet</div>
+                        </div>
+                        <div style="background: #f8f9fa; padding: 15px; border-radius: 6px; text-align: center;">
+                            <h5 style="margin: 0 0 10px 0; color: #007bff;">Trend Agent</h5>
+                            <div style="font-size: 1.2em; font-weight: bold; color: #666;">WAITING</div>
+                            <div style="font-size: 0.9em; color: #666;">No analysis yet</div>
+                        </div>
+                        <div style="background: #f8f9fa; padding: 15px; border-radius: 6px; text-align: center;">
+                            <h5 style="margin: 0 0 10px 0; color: #007bff;">Mean Reversion</h5>
+                            <div style="font-size: 1.2em; font-weight: bold; color: #666;">WAITING</div>
+                            <div style="font-size: 0.9em; color: #666;">No analysis yet</div>
+                        </div>
+                        <div style="background: #f8f9fa; padding: 15px; border-radius: 6px; text-align: center;">
+                            <h5 style="margin: 0 0 10px 0; color: #007bff;">Volume Agent</h5>
+                            <div style="font-size: 1.2em; font-weight: bold; color: #666;">WAITING</div>
+                            <div style="font-size: 0.9em; color: #666;">No analysis yet</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h3>
+                        <span class="status-indicator status-ok"></span>
+                        Recent Trades
+                        <span id="recent-trades-timestamp" style="font-size: 0.8em; color: #666; float: right;"></span>
+                    </h3>
+                    <div style="overflow-x: auto;">
+                        <table style="width: 100%; border-collapse: collapse;">
+                            <thead>
+                                <tr style="background: #f8f9fa;">
+                                    <th style="padding: 8px; text-align: left; border-bottom: 1px solid #dee2e6;">Time</th>
+                                    <th style="padding: 8px; text-align: left; border-bottom: 1px solid #dee2e6;">Symbol</th>
+                                    <th style="padding: 8px; text-align: left; border-bottom: 1px solid #dee2e6;">Action</th>
+                                    <th style="padding: 8px; text-align: left; border-bottom: 1px solid #dee2e6;">Price</th>
+                                    <th style="padding: 8px; text-align: left; border-bottom: 1px solid #dee2e6;">P&L</th>
+                                </tr>
+                            </thead>
+                            <tbody id="trades-body">
+                                <tr>
+                                    <td colspan="5" style="padding: 20px; text-align: center; color: #666; font-style: italic;">No trades yet</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
             </div>
         </div>
@@ -193,15 +1415,1954 @@
         <div class="footer">
             <p><strong>Automated Trading System v1.0.0</strong></p>
             <p>Multi-agent AI trading with risk management | Real-time monitoring active</p>
-            <p>Dashboard running on localhost:8888 | Last updated: {{ timestamp }}</p>
+            <p>Dashboard running on localhost:8888 | Last updated: <span id="footer-last-update">{{ timestamp }}</span></p>
+        </div>
+    </div>
+    <!-- Glossary Modal -->
+    <div id="glossaryModal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="glossaryTitle">
+        <div class="modal">
+            <div class="modal-header">
+                <div class="modal-title" id="glossaryTitle">Trading Glossary & Quick Explanations</div>
+                <button class="modal-close" id="closeGlossary" aria-label="Close">Close</button>
+            </div>
+            <div class="modal-body">
+                <div class="glossary-grid">
+                    <div class="glossary-item"><div class="glossary-term">VWAP</div><div>Volume Weighted Average Price — average price weighted by traded volume. Price above VWAP can indicate bullish intraday bias.</div></div>
+                    <div class="glossary-item"><div class="glossary-term">Sharpe Ratio</div><div>Risk-adjusted return; higher is better. Approximates return per unit of volatility.</div></div>
+                    <div class="glossary-item"><div class="glossary-term">Max Drawdown</div><div>Largest peak-to-trough decline in equity. Helps understand worst-case dips.</div></div>
+                    <div class="glossary-item"><div class="glossary-term">VaR (95%)</div><div>Value at Risk — estimated loss not exceeded 95% of the time over a period.</div></div>
+                    <div class="glossary-item"><div class="glossary-term">PCR Ratio</div><div>Put/Call Ratio — options sentiment gauge. >1 often bearish; <1 bullish.</div></div>
+                    <div class="glossary-item"><div class="glossary-term">OI (Open Interest)</div><div>Open contracts outstanding in options/futures; rising OI with price can confirm trend.</div></div>
+                    <div class="glossary-item"><div class="glossary-term">IV (Implied Volatility)</div><div>Market’s expectation of future volatility; higher IV increases option premiums.</div></div>
+                    <div class="glossary-item"><div class="glossary-term">Delta</div><div>Option price sensitivity to underlying price changes; call delta 0–1, put -1–0.</div></div>
+                    <div class="glossary-item"><div class="glossary-term">Max Pain</div><div>Strike where option sellers theoretically maximize profit at expiry; heuristic only.</div></div>
+                    <div class="glossary-item"><div class="glossary-term">Imbalance</div><div>Order flow difference between bid and ask; can hint short-term pressure.</div></div>
+                    <div class="glossary-item"><div class="glossary-term">Spread</div><div>Difference between best ask and best bid; tight spread implies higher liquidity.</div></div>
+                    <div class="glossary-item"><div class="glossary-term">SL / TP</div><div>Stop Loss / Take Profit — automatic exit prices to limit loss or lock gains.</div></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Market Data APIs Tab -->
+        <div id="market-data" class="tab-content">
+            <div class="status">
+                <div class="card success">
+                    <h3>
+                        <span class="status-indicator status-ok"></span>
+                        Market Data APIs - Real-time Verification
+                        <button class="refresh-btn" onclick="loadMarketDataAPIs()" style="float: right; margin-top: -5px;">🔄 Refresh</button>
+                    </h3>
+                    <div style="font-size: 0.9em; color: #666; margin-bottom: 15px;">
+                        All data from market_data module (port 8006). Auto-refreshes every 30 seconds.
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h3>💰 Price Data API</h3>
+                    <div class="api-section">
+                        <div class="api-endpoint">GET /api/v1/market/price/BANKNIFTY</div>
+                        <div class="metric">
+                            <span>Price:</span>
+                            <span class="value" id="md-price">Loading...</span>
+                        </div>
+                        <div class="metric">
+                            <span>Volume:</span>
+                            <span class="value" id="md-volume">Loading...</span>
+                        </div>
+                        <div class="metric">
+                            <span>Status:</span>
+                            <span class="value" id="md-price-status">Loading...</span>
+                        </div>
+                        <div class="metric">
+                            <span>Timestamp:</span>
+                            <span class="value" id="md-price-timestamp" style="font-size: 0.9em;">Loading...</span>
+                        </div>
+                        <div id="md-price-raw" class="json-response" style="max-height: 200px; margin-top: 10px;">Loading...</div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h3>⚡ Options Chain API</h3>
+                    <div class="api-section">
+                        <div class="api-endpoint">GET /api/v1/options/chain/BANKNIFTY</div>
+                        <div class="metric">
+                            <span>Strikes Available:</span>
+                            <span class="value" id="md-options-count">Loading...</span>
+                        </div>
+                        <div class="metric">
+                            <span>Expiry:</span>
+                            <span class="value" id="md-options-expiry">Loading...</span>
+                        </div>
+                        <div id="md-options-table" style="margin-top: 15px; max-height: 400px; overflow-y: auto;">
+                            <table class="options-table" style="width: 100%;">
+                                <thead>
+                                    <tr>
+                                        <th>Strike</th>
+                                        <th>CE Price</th>
+                                        <th>CE OI</th>
+                                        <th>PE Price</th>
+                                        <th>PE OI</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="md-options-tbody">
+                                    <tr><td colspan="5">Loading...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <div id="md-options-raw" class="json-response" style="max-height: 200px; margin-top: 10px; display: none;">Loading...</div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h3>📈 Technical Indicators API</h3>
+                    <div class="api-section">
+                        <div class="api-endpoint">GET /api/v1/technical/indicators/BANKNIFTY</div>
+                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin: 15px 0;">
+                            <div class="metric-card">
+                                <span class="metric-value" id="md-rsi">-</span>
+                                <div class="metric-label">RSI (14)</div>
+                            </div>
+                            <div class="metric-card">
+                                <span class="metric-value" id="md-macd">-</span>
+                                <div class="metric-label">MACD</div>
+                            </div>
+                            <div class="metric-card">
+                                <span class="metric-value" id="md-sma20">-</span>
+                                <div class="metric-label">SMA (20)</div>
+                            </div>
+                            <div class="metric-card">
+                                <span class="metric-value" id="md-ema20">-</span>
+                                <div class="metric-label">EMA (20)</div>
+                            </div>
+                            <div class="metric-card">
+                                <span class="metric-value" id="md-bb-upper">-</span>
+                                <div class="metric-label">BB Upper</div>
+                            </div>
+                            <div class="metric-card">
+                                <span class="metric-value" id="md-bb-lower">-</span>
+                                <div class="metric-label">BB Lower</div>
+                            </div>
+                            <div class="metric-card">
+                                <span class="metric-value" id="md-atr">-</span>
+                                <div class="metric-label">ATR (14)</div>
+                            </div>
+                            <div class="metric-card">
+                                <span class="metric-value" id="md-cci">-</span>
+                                <div class="metric-label">CCI (20)</div>
+                            </div>
+                        </div>
+                        <div id="md-indicators-raw" class="json-response" style="max-height: 300px; margin-top: 10px;">Loading...</div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h3>🔍 System Health API</h3>
+                    <div class="api-section">
+                        <div class="api-endpoint">GET /health</div>
+                        <div class="metric">
+                            <span>Status:</span>
+                            <span class="value" id="md-health-status">Loading...</span>
+                        </div>
+                        <div class="metric">
+                            <span>Redis:</span>
+                            <span class="value" id="md-health-redis">Loading...</span>
+                        </div>
+                        <div id="md-health-raw" class="json-response" style="max-height: 200px; margin-top: 10px;">Loading...</div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h3>📊 Market Depth API</h3>
+                    <div class="api-section">
+                        <div class="api-endpoint">GET /api/v1/market/depth/BANKNIFTY</div>
+                        <div id="md-depth-raw" class="json-response" style="max-height: 300px; margin-top: 10px;">Loading...</div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <h3>📉 OHLC Data API</h3>
+                    <div class="api-section">
+                        <div class="api-endpoint">GET /api/v1/market/ohlc/BANKNIFTY</div>
+                        <div id="md-ohlc-raw" class="json-response" style="max-height: 300px; margin-top: 10px;">Loading...</div>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 
     <script>
-        // Auto-refresh every 30 seconds
+        // Tab Navigation
+        function showTab(tabName) {
+            // Hide all tab contents
+            const tabContents = document.querySelectorAll('.tab-content');
+            tabContents.forEach(content => content.classList.remove('active'));
+
+            // Remove active class from all tab buttons
+            const tabButtons = document.querySelectorAll('.tab-button');
+            tabButtons.forEach(button => button.classList.remove('active'));
+
+            // Show selected tab content
+            document.getElementById(tabName).classList.add('active');
+
+            // Add active class to clicked button
+            event.target.classList.add('active');
+
+            // Load data for specific tabs
+            if (tabName === 'signals') {
+                loadPendingSignals();
+            } else if (tabName === 'dashboard') {
+                loadMarketData();
+                loadTechnicalData();
+            } else if (tabName === 'control') {
+                if (typeof loadControlStatus === 'function') {
+                    loadControlStatus();
+                }
+            } else if (tabName === 'agent') {
+                loadAgentWork();
+            } else if (tabName === 'options') {
+                loadOptionsChain();
+                loadOptionsStrategy();
+            } else if (tabName === 'market-data') {
+                loadMarketDataAPIs();
+                // Auto-refresh every 30 seconds
+                if (window.marketDataInterval) clearInterval(window.marketDataInterval);
+                window.marketDataInterval = setInterval(loadMarketDataAPIs, 30000);
+            }
+        }
+
+        // Load Market Data APIs from market_data module
+        async function loadMarketDataAPIs() {
+            const baseUrl = 'http://127.0.0.1:8006';
+            
+            try {
+                // Fetch all APIs in parallel
+                const [priceResp, optionsResp, indicatorsResp, healthResp, depthResp, ohlcResp] = await Promise.all([
+                    fetch(`${baseUrl}/api/v1/market/price/BANKNIFTY`).catch(e => ({ ok: false, error: e })),
+                    fetch(`${baseUrl}/api/v1/options/chain/BANKNIFTY`).catch(e => ({ ok: false, error: e })),
+                    fetch(`${baseUrl}/api/v1/technical/indicators/BANKNIFTY`).catch(e => ({ ok: false, error: e })),
+                    fetch(`${baseUrl}/health`).catch(e => ({ ok: false, error: e })),
+                    fetch(`${baseUrl}/api/v1/market/depth/BANKNIFTY`).catch(e => ({ ok: false, error: e })),
+                    fetch(`${baseUrl}/api/v1/market/ohlc/BANKNIFTY`).catch(e => ({ ok: false, error: e }))
+                ]);
+
+                // Process Price Data
+                if (priceResp.ok) {
+                    const priceData = await priceResp.json();
+                    document.getElementById('md-price').textContent = priceData.price ? `₹${priceData.price.toFixed(2)}` : 'N/A';
+                    document.getElementById('md-volume').textContent = priceData.volume || 'N/A';
+                    document.getElementById('md-price-status').textContent = priceData.is_stale ? 'After Hours (Stale)' : 'Live';
+                    document.getElementById('md-price-status').style.color = priceData.is_stale ? '#ffc107' : '#28a745';
+                    document.getElementById('md-price-timestamp').textContent = priceData.timestamp ? new Date(priceData.timestamp).toLocaleString() : 'N/A';
+                    document.getElementById('md-price-raw').textContent = JSON.stringify(priceData, null, 2);
+                } else {
+                    document.getElementById('md-price').textContent = 'Error';
+                    document.getElementById('md-price-raw').textContent = priceResp.error ? `Error: ${priceResp.error.message}` : 'Failed to fetch price data';
+                }
+
+                // Process Options Chain
+                if (optionsResp.ok) {
+                    const optionsData = await optionsResp.json();
+                    document.getElementById('md-options-count').textContent = optionsData.strikes ? optionsData.strikes.length : 0;
+                    document.getElementById('md-options-expiry').textContent = optionsData.expiry || 'N/A';
+                    
+                    // Update options table
+                    const tbody = document.getElementById('md-options-tbody');
+                    if (optionsData.strikes && optionsData.strikes.length > 0) {
+                        tbody.innerHTML = optionsData.strikes.slice(0, 20).map(strike => `
+                            <tr>
+                                <td>${strike.strike}</td>
+                                <td>${strike.CE && strike.CE.last_price ? strike.CE.last_price.toFixed(2) : '--'}</td>
+                                <td>${strike.CE && strike.CE.oi ? strike.CE.oi : '--'}</td>
+                                <td>${strike.PE && strike.PE.last_price ? strike.PE.last_price.toFixed(2) : '--'}</td>
+                                <td>${strike.PE && strike.PE.oi ? strike.PE.oi : '--'}</td>
+                            </tr>
+                        `).join('');
+                    } else {
+                        tbody.innerHTML = '<tr><td colspan="5">No options data available</td></tr>';
+                    }
+                    document.getElementById('md-options-raw').textContent = JSON.stringify(optionsData, null, 2);
+                } else {
+                    document.getElementById('md-options-count').textContent = 'Error';
+                    document.getElementById('md-options-raw').textContent = optionsResp.error ? `Error: ${optionsResp.error.message}` : 'Failed to fetch options chain';
+                }
+
+                // Process Technical Indicators
+                if (indicatorsResp.ok) {
+                    const indicatorsData = await indicatorsResp.json();
+                    const indicators = indicatorsData.indicators || {};
+                    
+                    document.getElementById('md-rsi').textContent = indicators.rsi_14 ? indicators.rsi_14.toFixed(2) : '-';
+                    document.getElementById('md-macd').textContent = indicators.macd_value ? indicators.macd_value.toFixed(2) : '-';
+                    document.getElementById('md-sma20').textContent = indicators.sma_20 ? indicators.sma_20.toFixed(2) : '-';
+                    document.getElementById('md-ema20').textContent = indicators.ema_20 ? indicators.ema_20.toFixed(2) : '-';
+                    document.getElementById('md-bb-upper').textContent = indicators.bollinger_upper ? indicators.bollinger_upper.toFixed(2) : '-';
+                    document.getElementById('md-bb-lower').textContent = indicators.bollinger_lower ? indicators.bollinger_lower.toFixed(2) : '-';
+                    document.getElementById('md-atr').textContent = indicators.atr_14 ? indicators.atr_14.toFixed(2) : '-';
+                    document.getElementById('md-cci').textContent = indicators.cci_20 ? indicators.cci_20.toFixed(2) : '-';
+                    
+                    document.getElementById('md-indicators-raw').textContent = JSON.stringify(indicatorsData, null, 2);
+                } else {
+                    document.getElementById('md-indicators-raw').textContent = indicatorsResp.error ? `Error: ${indicatorsResp.error.message}` : 'Failed to fetch technical indicators';
+                }
+
+                // Process Health
+                if (healthResp.ok) {
+                    const healthData = await healthResp.json();
+                    document.getElementById('md-health-status').textContent = healthData.status || 'Unknown';
+                    document.getElementById('md-health-status').style.color = healthData.status === 'healthy' ? '#28a745' : '#dc3545';
+                    document.getElementById('md-health-redis').textContent = healthData.dependencies?.redis || 'Unknown';
+                    document.getElementById('md-health-redis').style.color = healthData.dependencies?.redis === 'healthy' ? '#28a745' : '#dc3545';
+                    document.getElementById('md-health-raw').textContent = JSON.stringify(healthData, null, 2);
+                } else {
+                    document.getElementById('md-health-status').textContent = 'Error';
+                    document.getElementById('md-health-raw').textContent = healthResp.error ? `Error: ${healthResp.error.message}` : 'Failed to fetch health';
+                }
+
+                // Process Depth
+                if (depthResp.ok) {
+                    const depthData = await depthResp.json();
+                    document.getElementById('md-depth-raw').textContent = JSON.stringify(depthData, null, 2);
+                } else {
+                    document.getElementById('md-depth-raw').textContent = depthResp.error ? `Error: ${depthResp.error.message}` : 'Failed to fetch market depth';
+                }
+
+                // Process OHLC
+                if (ohlcResp.ok) {
+                    const ohlcData = await ohlcResp.json();
+                    document.getElementById('md-ohlc-raw').textContent = JSON.stringify(ohlcData, null, 2);
+                } else {
+                    document.getElementById('md-ohlc-raw').textContent = ohlcResp.error ? `Error: ${ohlcResp.error.message}` : 'Failed to fetch OHLC data';
+                }
+
+            } catch (error) {
+                console.error('Error loading market data APIs:', error);
+                // Show error in all sections
+                const errorMsg = `Error: ${error.message}`;
+                document.getElementById('md-price-raw').textContent = errorMsg;
+                document.getElementById('md-options-raw').textContent = errorMsg;
+                document.getElementById('md-indicators-raw').textContent = errorMsg;
+                document.getElementById('md-health-raw').textContent = errorMsg;
+            }
+        }
+
+        // Load and display pending signals
+        async function loadPendingSignals() {
+            try {
+                const response = await fetch('/api/trading/signals');
+                const data = await response.json();
+                
+                // Update timestamp
+                const timestamp = data.timestamp || data.updated_at || new Date().toISOString();
+                if (typeof updateTimestamp === 'function') {
+                    updateTimestamp('signals-timestamp', timestamp);
+                }
+
+                const container = document.getElementById('signals-container');
+                const pendingSignals = data.signals.filter(s => s.status === 'pending');
+
+                if (pendingSignals.length === 0) {
+                    container.innerHTML = `
+                        <div class="empty-state">
+                            <h4>No Pending Signals</h4>
+                            <p>All signals have been processed. Click "Run Trading Cycle" to generate new signals.</p>
+                        </div>
+                    `;
+                    return;
+                }
+
+                container.innerHTML = pendingSignals.map(signal => {
+                    const confidenceClass = signal.confidence >= 0.8 ? 'confidence-high' :
+                                          signal.confidence >= 0.6 ? 'confidence-medium' : 'confidence-low';
+
+                    // Enhanced signal display with technical conditions
+                    const technicalDetails = getTechnicalDetails(signal);
+
+                    return `
+                        <div class="signal-item pending">
+                            <div class="signal-header">
+                                <span class="signal-symbol">${signal.symbol}</span>
+                                <span class="signal-confidence ${confidenceClass}">${Math.round(signal.confidence * 100)}% Confidence</span>
+                            </div>
+                            <div class="signal-details">
+                                <div><strong>Action:</strong> ${signal.action}</div>
+                                <div><strong>Entry Trigger:</strong> ${technicalDetails.entryTrigger}</div>
+                                <div><strong>Stop Loss:</strong> ${technicalDetails.stopLoss}</div>
+                                <div><strong>Take Profit:</strong> ${technicalDetails.takeProfit}</div>
+                            </div>
+                            <div class="signal-details" style="margin-top: 10px; font-size: 0.9em; color: #666;">
+                                <div><strong>Agent:</strong> ${signal.agent_name || 'Enhanced Engine'}</div>
+                                <div><strong>Generated:</strong> ${new Date(signal.timestamp).toLocaleString()}</div>
+                                <div><strong>Technical Signal:</strong> ${technicalDetails.technicalSignal}</div>
+                                <div><strong>Execution Logic:</strong> ${technicalDetails.executionLogic}</div>
+                            </div>
+                            <div class="signal-action">
+                                <button class="btn btn-success" onclick="executeSignal('${signal.id}')">Execute Now</button>
+                                <button class="btn btn-primary" onclick="executeWhenReady('${signal.id}')">Execute When Ready</button>
+                                <button class="btn btn-info" onclick="checkConditions('${signal.id}')">Check Conditions</button>
+                                <button class="btn btn-secondary" onclick="modifySignal('${signal.id}')">Modify</button>
+                                <button class="btn btn-danger" onclick="rejectSignal('${signal.id}')">Reject</button>
+                            </div>
+                            <div class="signal-conditions" id="conditions-${signal.id}" style="margin-top: 10px; padding: 8px; background: #f8f9fa; border-radius: 4px; font-size: 0.85em; display: none;">
+                                <div><strong>Condition Status:</strong> <span id="condition-status-${signal.id}">Checking...</span></div>
+                                <div id="condition-details-${signal.id}"></div>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+
+                // Helper function to get technical details based on agent and signal
+                function getTechnicalDetails(signal) {
+                    const agent = signal.agent_name?.toLowerCase() || 'unknown';
+                    const action = signal.action;
+
+                    if (agent.includes('momentum')) {
+                        return {
+                            entryTrigger: action === 'BUY' ?
+                                'RSI crosses above 70 + Volume 50% above average' :
+                                'RSI crosses below 30 + Volume spike detected',
+                            stopLoss: action === 'BUY' ?
+                                'RSI drops below 50 or 2% trailing stop' :
+                                'RSI rises above 50 or 2% trailing stop',
+                            takeProfit: action === 'BUY' ?
+                                'RSI reaches 80 or 5% target (partial exit at 3%)' :
+                                'RSI reaches 20 or 5% target (partial exit at 3%)',
+                            technicalSignal: 'Momentum divergence with volume confirmation',
+                            executionLogic: 'Enter on RSI crossover + volume confirmation, exit on momentum exhaustion'
+                        };
+                    } else if (agent.includes('trend')) {
+                        return {
+                            entryTrigger: action === 'BUY' ?
+                                'Price breaks above 20SMA + ADX > 25' :
+                                'Price breaks below 20SMA + ADX > 25',
+                            stopLoss: action === 'BUY' ?
+                                'Price closes below 20SMA' :
+                                'Price closes above 20SMA',
+                            takeProfit: action === 'BUY' ?
+                                'Price reaches 2:1 reward ratio or trend exhaustion' :
+                                'Price reaches 2:1 reward ratio or trend exhaustion',
+                            technicalSignal: 'Trend continuation with ADX strength confirmation',
+                            executionLogic: 'Enter on trend breakout, exit on trend reversal signals'
+                        };
+                    } else if (agent.includes('mean') || agent.includes('reversion')) {
+                        return {
+                            entryTrigger: action === 'BUY' ?
+                                'Price touches lower Bollinger Band + RSI < 30' :
+                                'Price touches upper Bollinger Band + RSI > 70',
+                            stopLoss: action === 'BUY' ?
+                                'Price breaks below lower Bollinger Band' :
+                                'Price breaks above upper Bollinger Band',
+                            takeProfit: action === 'BUY' ?
+                                'Price reaches middle Bollinger Band (50% exit) then upper band' :
+                                'Price reaches middle Bollinger Band (50% exit) then lower band',
+                            technicalSignal: 'Bollinger Band squeeze with RSI oversold/overbought',
+                            executionLogic: 'Enter on mean reversion setup, scale out at key levels'
+                        };
+                    } else if (agent.includes('volume')) {
+                        return {
+                            entryTrigger: action === 'BUY' ?
+                                'Volume spike 3x average + Price up 2%' :
+                                'Volume spike 3x average + Price down 2%',
+                            stopLoss: action === 'BUY' ?
+                                'Volume dries up + Price drops 1%' :
+                                'Volume dries up + Price rises 1%',
+                            takeProfit: action === 'BUY' ?
+                                'Volume decreases + Price reaches 4% target' :
+                                'Volume decreases + Price reaches 4% target',
+                            technicalSignal: 'Abnormal volume with price momentum',
+                            executionLogic: 'Enter on volume breakout, exit on volume exhaustion'
+                        };
+                    } else {
+                        return {
+                            entryTrigger: `₹${signal.entry_price?.toLocaleString() || 'N/A'}`,
+                            stopLoss: `₹${signal.stop_loss?.toLocaleString() || 'N/A'}`,
+                            takeProfit: `₹${signal.take_profit?.toLocaleString() || 'N/A'}`,
+                            technicalSignal: signal.reasoning || 'Signal generated by trading algorithm',
+                            executionLogic: 'Market order execution with fixed stops'
+                        };
+                    }
+                }
+
+            } catch (error) {
+                console.error('Failed to load signals:', error);
+                document.getElementById('signals-container').innerHTML = `
+                    <div class="empty-state">
+                        <h4>Error Loading Signals</h4>
+                        <p>Unable to fetch signals from trading engine.</p>
+                    </div>
+                `;
+            }
+        }
+
+        // Enhanced Trading Actions with Conditional Execution
+        async function runTradingCycle() {
+            if (confirm('Run a new trading cycle? This will analyze current positions and market conditions to generate intelligent signals.')) {
+                try {
+                    const response = await fetch('/api/trading/cycle', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        }
+                    });
+
+                    const result = await response.json();
+
+                    if (result.success) {
+                        const signalCount = result.total_new_signals || 0;
+                        alert(`Trading cycle completed! Generated ${signalCount} position-aware signals.`);
+                        // Refresh signals and switch to signals tab
+                        await loadPendingSignals();
+                        await refreshDashboardData();
+                        showTab('signals');
+                    } else {
+                        alert('Error: ' + result.message);
+                    }
+                } catch (error) {
+                    alert('Failed to run trading cycle: ' + error.message);
+                }
+            }
+        }
+
+        async function executeWhenReady(signalId) {
+            if (confirm('Execute this signal only when technical conditions are met? The system will monitor conditions and execute automatically when ready.')) {
+                try {
+                    const response = await fetch(`/api/trading/execute-when-ready/${signalId}`, {
+                        method: 'POST'
+                    });
+
+                    const result = await response.json();
+
+                    if (result.success) {
+                        alert('Conditional execution initiated! System will monitor conditions and execute when ready.');
+                        await loadPendingSignals();
+                        await refreshDashboardData();
+                    } else {
+                        alert('Failed to initiate conditional execution: ' + (result.error || result.message));
+                    }
+                } catch (error) {
+                    alert('Failed to initiate conditional execution: ' + error.message);
+                }
+            }
+        }
+
+        async function checkConditions(signalId) {
+            try {
+                const response = await fetch(`/api/trading/conditions/${signalId}`);
+                const result = await response.json();
+
+                const conditionsDiv = document.getElementById(`conditions-${signalId}`);
+                const statusSpan = document.getElementById(`condition-status-${signalId}`);
+                const detailsDiv = document.getElementById(`condition-details-${signalId}`);
+
+                if (result.success) {
+                    const status = result.conditions_met ? 'READY TO EXECUTE' : 'WAITING FOR CONDITIONS';
+                    const statusColor = result.conditions_met ? '#28a745' : '#ffc107';
+
+                    statusSpan.textContent = status;
+                    statusSpan.style.color = statusColor;
+
+                    // Show detailed condition results
+                    const details = Object.entries(result.condition_results)
+                        .map(([condition, met]) => {
+                            const icon = met ? '✅' : '⏳';
+                            const color = met ? '#28a745' : '#ffc107';
+                            return `<div style="color: ${color};">${icon} ${condition.replace('_', ' ').toUpperCase()}</div>`;
+                        })
+                        .join('');
+
+                    detailsDiv.innerHTML = details;
+
+                    if (result.failed_conditions.length > 0) {
+                        // Show actual technical indicator values for failed conditions
+                        const waitingDetails = result.failed_conditions.map(condition => {
+                            const value = result.condition_values?.[condition] || 'N/A';
+                            const target = result.condition_targets?.[condition] || 'N/A';
+                            return `${condition.replace('_', ' ').toUpperCase()}: ${value} (Target: ${target})`;
+                        }).join(', ');
+
+                        detailsDiv.innerHTML += `<div style="margin-top: 8px; color: #dc3545;"><strong>Waiting for:</strong> ${waitingDetails}</div>`;
+                    }
+                } else {
+                    statusSpan.textContent = 'ERROR';
+                    statusSpan.style.color = '#dc3545';
+                    detailsDiv.innerHTML = 'Failed to check conditions';
+                }
+
+                conditionsDiv.style.display = 'block';
+
+            } catch (error) {
+                console.error('Failed to check conditions:', error);
+                alert('Failed to check conditions: ' + error.message);
+            }
+        }
+
+        function pauseTrading() {
+            alert('Trading paused. System will stop generating new signals.');
+            console.log('Trading paused');
+        }
+
+        async function refreshSignals() {
+            try {
+                // Refresh signals data
+                const signalsResponse = await fetch('/api/trading/signals');
+                const signalsData = await signalsResponse.json();
+
+                // Refresh positions data
+                const positionsResponse = await fetch('/api/trading/positions');
+                const positionsData = await positionsResponse.json();
+
+                // Refresh stats
+                const statsResponse = await fetch('/api/trading/stats');
+                const statsData = await statsResponse.json();
+
+                // Update UI
+                console.log('Data refreshed:', {
+                    signals: signalsData.count,
+                    positions: positionsData.count,
+                    stats: statsData.stats
+                });
+
+                // Reload signals if signals tab is active
+                if (document.getElementById('signals').classList.contains('active')) {
+                    await loadPendingSignals();
+                }
+
+                // Reload dashboard data
+                await refreshDashboardData();
+
+                showNotification('Data refreshed successfully!', 'success');
+
+            } catch (error) {
+                console.error('Failed to refresh data:', error);
+                showNotification('Failed to refresh data', 'error');
+            }
+        }
+
+        async function executeSignal(signalId) {
+            if (confirm(`Execute ${signalId} trade? This will open a real position.`)) {
+                try {
+                    const response = await fetch(`/api/trading/execute/${signalId}`, {
+                        method: 'POST'
+                    });
+
+                    const result = await response.json();
+
+                    if (result.success) {
+                        alert(`Trade executed! Position opened.`);
+                        // Switch to positions tab
+                        showTab('positions');
+                        await refreshSignals();
+                    } else {
+                        alert('Error executing trade: ' + result.error);
+                    }
+                } catch (error) {
+                    alert('Failed to execute trade: ' + error.message);
+                }
+            }
+        }
+
+        function modifySignal(signalId) {
+            const newSL = prompt('Enter new Stop Loss price:');
+            const newTP = prompt('Enter new Take Profit price:');
+            if (newSL && newTP) {
+                alert(`Signal ${signalId} modified - SL: ${newSL}, TP: ${newTP}`);
+                // In real implementation, this would call an API to modify the signal
+            }
+        }
+
+        async function rejectSignal(signalId) {
+            if (confirm(`Reject signal ${signalId}? This will permanently remove it.`)) {
+                try {
+                    const response = await fetch(`/api/trading/signals/${signalId}`, {
+                        method: 'DELETE'
+                    });
+
+                    const result = await response.json();
+
+                    if (result.success) {
+                        alert(`Signal ${signalId} rejected.`);
+                        await refreshSignals();
+                    } else {
+                        alert('Error rejecting signal: ' + result.error);
+                    }
+                } catch (error) {
+                    alert('Failed to reject signal: ' + error.message);
+                }
+            }
+        }
+
+        function modifyPosition(positionId) {
+            const newSL = prompt('Enter new Stop Loss price:');
+            const newTP = prompt('Enter new Take Profit price:');
+            if (newSL && newTP) {
+                alert(`Position ${positionId} modified - SL: ${newSL}, TP: ${newTP}`);
+                // In real implementation, this would call an API to modify the position
+            }
+        }
+
+        async function closePosition(positionId) {
+            if (confirm(`Close position ${positionId}? This will exit the trade at market price.`)) {
+                try {
+                    const response = await fetch(`/api/trading/close/${positionId}`, {
+                        method: 'POST'
+                    });
+
+                    const result = await response.json();
+
+                    if (result.success) {
+                        alert(`Position closed successfully! P&L: ${result.position.pnl_formatted || '₹' + result.position.pnl.toFixed(2)}`);
+                        await refreshSignals();
+                    } else {
+                        alert('Error closing position: ' + result.error);
+                    }
+                } catch (error) {
+                    alert('Failed to close position: ' + error.message);
+                }
+            }
+        }
+
+        function showNotification(message, type = 'info') {
+            // Simple notification system
+            const notification = document.createElement('div');
+            notification.style.cssText = `
+                position: fixed;
+                top: 20px;
+                right: 20px;
+                background: ${type === 'success' ? '#d4edda' : type === 'error' ? '#f8d7da' : '#d1ecf1'};
+                color: ${type === 'success' ? '#155724' : type === 'error' ? '#721c24' : '#0c5460'};
+                padding: 15px 20px;
+                border-radius: 5px;
+                box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+                z-index: 10000;
+                font-weight: 500;
+            `;
+            notification.textContent = message;
+
+            document.body.appendChild(notification);
+
+            // Auto remove after 3 seconds
         setTimeout(() => {
-            location.reload();
+                notification.remove();
+            }, 3000);
+        }
+
+        // Load technical data for selected symbol
+        // Global variables for data freshness tracking
+        let lastDataUpdate = null;
+        let connectionStatus = 'connected';
+        let freshnessInterval = null;
+
+        function formatTimeAgo(date) {
+            if (!(date instanceof Date) || isNaN(date.getTime())) {
+                return 'Unknown';
+            }
+            const diffSeconds = Math.floor((Date.now() - date.getTime()) / 1000);
+            if (diffSeconds < 5) return 'now';
+            if (diffSeconds < 60) return `${diffSeconds}s ago`;
+            if (diffSeconds < 3600) return `${Math.floor(diffSeconds / 60)}m ago`;
+            if (diffSeconds < 86400) return `${Math.floor(diffSeconds / 3600)}h ago`;
+            return `${Math.floor(diffSeconds / 86400)}d ago`;
+        }
+
+        // Update data freshness indicators
+        function updateDataFreshness() {
+            const dataStatusEl = document.getElementById('data-status');
+            const lastUpdatedEl = document.getElementById('last-updated');
+            const connectionEl = document.getElementById('connection-status');
+
+            if (!lastDataUpdate) {
+                dataStatusEl.textContent = 'NO DATA';
+                dataStatusEl.style.color = '#dc3545';
+                dataStatusEl.className = 'value data-old';
+                lastUpdatedEl.textContent = 'Never';
+                if (connectionEl) {
+                    connectionEl.textContent = '● DISCONNECTED';
+                    connectionEl.style.color = '#dc3545';
+                }
+                return;
+            }
+
+            const now = new Date();
+            const timeDiff = now - lastDataUpdate;
+            const secondsDiff = Math.floor(timeDiff / 1000);
+
+            // Update timestamp display
+            lastUpdatedEl.textContent = lastDataUpdate.toLocaleTimeString();
+
+            // Update freshness status based on age
+            if (secondsDiff < 30) {
+                dataStatusEl.textContent = 'FRESH';
+                dataStatusEl.className = 'value data-fresh';
+            } else if (secondsDiff < 120) {
+                dataStatusEl.textContent = 'STALE';
+                dataStatusEl.className = 'value data-stale';
+            } else {
+                dataStatusEl.textContent = 'OLD';
+                dataStatusEl.className = 'value data-old';
+            }
+        }
+
+        // Load and display agent work
+        async function loadAgentWork() {
+            try {
+                const response = await fetch('/api/agent-work');
+                const data = await response.json();
+                
+                // Update timestamp
+                const timestamp = data.timestamp || new Date().toISOString();
+                if (typeof updateTimestamp === 'function') {
+                    updateTimestamp('agent-work-timestamp', timestamp);
+                }
+
+                // Display latest work
+                const latestWorkContainer = document.getElementById('agent-latest-work');
+                if (data.latest_work) {
+                    const work = data.latest_work;
+                    const decisionClass = work.decision === 'BUY' ? 'success' : 
+                                        work.decision === 'SELL' ? 'error' : 'warning';
+                    const decisionColor = work.decision === 'BUY' ? '#28a745' : 
+                                        work.decision === 'SELL' ? '#dc3545' : '#ffc107';
+                    
+                    const timestampStr = work.timestamp ? new Date(work.timestamp).toLocaleString() : 'Unknown';
+                    
+                    latestWorkContainer.innerHTML = `
+                        <div class="signal-item ${decisionClass}" style="border-left: 4px solid ${decisionColor};">
+                            <div class="signal-header">
+                                <span class="signal-symbol">${work.instrument || 'BANKNIFTY'}</span>
+                                <span class="signal-confidence" style="background: ${decisionColor}; color: white; padding: 4px 8px; border-radius: 4px; font-size: 0.9em; font-weight: bold;">
+                                    ${work.decision}
+                                </span>
+                            </div>
+                            <div class="signal-details" style="margin-top: 10px;">
+                                <div><strong>Agent:</strong> ${work.agent_name || 'Unknown'}</div>
+                                <div><strong>Confidence:</strong> ${(work.confidence * 100).toFixed(1)}%</div>
+                                <div><strong>Timestamp:</strong> ${timestampStr}</div>
+                                ${work.entry_price ? `<div><strong>Entry Price:</strong> ${work.entry_price.toLocaleString()}</div>` : ''}
+                                ${work.stop_loss ? `<div><strong>Stop Loss:</strong> ${work.stop_loss.toLocaleString()}</div>` : ''}
+                                ${work.take_profit ? `<div><strong>Take Profit:</strong> ${work.take_profit.toLocaleString()}</div>` : ''}
+                            </div>
+                            <div class="signal-details" style="margin-top: 10px; padding: 10px; background: #f8f9fa; border-radius: 4px;">
+                                <div><strong>Reasoning:</strong></div>
+                                <div style="margin-top: 5px; color: #666; font-size: 0.95em;">${work.reasoning || 'No reasoning provided'}</div>
+                            </div>
+                        </div>
+                    `;
+                } else {
+                    latestWorkContainer.innerHTML = `
+                        <div style="text-align: center; padding: 40px; color: #666;">
+                            <div style="font-size: 1.2em;">No agent work available</div>
+                            <div style="font-size: 0.9em; margin-top: 10px;">Waiting for agent analysis...</div>
+                        </div>
+                    `;
+                }
+
+                // Display today's decisions history
+                const decisionsContainer = document.getElementById('agent-decisions-history');
+                const countEl = document.getElementById('decisions-count');
+                
+                if (data.total_decisions_today !== undefined) {
+                    countEl.textContent = `${data.total_decisions_today} decisions today`;
+                }
+
+                if (data.today_decisions && data.today_decisions.length > 0) {
+                    decisionsContainer.innerHTML = `
+                        <div style="max-height: 600px; overflow-y: auto;">
+                            ${data.today_decisions.map((decision, index) => {
+                                const decisionClass = decision.decision === 'BUY' ? 'success' : 
+                                                    decision.decision === 'SELL' ? 'error' : 'warning';
+                                const decisionColor = decision.decision === 'BUY' ? '#28a745' : 
+                                                    decision.decision === 'SELL' ? '#dc3545' : '#ffc107';
+                                const timestampStr = decision.timestamp ? new Date(decision.timestamp).toLocaleString() : 'Unknown';
+                                
+                                return `
+                                    <div class="signal-item ${decisionClass}" style="border-left: 4px solid ${decisionColor}; margin-bottom: 15px;">
+                                        <div class="signal-header">
+                                            <span class="signal-symbol">${decision.instrument || 'BANKNIFTY'}</span>
+                                            <span class="signal-confidence" style="background: ${decisionColor}; color: white; padding: 4px 8px; border-radius: 4px; font-size: 0.9em; font-weight: bold;">
+                                                ${decision.decision}
+                                            </span>
+                                            <span style="font-size: 0.85em; color: #666; margin-left: 10px;">${(decision.confidence * 100).toFixed(1)}%</span>
+                                        </div>
+                                        <div class="signal-details" style="margin-top: 10px; font-size: 0.9em;">
+                                            <div><strong>Agent:</strong> ${decision.agent_name || 'Unknown'}</div>
+                                            <div><strong>Time:</strong> ${timestampStr}</div>
+                                            ${decision.entry_price ? `<div><strong>Entry:</strong> ${decision.entry_price.toLocaleString()}</div>` : ''}
+                                            ${decision.stop_loss ? `<div><strong>SL:</strong> ${decision.stop_loss.toLocaleString()}</div>` : ''}
+                                            ${decision.take_profit ? `<div><strong>TP:</strong> ${decision.take_profit.toLocaleString()}</div>` : ''}
+                                        </div>
+                                        ${decision.reasoning ? `
+                                            <div style="margin-top: 8px; padding: 8px; background: #f8f9fa; border-radius: 4px; font-size: 0.85em; color: #666;">
+                                                ${decision.reasoning}
+                                            </div>
+                                        ` : ''}
+                                    </div>
+                                `;
+                            }).join('')}
+                        </div>
+                    `;
+                } else {
+                    decisionsContainer.innerHTML = `
+                        <div style="text-align: center; padding: 40px; color: #666;">
+                            <div style="font-size: 1.2em;">No decisions today</div>
+                            <div style="font-size: 0.9em; margin-top: 10px;">Date: ${data.today_date || 'N/A'}</div>
+                        </div>
+                    `;
+                }
+            } catch (error) {
+                console.error('Error loading agent work:', error);
+                document.getElementById('agent-latest-work').innerHTML = `
+                    <div style="text-align: center; padding: 40px; color: #dc3545;">
+                        <div style="font-size: 1.2em;">Error loading agent work</div>
+                        <div style="font-size: 0.9em; margin-top: 10px;">${error.message}</div>
+                    </div>
+                `;
+                document.getElementById('agent-decisions-history').innerHTML = `
+                    <div style="text-align: center; padding: 40px; color: #dc3545;">
+                        <div style="font-size: 1.2em;">Error loading decisions history</div>
+                    </div>
+                `;
+            }
+        }
+
+        // Load and display options chain
+        async function loadOptionsChain() {
+            try {
+                const response = await fetch('/api/options-chain');
+                const data = await response.json();
+                
+                // Update timestamp
+                const timestamp = data.timestamp || new Date().toISOString();
+                if (typeof updateTimestamp === 'function') {
+                    updateTimestamp('options-chain-timestamp', timestamp);
+                }
+
+                // Update data source indicator
+                const dataSourceEl = document.getElementById('options-data-source');
+                const dataSourceTextEl = document.getElementById('options-data-source-text');
+                
+                if (!data.available || !data.chain || data.chain.length === 0) {
+                    // Data not available
+                    if (dataSourceEl && dataSourceTextEl) {
+                        dataSourceTextEl.textContent = `❌ Data Not Available - ${data.reason || data.error || 'Options chain data source not connected'}`;
+                        dataSourceEl.style.background = '#f8d7da';
+                        dataSourceEl.style.borderLeftColor = '#dc3545';
+                        dataSourceEl.style.color = '#721c24';
+                    }
+                    
+                    document.getElementById('options-chain-body').innerHTML = `
+                        <tr>
+                            <td colspan="9" style="padding: 40px; text-align: center; color: #721c24;">
+                                <div style="font-size: 1.2em; margin-bottom: 10px;">⚠️ Options Chain Data Not Available</div>
+                                <div style="font-size: 0.9em; margin-bottom: 10px;">${data.reason || data.error || 'Options chain data source not connected'}</div>
+                                <div style="font-size: 0.85em; color: #666; margin-top: 10px;">
+                                    To enable options chain data:<br/>
+                                    • Connect live data source (Zerodha API) for live mode<br/>
+                                    • Or implement historical options chain data for historical mode
+                                </div>
+                            </td>
+                        </tr>
+                    `;
+                    // Clear header values
+                    document.getElementById('options-fut-price-main').textContent = '-';
+                    document.getElementById('options-expiry-main').textContent = '-';
+                    document.getElementById('options-pcr-main').textContent = '-';
+                    document.getElementById('options-max-pain-main').textContent = '-';
+                    return;
+                }
+                
+                // Data is available - update data source indicator
+                if (dataSourceEl && dataSourceTextEl) {
+                    const dataSource = data.data_source || 'unknown';
+                    const mode = data.mode || 'unknown';
+                    const isVirtual = data.is_virtual_time || false;
+                    
+                    let sourceText = '';
+                    let bgColor = '#fff3cd';
+                    let borderColor = '#ffc107';
+                    let textColor = '#856404';
+                    
+                    if (dataSource === 'live') {
+                        sourceText = `🟢 Live Data (${mode})`;
+                        bgColor = '#d4edda';
+                        borderColor = '#28a745';
+                        textColor = '#155724';
+                    } else if (dataSource === 'historical' || isVirtual) {
+                        sourceText = `🕐 Historical Data (${mode}) - Virtual Time: ${new Date(timestamp).toLocaleString()}`;
+                        bgColor = '#d1ecf1';
+                        borderColor = '#17a2b8';
+                        textColor = '#0c5460';
+                    } else {
+                        sourceText = `❓ Unknown Source (${mode})`;
+                    }
+                    
+                    dataSourceTextEl.textContent = sourceText;
+                    dataSourceEl.style.background = bgColor;
+                    dataSourceEl.style.borderLeftColor = borderColor;
+                    dataSourceEl.style.color = textColor;
+                }
+
+                // Update header info
+                if (data.futures_price) {
+                    document.getElementById('options-fut-price-main').textContent = data.futures_price.toLocaleString('en-IN', {maximumFractionDigits: 2});
+                }
+                if (data.expiry) {
+                    document.getElementById('options-expiry-main').textContent = data.expiry;
+                }
+                if (data.pcr !== undefined) {
+                    const pcrEl = document.getElementById('options-pcr-main');
+                    pcrEl.textContent = data.pcr.toFixed(2);
+                    pcrEl.style.color = data.pcr > 1 ? '#dc3545' : data.pcr < 0.8 ? '#28a745' : '#ffc107';
+                }
+                if (data.max_pain) {
+                    document.getElementById('options-max-pain-main').textContent = data.max_pain.toLocaleString();
+                }
+
+                // Get futures price for highlighting ATM strikes
+                const futPrice = data.futures_price || 0;
+
+                // Build table rows
+                const rows = data.chain.map(strike => {
+                    const isATM = Math.abs(strike.strike - futPrice) < 100; // Within 100 points
+                    const rowStyle = isATM ? 'background: #fff3cd; font-weight: bold;' : '';
+                    
+                    return `
+                        <tr style="${rowStyle}">
+                            <td style="padding: 10px; text-align: center; border: 1px solid #ddd; ${isATM ? 'background: #ffc107; color: #000;' : ''}">
+                                ${strike.strike.toLocaleString()}
+                            </td>
+                            <td style="padding: 10px; text-align: center; border: 1px solid #ddd; color: ${strike.ce_ltp ? '#28a745' : '#999'};">
+                                ${strike.ce_ltp ? strike.ce_ltp.toFixed(2) : '-'}
+                            </td>
+                            <td style="padding: 10px; text-align: center; border: 1px solid #ddd;">
+                                ${strike.ce_oi ? strike.ce_oi.toLocaleString() : '-'}
+                            </td>
+                            <td style="padding: 10px; text-align: center; border: 1px solid #ddd; color: #666; font-size: 0.85em;">
+                                ${strike.ce_iv ? strike.ce_iv.toFixed(1) + '%' : '-'}
+                            </td>
+                            <td style="padding: 10px; text-align: center; border: 1px solid #ddd; color: #666; font-size: 0.85em;">
+                                ${strike.ce_delta !== undefined ? strike.ce_delta.toFixed(2) : '-'}
+                            </td>
+                            <td style="padding: 10px; text-align: center; border: 1px solid #ddd; color: #666; font-size: 0.85em;">
+                                ${strike.pe_delta !== undefined ? strike.pe_delta.toFixed(2) : '-'}
+                            </td>
+                            <td style="padding: 10px; text-align: center; border: 1px solid #ddd; color: #666; font-size: 0.85em;">
+                                ${strike.pe_iv ? strike.pe_iv.toFixed(1) + '%' : '-'}
+                            </td>
+                            <td style="padding: 10px; text-align: center; border: 1px solid #ddd;">
+                                ${strike.pe_oi ? strike.pe_oi.toLocaleString() : '-'}
+                            </td>
+                            <td style="padding: 10px; text-align: center; border: 1px solid #ddd; color: ${strike.pe_ltp ? '#dc3545' : '#999'};">
+                                ${strike.pe_ltp ? strike.pe_ltp.toFixed(2) : '-'}
+                            </td>
+                        </tr>
+                    `;
+                }).join('');
+
+                document.getElementById('options-chain-body').innerHTML = rows;
+
+            } catch (error) {
+                console.error('Error loading options chain:', error);
+                document.getElementById('options-chain-body').innerHTML = `
+                    <tr>
+                        <td colspan="9" style="padding: 40px; text-align: center; color: #dc3545;">
+                            <div style="font-size: 1.2em; margin-bottom: 10px;">Error loading options chain</div>
+                            <div style="font-size: 0.9em;">${error.message}</div>
+                        </td>
+                    </tr>
+                `;
+            }
+        }
+
+        // Load and display options strategy
+        async function loadOptionsStrategy() {
+            try {
+                const response = await fetch('/api/options-strategy');
+                const data = await response.json();
+                
+                // Update timestamp
+                const timestamp = data.timestamp || new Date().toISOString();
+                if (typeof updateTimestamp === 'function') {
+                    updateTimestamp('options-strategy-timestamp-main', timestamp);
+                }
+
+                const strategyContainer = document.getElementById('options-strategy-content');
+
+                if (!data.available) {
+                    strategyContainer.innerHTML = `
+                        <div style="text-align: center; padding: 40px; color: #666;">
+                            <div style="font-size: 1.2em; margin-bottom: 10px;">Strategy recommendation not available</div>
+                            <div style="font-size: 0.9em;">${data.reason || data.error || 'Unable to generate strategy recommendation'}</div>
+                        </div>
+                    `;
+                    return;
+                }
+
+                const rec = data.recommendation;
+                if (!rec) {
+                    strategyContainer.innerHTML = `
+                        <div style="text-align: center; padding: 40px; color: #666;">
+                            <div style="font-size: 1.2em;">No strategy recommendation available</div>
+                        </div>
+                    `;
+                    return;
+                }
+
+                strategyContainer.innerHTML = `
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px;">
+                        <div style="padding: 15px; background: #f8f9fa; border-radius: 6px; border-left: 4px solid #007bff;">
+                            <div style="font-size: 0.9em; color: #666; margin-bottom: 5px;">Strategy</div>
+                            <div style="font-size: 1.3em; font-weight: bold; color: #007bff;">${rec.side || 'BUY'} ${rec.option_type || 'CE'}</div>
+                        </div>
+                        <div style="padding: 15px; background: #f8f9fa; border-radius: 6px; border-left: 4px solid #28a745;">
+                            <div style="font-size: 0.9em; color: #666; margin-bottom: 5px;">Strike</div>
+                            <div style="font-size: 1.3em; font-weight: bold; color: #28a745;">${rec.strike ? rec.strike.toLocaleString() : '-'}</div>
+                        </div>
+                        <div style="padding: 15px; background: #f8f9fa; border-radius: 6px; border-left: 4px solid #ffc107;">
+                            <div style="font-size: 0.9em; color: #666; margin-bottom: 5px;">Premium</div>
+                            <div style="font-size: 1.3em; font-weight: bold; color: #ffc107;">₹${rec.premium ? rec.premium.toFixed(2) : '-'}</div>
+                        </div>
+                        <div style="padding: 15px; background: #f8f9fa; border-radius: 6px; border-left: 4px solid #dc3545;">
+                            <div style="font-size: 0.9em; color: #666; margin-bottom: 5px;">Quantity</div>
+                            <div style="font-size: 1.3em; font-weight: bold; color: #dc3545;">${rec.quantity || '-'}</div>
+                        </div>
+                    </div>
+                    <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-bottom: 20px;">
+                        <div style="padding: 15px; background: #fff3cd; border-radius: 6px; border-left: 4px solid #ffc107;">
+                            <div style="font-size: 0.9em; color: #666; margin-bottom: 5px;">Stop Loss</div>
+                            <div style="font-size: 1.2em; font-weight: bold; color: #856404;">₹${rec.stop_loss_price ? rec.stop_loss_price.toFixed(2) : '-'}</div>
+                        </div>
+                        <div style="padding: 15px; background: #d4edda; border-radius: 6px; border-left: 4px solid #28a745;">
+                            <div style="font-size: 0.9em; color: #666; margin-bottom: 5px;">Take Profit</div>
+                            <div style="font-size: 1.2em; font-weight: bold; color: #155724;">₹${rec.take_profit_price ? rec.take_profit_price.toFixed(2) : '-'}</div>
+                        </div>
+                    </div>
+                    ${rec.reasoning ? `
+                        <div style="padding: 15px; background: #e7f3ff; border-radius: 6px; border-left: 4px solid #007bff; margin-top: 15px;">
+                            <div style="font-weight: bold; margin-bottom: 8px; color: #004085;">💡 Reasoning:</div>
+                            <div style="color: #004085; line-height: 1.6;">${rec.reasoning}</div>
+                        </div>
+                    ` : ''}
+                    ${data.instrument ? `
+                        <div style="margin-top: 15px; padding: 10px; background: #f8f9fa; border-radius: 4px; font-size: 0.9em; color: #666;">
+                            <strong>Instrument:</strong> ${data.instrument} | 
+                            <strong>Expiry:</strong> ${data.expiry || 'N/A'}
+                        </div>
+                    ` : ''}
+                `;
+
+            } catch (error) {
+                console.error('Error loading options strategy:', error);
+                document.getElementById('options-strategy-content').innerHTML = `
+                    <div style="text-align: center; padding: 40px; color: #dc3545;">
+                        <div style="font-size: 1.2em; margin-bottom: 10px;">Error loading strategy recommendation</div>
+                        <div style="font-size: 0.9em;">${error.message}</div>
+                    </div>
+                `;
+            }
+        }
+
+        // Load and update market data display
+        async function loadMarketData() {
+            const dataStatusEl = document.getElementById('data-status');
+            const lastUpdatedEl = document.getElementById('last-updated');
+            const connectionEl = document.getElementById('connection-status');
+
+            try {
+                // Show refreshing status
+                dataStatusEl.textContent = '⟳ REFRESHING...';
+                dataStatusEl.className = 'value data-refreshing';
+                connectionEl.textContent = '● CONNECTING';
+                connectionEl.className = 'value connection-connecting';
+
+                // Show refresh indicator in header
+                const refreshIndicator = document.getElementById('refresh-indicator');
+                if (refreshIndicator) {
+                    refreshIndicator.style.display = 'inline';
+                }
+
+                const symbol = document.getElementById('symbol-select').value || 'BANKNIFTY';
+                const response = await fetch(`/api/market/data/${symbol}`);
+                const result = await response.json();
+
+                if (result.success) {
+                    const data = result.data;
+
+                    // Update current price
+                    const currentPriceEl = document.querySelector('.metric-value[style*="1.3em"]');
+                    if (currentPriceEl && currentPriceEl.nextElementSibling.textContent === 'Current Price') {
+                        currentPriceEl.textContent = data.price.toLocaleString();
+                    }
+
+                    // Update daily change (approximate calculation)
+                    const changePct = data.change_pct || 0;
+                    const changeAmount = Math.round(data.price * (changePct / 100));
+
+                    // Update daily change amount
+                    const changeAmountEl = document.querySelectorAll('.metric-value[style*="1.3em"]')[1];
+                    if (changeAmountEl && changeAmountEl.nextElementSibling.textContent === 'Daily Change') {
+                        changeAmountEl.textContent = (changeAmount >= 0 ? '+' : '') + changeAmount.toLocaleString();
+                        changeAmountEl.style.color = changeAmount >= 0 ? '#28a745' : '#dc3545';
+                    }
+
+                    // Update change percentage
+                    const changePctEls = document.querySelectorAll('[style*="0.8em"][style*="margin-top: 2px"]');
+                    if (changePctEls.length >= 2) {
+                        changePctEls[0].textContent = (changePct >= 0 ? '+' : '') + changePct.toFixed(2) + '%';
+                        changePctEls[0].style.color = changePct >= 0 ? '#28a745' : '#dc3545';
+                        changePctEls[1].textContent = (changePct >= 0 ? '+' : '') + changePct.toFixed(2) + '%';
+                        changePctEls[1].style.color = changePct >= 0 ? '#28a745' : '#dc3545';
+                    }
+
+                    // Update day low
+                    const dayLowEl = document.querySelectorAll('.metric-value[style*="1.3em"]')[2];
+                    if (dayLowEl && dayLowEl.nextElementSibling.textContent === 'Day Low') {
+                        const dayLow = Math.round(data.price * 0.98); // Approximate
+                        dayLowEl.textContent = dayLow.toLocaleString();
+                    }
+
+                    // Update day high
+                    const dayHighEl = document.querySelectorAll('.metric-value[style*="1.3em"]')[3];
+                    if (dayHighEl && dayHighEl.nextElementSibling.textContent === 'Day High') {
+                        const dayHigh = Math.round(data.price * 1.02); // Approximate
+                        dayHighEl.textContent = dayHigh.toLocaleString();
+                    }
+
+                    // Update trend arrow
+                    const trendArrow = document.querySelector('[style*="0.8em"][style*="28a745"]');
+                    if (trendArrow) {
+                        trendArrow.textContent = changePct >= 0 ? '↗ +' + changePct.toFixed(2) + '%' : '↘ ' + changePct.toFixed(2) + '%';
+                    }
+
+                    // Update data freshness indicators using server timestamp when available
+                    // Only update if we have real price data (not placeholder/mock)
+                    if (data.price && data.price > 0) {
+                        const serverTimestamp = data.last_update || data.timestamp;
+                        if (serverTimestamp) {
+                            lastDataUpdate = new Date(serverTimestamp);
+                            updateDataFreshness();
+                        }
+                        console.log(`Updated market data for ${symbol}: ₹${data.price.toLocaleString()}`);
+                        
+                        // Update connection status to connected
+                        connectionStatus = 'connected';
+                        connectionEl.textContent = '● CONNECTED';
+                        connectionEl.style.color = '#28a745';
+                        connectionEl.className = 'value connection-connected';
+                    } else {
+                        // No real data - show disconnected
+                        lastDataUpdate = null;
+                        updateDataFreshness();
+                        connectionStatus = 'disconnected';
+                        connectionEl.textContent = '● DISCONNECTED';
+                        connectionEl.style.color = '#dc3545';
+                        connectionEl.className = 'value connection-disconnected';
+                    }
+                } else {
+                    // No success or no data - show disconnected
+                    lastDataUpdate = null;
+                    updateDataFreshness();
+                    connectionStatus = 'disconnected';
+                    connectionEl.textContent = '● DISCONNECTED';
+                    connectionEl.style.color = '#dc3545';
+                    connectionEl.className = 'value connection-disconnected';
+                }
+
+                // Hide refresh indicator
+                let refreshIndicator2 = document.getElementById('refresh-indicator');
+                if (refreshIndicator2) {
+                    refreshIndicator2.style.display = 'none';
+                }
+
+            } catch (error) {
+                console.error('Error loading market data:', error);
+
+                // Update status indicators for error
+                dataStatusEl.textContent = 'ERROR';
+                dataStatusEl.className = 'value data-old';
+                connectionEl.textContent = '● DISCONNECTED';
+                connectionEl.className = 'value connection-disconnected';
+                connectionStatus = 'disconnected';
+
+                // Hide refresh indicator
+                let refreshIndicator3 = document.getElementById('refresh-indicator');
+                if (refreshIndicator3) {
+                    refreshIndicator3.style.display = 'none';
+                }
+            }
+        }
+
+        async function loadTechnicalData() {
+            try {
+                const symbol = document.getElementById('symbol-select').value;
+
+                // Update data freshness when technical data loads
+                if (lastDataUpdate) {
+                    updateDataFreshness();
+                }
+                const response = await fetch(`/api/market/data/${symbol}`);
+                const result = await response.json();
+
+                if (result.success) {
+                    const data = result.data;
+                    const indicators = result.indicators;
+
+                    // Update technical indicators display
+                    const indicatorsDiv = document.getElementById('technical-indicators');
+                    indicatorsDiv.innerHTML = `
+                        <div class="metric-card" style="border-left: 4px solid ${data.rsi_14 > 70 ? '#28a745' : data.rsi_14 < 30 ? '#dc3545' : '#ffc107'};">
+                            <span class="metric-value" style="color: ${data.rsi_14 > 70 ? '#28a745' : data.rsi_14 < 30 ? '#dc3545' : '#ffc107'};">${data.rsi_14.toFixed(1)}</span>
+                            <div class="metric-label">RSI (14) - ${data.rsi_14 > 70 ? 'OVERBOUGHT' : data.rsi_14 < 30 ? 'OVERSOLD' : 'NEUTRAL'}</div>
+                        </div>
+                        <div class="metric-card" style="border-left: 4px solid ${data.macd_line > data.macd_signal ? '#28a745' : '#dc3545'};">
+                            <span class="metric-value">${data.macd_line.toFixed(1)}/${data.macd_signal.toFixed(1)}</span>
+                            <div class="metric-label">MACD - ${data.macd_line > data.macd_signal ? 'BULLISH' : 'BEARISH'}</div>
+                        </div>
+                        <div class="metric-card" style="border-left: 4px solid ${data.price > data.sma_20 ? '#28a745' : '#dc3545'};">
+                            <span class="metric-value">${data.sma_20.toLocaleString()}</span>
+                            <div class="metric-label">SMA (20) - ${data.price > data.sma_20 ? 'ABOVE' : 'BELOW'}</div>
+                        </div>
+                        <div class="metric-card" style="border-left: 4px solid ${data.price > data.ema_20 ? '#28a745' : '#dc3545'};">
+                            <span class="metric-value">${data.ema_20.toLocaleString()}</span>
+                            <div class="metric-label">EMA (20) - ${data.price > data.ema_20 ? 'ABOVE' : 'BELOW'}</div>
+                        </div>
+                        <div class="metric-card" style="border-left: 4px solid ${data.adx > 25 ? '#28a745' : '#ffc107'};">
+                            <span class="metric-value">${data.adx.toFixed(1)}</span>
+                            <div class="metric-label">ADX - ${data.adx > 25 ? 'TREND' : 'SIDEWAYS'}</div>
+                        </div>
+                        <div class="metric-card" style="border-left: 4px solid ${data.price < data.bb_lower * 1.01 || data.price > data.bb_upper * 0.99 ? '#dc3545' : '#28a745'};">
+                            <span class="metric-value">${((data.price - data.bb_lower) / (data.bb_upper - data.bb_lower) * 100).toFixed(1)}%</span>
+                            <div class="metric-label">BB POSITION</div>
+                        </div>
+                    `;
+
+                    // Update analysis
+                    const analysisDiv = document.getElementById('technical-analysis');
+                    let analysis = "<strong>📊 Analysis:</strong> ";
+
+                    if (data.rsi_14 > 75) analysis += "Strong bullish momentum, RSI overbought. ";
+                    else if (data.rsi_14 < 25) analysis += "Bearish momentum, RSI oversold. ";
+                    else analysis += "RSI neutral. ";
+
+                    if (data.adx > 25) analysis += "ADX confirms trend strength. ";
+                    else analysis += "ADX suggests sideways movement. ";
+
+                    if (data.macd_line > data.macd_signal) analysis += "MACD bullish crossover. ";
+                    else analysis += "MACD bearish. ";
+
+                    const bbPosition = (data.price - data.bb_lower) / (data.bb_upper - data.bb_lower);
+                    if (bbPosition < 0.05) analysis += "Price at lower Bollinger Band - potential bounce. ";
+                    else if (bbPosition > 0.95) analysis += "Price at upper Bollinger Band - potential reversal. ";
+
+                    analysis += `Volume ${(data.volume / data.avg_volume).toFixed(1)}x average.`;
+
+                    analysisDiv.innerHTML = analysis;
+
+                    // Update agent readiness indicators
+                    updateAgentReadiness(indicators);
+
+                } else {
+                    document.getElementById('technical-indicators').innerHTML = '<div class="metric-card"><span class="metric-value">Error</span><div class="metric-label">Failed to load data</div></div>';
+                }
+
+            } catch (error) {
+                console.error('Failed to load technical data:', error);
+                document.getElementById('technical-indicators').innerHTML = '<div class="metric-card"><span class="metric-value">Error</span><div class="metric-label">Failed to load data</div></div>';
+            }
+        }
+
+        function updateAgentReadiness(indicators) {
+            // Update agent readiness status based on current conditions
+            const momentumStatus = document.getElementById('momentum-ready');
+            const trendStatus = document.getElementById('trend-ready');
+            const reversionStatus = document.getElementById('reversion-ready');
+            const volumeStatus = document.getElementById('volume-ready');
+
+            momentumStatus.textContent = indicators.momentum_ready ? 'READY' : 'WAITING';
+            momentumStatus.style.color = indicators.momentum_ready ? '#28a745' : '#ffc107';
+
+            trendStatus.textContent = indicators.trend_ready ? 'READY' : 'WAITING';
+            trendStatus.style.color = indicators.trend_ready ? '#28a745' : '#ffc107';
+
+            reversionStatus.textContent = indicators.reversion_ready ? 'READY' : 'WAITING';
+            reversionStatus.style.color = indicators.reversion_ready ? '#28a745' : '#ffc107';
+
+            volumeStatus.textContent = indicators.volume_ready ? 'READY' : 'WAITING';
+            volumeStatus.style.color = indicators.volume_ready ? '#28a745' : '#ffc107';
+        }
+
+        // Auto-refresh dashboard data every 15 seconds
+        async function refreshDashboardData() {
+            try {
+                // Refresh trading data
+                const signalsResponse = await fetch('/api/trading/signals');
+                const signalsData = await signalsResponse.json();
+
+                const positionsResponse = await fetch('/api/trading/positions');
+                const positionsData = await positionsResponse.json();
+
+                const statsResponse = await fetch('/api/trading/stats');
+                const statsData = await statsResponse.json();
+
+                // Fetch agent discussion timestamps
+                const agentDiscussionResponse = await fetch('/api/agent-decisions');
+                const agentDiscussionData = await agentDiscussionResponse.json();
+
+                // Update dashboard if visible
+                if (document.getElementById('dashboard').classList.contains('active')) {
+                    updateDashboardDisplay(signalsData, positionsData, statsData, agentDiscussionData);
+                    // Refresh technical data if dashboard is active
+                    loadTechnicalData();
+                }
+
+                // Update signal counts in cockpit
+                updateSignalCounts(signalsData, positionsData);
+
+            } catch (error) {
+                console.log('Dashboard refresh error:', error);
+            }
+        }
+
+        function updateDashboardDisplay(signalsData, positionsData, statsData, agentDiscussionData) {
+            // Update agent summary based on real signals
+            const pendingSignals = signalsData.signals.filter(s => s.status === 'pending');
+            if (pendingSignals.length > 0) {
+                // Update consensus signal
+                const buySignals = pendingSignals.filter(s => s.action === 'BUY').length;
+                const sellSignals = pendingSignals.filter(s => s.action === 'SELL').length;
+                const consensus = buySignals > sellSignals ? 'BUY' : sellSignals > buySignals ? 'SELL' : 'HOLD';
+
+                // Update agent executive summary
+                updateAgentSummary(pendingSignals, consensus);
+            }
+
+            // Update performance metrics with real data
+            updatePerformanceMetrics(statsData.stats);
+
+            // Update recent trades from positions
+            updateRecentTrades(positionsData.positions);
+
+            // Update position timestamps and durations
+            updatePositionTimestamps(positionsData.positions);
+
+            // Update agent discussion timestamp
+            updateAgentDiscussionTime(agentDiscussionData);
+
+            // Update individual agent timestamps
+            updateIndividualAgentTimes();
+        }
+
+        async function updateAgentSummary(signals, consensus) {
+            const agentSummary = document.querySelector('#dashboard .card:nth-child(3)');
+            if (agentSummary) {
+                // Also update individual agent information with real data
+                await updateIndividualAgentTimes();
+                await updateAgentCardsWithRealData();
+                const consensusElement = agentSummary.querySelector('span');
+                if (consensusElement) {
+                    consensusElement.textContent = consensus;
+                    consensusElement.style.color = consensus === 'BUY' ? '#28a745' : consensus === 'SELL' ? '#dc3545' : '#ffc107';
+                }
+            }
+        }
+
+        function updatePerformanceMetrics(stats) {
+            // Update performance card with real data
+            const perfCard = document.querySelector('#dashboard .card:nth-child(4)');
+            if (perfCard) {
+                const metrics = perfCard.querySelectorAll('.metric-value');
+                if (metrics.length >= 4) {
+                    metrics[0].textContent = `₹${stats.total_pnl?.toLocaleString() || '0'}`;
+                    metrics[1].textContent = `${stats.win_rate || 0}%`;
+                    metrics[2].textContent = `${stats.sharpe_ratio || 0}`;
+                    metrics[3].textContent = `${stats.max_drawdown || 0}%`;
+                }
+            }
+        }
+
+        function updateRecentTrades(positions) {
+            const tradesTable = document.querySelector('#dashboard table tbody');
+            if (tradesTable && positions.length > 0) {
+                tradesTable.innerHTML = positions.slice(0, 3).map(pos => `
+                    <tr>
+                        <td style="padding: 8px; border-bottom: 1px solid #dee2e6;">${new Date(pos.opened_at).toLocaleTimeString()}</td>
+                        <td style="padding: 8px; border-bottom: 1px solid #dee2e6;">${pos.symbol}</td>
+                        <td style="padding: 8px; border-bottom: 1px solid #dee2e6; color: ${pos.action === 'BUY' ? '#28a745' : '#dc3545'};">${pos.action}</td>
+                        <td style="padding: 8px; border-bottom: 1px solid #dee2e6;">${pos.entry_price.toLocaleString()}</td>
+                        <td style="padding: 8px; border-bottom: 1px solid #dee2e6; color: ${(pos.pnl || 0) >= 0 ? '#28a745' : '#dc3545'};">${(pos.pnl || 0) >= 0 ? '+' : ''}₹${(pos.pnl || 0).toLocaleString()}</td>
+                    </tr>
+                `).join('');
+            }
+        }
+
+        function updateSignalCounts(signalsData, positionsData) {
+            // Update cockpit status indicators
+            const pendingCount = signalsData.signals.filter(s => s.status === 'pending').length;
+            const activeCount = positionsData.positions.filter(p => p.status === 'active').length;
+
+            // Could add visual indicators here
+            console.log(`Pending signals: ${pendingCount}, Active positions: ${activeCount}`);
+        }
+
+        function updateAgentDiscussionTime(agentDiscussionData) {
+            const timeElement = document.getElementById('agent-discussion-time');
+            if (!timeElement) return;
+            
+            // Try to get from agent status API first
+            fetch('/api/agent-status')
+                .then(response => response.json())
+                .then(data => {
+                    const freshness = data.data_freshness || {};
+                    const lastDiscussionTime = freshness.last_discussion_timestamp || data.last_discussion_time || data.last_analysis;
+                    if (lastDiscussionTime) {
+                        try {
+                            const discussionTime = new Date(lastDiscussionTime);
+                            const timeAgo = formatTimeAgo(discussionTime);
+                            timeElement.textContent = timeAgo;
+                            timeElement.title = `Last agent discussion: ${discussionTime.toLocaleString()}`;
+                            if (data.data_source === 'mock') {
+                                timeElement.style.color = '#ffc107';
+                                timeElement.textContent += ' (mock)';
+                            } else if (freshness.analysis_stale) {
+                                timeElement.style.color = '#dc3545';
+                                timeElement.textContent += ' (stale)';
+                            } else {
+                                timeElement.style.color = '#007bff';
+                            }
+                        } catch (e) {
+                            timeElement.textContent = 'Unknown';
+                        }
+                    } else {
+                        timeElement.textContent = 'No recent discussion';
+                        timeElement.style.color = '#dc3545';
+                    }
+                })
+                .catch(error => {
+                    console.log('Could not fetch agent discussion time:', error);
+                    timeElement.textContent = 'No recent discussion';
+                    timeElement.style.color = '#dc3545';
+                });
+        }
+
+        function updatePositionTimestamps(positions) {
+            const positionsContainer = document.querySelector('#positions .trading-panel');
+
+            if (positions && positions.length > 0) {
+                // Hide empty state
+                const emptyState = positionsContainer.querySelector('.empty-state');
+                if (emptyState) emptyState.style.display = 'none';
+
+                // Update existing position items with real data
+                positions.forEach((pos, index) => {
+                    const positionItem = positionsContainer.querySelectorAll('.position-item')[index];
+                    if (positionItem) {
+                        const openedAt = new Date(pos.opened_at);
+                        const now = new Date();
+                        const durationMs = now - openedAt;
+                        const durationHours = Math.floor(durationMs / (1000 * 60 * 60));
+                        const durationMinutes = Math.floor((durationMs % (1000 * 60 * 60)) / (1000 * 60));
+
+                        let durationText;
+                        if (durationHours > 0) {
+                            durationText = `${durationHours}h ${durationMinutes}m`;
+                        } else {
+                            durationText = `${durationMinutes}m`;
+                        }
+
+                        // Add timestamp info to position details
+                        const signalDetails = positionItem.querySelector('.signal-details');
+                        if (signalDetails) {
+                            // Check if duration info already exists
+                            let durationDiv = signalDetails.querySelector('.position-duration');
+                            if (!durationDiv) {
+                                durationDiv = document.createElement('div');
+                                durationDiv.className = 'position-duration';
+                                signalDetails.appendChild(durationDiv);
+                            }
+                            durationDiv.innerHTML = `<strong>Duration:</strong> ${durationText} <small style="color: #666;">(opened: ${openedAt.toLocaleString()})</small>`;
+                        }
+                    }
+                });
+            } else {
+                // Show empty state
+                const positionsContainer = document.querySelector('#positions .trading-panel');
+                const emptyState = positionsContainer.querySelector('.empty-state');
+                if (emptyState) emptyState.style.display = 'block';
+            }
+        }
+
+        async function updateAgentCardsWithRealData() {
+            try {
+                const response = await fetch('/api/agent-status');
+                const agentData = await response.json();
+
+                if (agentData && typeof agentData === 'object') {
+                    // Update agent count
+                    const totalAgents = agentData.total_agents || 0;
+                    const agentCountEl = document.getElementById('agent-count');
+                    if (agentCountEl) {
+                        agentCountEl.textContent = `${totalAgents} Agents`;
+                    }
+                    
+                    // Update consensus
+                    const consensus = agentData.consensus || {};
+                    const consensusSignalEl = document.getElementById('consensus-signal');
+                    const consensusAgreementEl = document.getElementById('consensus-agreement');
+                    const weightedVotesEl = document.getElementById('weighted-votes');
+                    
+                    if (consensusSignalEl && consensus.signal) {
+                        consensusSignalEl.textContent = consensus.signal;
+                        const signalColors = { 'BUY': '#28a745', 'SELL': '#dc3545', 'HOLD': '#ffc107' };
+                        consensusSignalEl.style.color = signalColors[consensus.signal] || '#666';
+                    }
+                    
+                    if (consensusAgreementEl && consensus.agents_agreeing !== undefined) {
+                        consensusAgreementEl.textContent = `(${consensus.agents_agreeing} of ${consensus.total_agents} agents agree)`;
+                    }
+                    
+                    // Display weighted voting details
+                    if (weightedVotesEl && consensus.weighted_votes) {
+                        const wv = consensus.weighted_votes;
+                        let votesHtml = `Weighted Votes: BUY ${wv.buy || 0}, SELL ${wv.sell || 0}, HOLD ${wv.hold || 0}`;
+                        if (consensus.risk_veto && consensus.risk_veto.triggered) {
+                            votesHtml += `<br><span style="color: #dc3545;">⚠️ RISK VETO: ${consensus.risk_veto.reason}</span>`;
+                        }
+                        weightedVotesEl.innerHTML = votesHtml;
+                    }
+                    
+                    // Update individual agent times
+                    const agents = agentData.agents || {};
+                    for (const [agentKey, agent] of Object.entries(agents)) {
+                        const agentTimeEl = document.getElementById(`agent-${agentKey}-time`);
+                        if (agentTimeEl && agent.last_update) {
+                            const lastDate = new Date(agent.last_update);
+                            agentTimeEl.textContent = formatTimeAgo(lastDate);
+                            agentTimeEl.title = `Last updated: ${lastDate.toLocaleString()}`;
+                            agentTimeEl.style.color = agent.status === 'stale' ? '#dc3545' : '#007bff';
+                        }
+                    }
+
+                    // Map agent types to card positions and update them
+                    const agentMappings = {
+                        'technical': {
+                            selector: '#dashboard .card:nth-child(3) .grid div:nth-child(1)',
+                            name: 'Momentum Agent'
+                        },
+                        'sentiment': {
+                            selector: '#dashboard .card:nth-child(3) .grid div:nth-child(2)',
+                            name: 'Trend Agent'
+                        },
+                        'macro': {
+                            selector: '#dashboard .card:nth-child(3) .grid div:nth-child(3)',
+                            name: 'Mean Reversion'
+                        },
+                        'risk': {
+                            selector: '#dashboard .card:nth-child(3) .grid div:nth-child(4)',
+                            name: 'Volume Agent'
+                        }
+                    };
+
+                    Object.keys(agentMappings).forEach(agentKey => {
+                        const mapping = agentMappings[agentKey];
+                        const agent = agents[agentKey];
+                        const cardElement = document.querySelector(mapping.selector);
+
+                        if (cardElement && agent) {
+                            // Update signal and confidence
+                            const signalElement = cardElement.querySelector('.signal-item, .card-body h5 + div');
+                            const confidenceElement = cardElement.querySelector('.confidence, .card-body div:nth-child(2)');
+
+                            if (signalElement) {
+                                signalElement.textContent = `${agent.signal} SIGNAL`;
+                                signalElement.className = agent.signal === 'BUY' ? 'text-success' :
+                                                         agent.signal === 'SELL' ? 'text-danger' : 'text-warning';
+                            }
+
+                            if (confidenceElement && agent.confidence) {
+                                confidenceElement.textContent = `${Math.round(agent.confidence * 100)}% confidence`;
+                            }
+                        }
+                    });
+                }
+            } catch (error) {
+                console.log('Error updating agent cards:', error);
+            }
+        }
+
+        async function updateIndividualAgentTimes() {
+            try {
+                const response = await fetch('/api/agent-status');
+                const agentData = await response.json();
+
+                if (agentData && typeof agentData === 'object' && agentData.agents) {
+                    // Map agent names to element IDs
+                    const elementIdMap = {
+                        'technical': 'agent-momentum-time',
+                        'momentum': 'agent-momentum-time',
+                        'trend': 'agent-trend-time',
+                        'sentiment': 'agent-mean-reversion-time',
+                        'macro': 'agent-mean-reversion-time', // Map macro to mean reversion
+                        'volume': 'agent-volume-time',
+                        'risk': 'agent-volume-time', // Map risk to volume agent
+                        'execution': 'agent-volume-time' // Map execution to volume agent
+                    };
+
+                    // Iterate through each agent in the agents object
+                    Object.keys(agentData.agents).forEach(agentName => {
+                        const agent = agentData.agents[agentName];
+                        const lastUpdate = agent.last_update;
+                        const elementId = elementIdMap[agentName.toLowerCase()];
+                        const timeElement = document.getElementById(elementId);
+
+                        if (timeElement) {
+                            if (lastUpdate) {
+                                try {
+                                    const timestamp = new Date(lastUpdate);
+                                    const now = new Date();
+
+                                    // Check if timestamp is valid and not too old (>24 hours)
+                                    if (!isNaN(timestamp.getTime())) {
+                                        const timeDiff = now - timestamp;
+                                        const hoursDiff = Math.floor(timeDiff / (1000 * 60 * 60));
+                                        const minutesDiff = Math.floor(timeDiff / (1000 * 60));
+
+                                        let timeDisplay;
+                                        if (hoursDiff >= 24) {
+                                            // Too old, hide the element
+                                            timeElement.style.display = 'none';
+                                            return;
+                                        } else if (minutesDiff < 1) {
+                                            timeDisplay = 'now';
+                                        } else if (minutesDiff < 60) {
+                                            timeDisplay = `${minutesDiff}m ago`;
+                                        } else {
+                                            timeDisplay = `${hoursDiff}h ago`;
+                                        }
+
+                                        timeElement.style.display = 'inline';
+                                        timeElement.textContent = timeDisplay;
+                                        timeElement.style.color = agent.status === 'stale' ? '#dc3545' : '#007bff';
+                                        timeElement.title = `Last updated: ${timestamp.toLocaleString()}`;
+                                    } else {
+                                        // Invalid timestamp, hide
+                                        timeElement.style.display = 'none';
+                                    }
+                                } catch (error) {
+                                    // Parse error, hide
+                                    timeElement.style.display = 'none';
+                                    console.log(`Error parsing timestamp for ${agentName}:`, error);
+                                }
+                            } else {
+                                // No timestamp, hide
+                                timeElement.style.display = 'none';
+                            }
+                        }
+                    });
+                }
+            } catch (error) {
+                console.log('Error fetching agent timestamps:', error);
+                // Hide all agent time elements on error
+                ['agent-momentum-time', 'agent-trend-time', 'agent-mean-reversion-time', 'agent-volume-time'].forEach(id => {
+                    const element = document.getElementById(id);
+                    if (element) element.style.display = 'none';
+                });
+            }
+        }
+
+        // Function to render ALL agent cards dynamically
+        async function renderAllAgentCards() {
+            try {
+                const response = await fetch('/api/agent-status');
+                if (!response.ok) return;
+                
+                const data = await response.json();
+                const agents = data.agents || {};
+                const container = document.getElementById('agent-cards-container');
+                
+                if (!container) return;
+                
+                // Clear existing content
+                container.innerHTML = '';
+                
+                // Get agent categories for display order
+                const agentOrder = ['technical', 'sentiment', 'macro', 'fundamental', 
+                                  'momentum', 'trend', 'volume', 'mean_reversion',
+                                  'bull', 'bear', 'risk', 'execution'];
+                
+                // Sort agents by defined order
+                const sortedAgents = Object.keys(agents).sort((a, b) => {
+                    const aIndex = agentOrder.indexOf(a);
+                    const bIndex = agentOrder.indexOf(b);
+                    if (aIndex === -1 && bIndex === -1) return 0;
+                    if (aIndex === -1) return 1;
+                    if (bIndex === -1) return -1;
+                    return aIndex - bIndex;
+                });
+                
+                // Render each agent card
+                sortedAgents.forEach(agentKey => {
+                    const agent = agents[agentKey];
+                    const agentName = agent.agent_full_name || agentKey;
+                    const signal = agent.signal || 'UNKNOWN';
+                    const confidence = agent.confidence || 0;
+                    const weight = agent.weight || 1.0;
+                    const lastUpdate = agent.last_update || '';
+                    
+                    // Determine border color based on signal
+                    const borderColor = signal === 'BUY' || signal === 'READY' || signal === 'APPROVED' ? '#28a745' : 
+                                      signal === 'SELL' ? '#dc3545' : 
+                                      signal === 'HOLD' || signal === 'WAITING' ? '#ffc107' : '#6c757d';
+                    
+                    const textColor = signal === 'BUY' || signal === 'READY' || signal === 'APPROVED' ? '#28a745' : 
+                                     signal === 'SELL' ? '#dc3545' : 
+                                     signal === 'HOLD' || signal === 'WAITING' ? '#ffc107' : '#6c757d';
+                    
+                    // Calculate time ago
+                    let timeAgo = 'No data';
+                    if (lastUpdate) {
+                        try {
+                            const updateTime = new Date(lastUpdate);
+                            timeAgo = formatTimeAgo(updateTime);
+                        } catch (e) {
+                            timeAgo = 'Unknown';
+                        }
+                    }
+                    
+                    // Create card HTML
+                    const statusLabel = (agent.status || 'unknown').toUpperCase();
+                    const statusColor = agent.status === 'stale' ? '#dc3545' : '#198754';
+                    const card = document.createElement('div');
+                    card.style.cssText = `background: #f8f9fa; padding: 12px; border-radius: 6px; border-left: 4px solid ${borderColor};`;
+                    card.innerHTML = `
+                        <div style="font-weight: bold; color: #007bff; margin-bottom: 8px;">
+                            ${agentName}
+                            <span style="font-size: 0.7em; color: #999; font-weight: normal;">(${weight.toFixed(1)}x wt)</span>
+                        </div>
+                        <div style="color: ${textColor}; font-weight: bold; font-size: 1.1em;">${signal}</div>
+                        <div style="color: #666; margin: 4px 0;">${Math.round(confidence * 100)}% confidence</div>
+                        <div style="color: ${statusColor}; font-size: 0.75em;">Status: ${statusLabel}</div>
+                        <div style="color: #888; font-size: 0.75em; margin: 2px 0;" title="Last agent analysis time">
+                            📅 ${timeAgo}
+                        </div>
+                    `;
+                    
+                    container.appendChild(card);
+                });
+                
+                console.log(`Rendered ${sortedAgents.length} agent cards`);
+                
+            } catch (error) {
+                console.error('Error rendering agent cards:', error);
+            }
+        }
+
+        // Auto-refresh every 15 seconds
+        setInterval(refreshDashboardData, 15000);
+        setInterval(renderAllAgentCards, 15000); // Also refresh agent cards
+
+        // Initial data load
+        window.addEventListener('load', function() {
+            setTimeout(refreshDashboardData, 1000); // Small delay to ensure DOM is ready
+            setTimeout(renderAllAgentCards, 1500); // Load agent cards
+        });
+
+        // Auto-refresh every 30 seconds (but preserve active tab)
+        let activeTab = 'overview';
+        setInterval(() => {
+            // Only refresh if on overview tab to avoid interrupting user actions
+            if (document.querySelector('.tab-button.active').textContent.includes('System Overview')) {
+                location.reload();
+            }
         }, 30000);
+
+        // Store active tab across refreshes
+        document.querySelectorAll('.tab-button').forEach(button => {
+            button.addEventListener('click', function() {
+                activeTab = this.textContent.trim();
+            });
+        });
+
+        // Restore active tab after refresh
+        window.addEventListener('load', function() {
+            if (activeTab !== 'overview') {
+                const targetTab = Array.from(document.querySelectorAll('.tab-button'))
+                    .find(btn => btn.textContent.trim() === activeTab);
+                if (targetTab) {
+                    targetTab.click();
+                }
+            }
+            // Initialize beginner mode from localStorage
+            try {
+                const beginner = localStorage.getItem('beginnerMode') === 'true';
+                document.body.classList.toggle('beginner', beginner);
+                const btn = document.getElementById('beginnerToggle');
+                if (btn) {
+                    btn.setAttribute('aria-pressed', String(beginner));
+                    btn.textContent = beginner ? 'Disable Beginner Mode' : 'Enable Beginner Mode';
+                }
+            } catch(e) {}
+            // Show onboarding once
+            try {
+                const seen = localStorage.getItem('onboardedV1') === 'true';
+                const banner = document.getElementById('onboarding-banner');
+                if (banner && !seen) banner.style.display = 'block';
+            } catch(e) {}
+        });
+
+        // Beginner mode toggle
+        document.getElementById('beginnerToggle').addEventListener('click', function() {
+            const isOn = document.body.classList.toggle('beginner');
+            localStorage.setItem('beginnerMode', String(isOn));
+            this.setAttribute('aria-pressed', String(isOn));
+            this.textContent = isOn ? 'Disable Beginner Mode' : 'Enable Beginner Mode';
+        });
+
+        // Glossary modal controls
+        const modal = document.getElementById('glossaryModal');
+        document.getElementById('openGlossary').addEventListener('click', () => { modal.style.display = 'flex'; });
+        document.getElementById('closeGlossary').addEventListener('click', () => { modal.style.display = 'none'; });
+        modal.addEventListener('click', (e) => { if (e.target === modal) modal.style.display = 'none'; });
+
+        // Onboarding controls
+        const dismissBtn = document.getElementById('dismissOnboarding');
+        if (dismissBtn) {
+            dismissBtn.addEventListener('click', () => {
+                const banner = document.getElementById('onboarding-banner');
+                if (banner) banner.style.display = 'none';
+                try { localStorage.setItem('onboardedV1', 'true'); } catch(e) {}
+            });
+        }
+        const startTourBtn = document.getElementById('startTour');
+        if (startTourBtn) {
+            startTourBtn.addEventListener('click', () => {
+                alert('Tour: Explore tabs — System Overview → Trading Cockpit → Pending Signals → Positions → Performance. Hover the (i) icons and use Help / Glossary for definitions.');
+            });
+        }
+
+        // Initialize market data on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            // Initial status
+            updateDataFreshness();
+            updateIndividualAgentTimes(); // Load agent timestamps on page load
+            updateAgentCardsWithRealData(); // Load real agent data on page load
+
+            // Load market data for the default symbol
+            loadMarketData();
+            loadTechnicalData();
+
+            // Set up periodic updates every 30 seconds
+            setInterval(() => {
+                loadMarketData();
+            }, 30000);
+
+            // Set up freshness checking every 5 seconds
+            freshnessInterval = setInterval(() => {
+                updateDataFreshness();
+            }, 5000);
+        });
     </script>
+    <script>
+        const SERVER_PAPER_CONFIG = {{ paper_trading | tojson }};
+    </script>
+    <script src="/static/js/agent-timestamps.js"></script>
+    <script src="/static/js/dashboard.js"></script>
 </body>
 </html>

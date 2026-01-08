@@ -22,7 +22,7 @@ async def run_real_analysis():
 
         # Import required modules
         from engine_module.api import build_orchestrator
-        from data_niftybank.api import build_store
+        from market_data.api import build_store
         from genai_module.core.llm_provider_manager import LLMProviderManager
 
         # Initialize components
@@ -91,3 +91,4 @@ if __name__ == "__main__":
         print("\nReal AI analysis completed! Dashboard should now show real signals.")
     else:
         print("\nAnalysis failed. Check the errors above.")
+

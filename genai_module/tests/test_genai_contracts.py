@@ -10,3 +10,4 @@ def test_llm_request_defaults():
 
 def test_llm_client_is_protocol():
     assert inspect.isclass(LLMClient)
+

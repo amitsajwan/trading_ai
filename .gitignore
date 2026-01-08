@@ -8,6 +8,10 @@ ENV/
 .env
 .env.local
 .env.*.local
+.env.*
+*.env
+local.env
+config.local.env
 # Allow .env.example to be committed (template file)
 !.env.example
 

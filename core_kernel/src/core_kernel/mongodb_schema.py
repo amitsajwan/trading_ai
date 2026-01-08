@@ -10,6 +10,25 @@ from typing import Optional
 trading_system = "zerodha_trading"
 
 
+def get_db_for_mode(mode: str) -> str:
+    """
+    Get database name based on trading mode.
+    
+    Live modes (paper_live, live) use 'zerodha_trading_live'
+    Mock mode (paper_mock) uses 'zerodha_trading_mock'
+    
+    Args:
+        mode: Trading mode (paper_mock, paper_live, live)
+    
+    Returns:
+        Database name string
+    """
+    if mode in ["paper_live", "live"]:
+        return "zerodha_trading_live"
+    else:
+        return "zerodha_trading_mock"
+
+
 def get_mongo_client(connection_string: Optional[str] = None):
     """Get MongoDB client connection."""
     if connection_string is None:
@@ -148,6 +167,28 @@ def migrate_agents_instrument_field(db, instrument):
 def get_collection(db, collection_name: str):
     """Get a collection by name."""
     return db[collection_name]
+
+
+def get_db_connection(mode: Optional[str] = None, db_name: Optional[str] = None):
+    """
+    Get MongoDB database connection for a specific mode.
+    
+    Args:
+        mode: Trading mode (paper_mock, paper_live, live). If None, uses default.
+        db_name: Explicit database name (overrides mode-based selection)
+    
+    Returns:
+        MongoDB database object
+    """
+    if db_name:
+        db_name_to_use = db_name
+    elif mode:
+        db_name_to_use = get_db_for_mode(mode)
+    else:
+        db_name_to_use = trading_system
+    
+    client = get_mongo_client()
+    return client[db_name_to_use]
 
 
 if __name__ == "__main__":

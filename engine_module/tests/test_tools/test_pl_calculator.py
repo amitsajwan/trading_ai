@@ -21,3 +21,4 @@ def test_compute_pnl_multi_leg():
     assert abs(res["entry_credit"] - 40.0) < 1e-6
     assert abs(res["current_cost"] - 56.0) < 1e-6
     assert abs(res["pnl"] + 16.0) < 1e-6
+

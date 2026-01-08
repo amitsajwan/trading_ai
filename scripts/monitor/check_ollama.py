@@ -17,3 +17,4 @@ except Exception as e:
     print(f"[FAIL] Ollama not accessible: {e}")
     sys.exit(1)
 
+

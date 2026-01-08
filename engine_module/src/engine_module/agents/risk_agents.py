@@ -61,3 +61,4 @@ class NeutralRiskAgent(RiskAgent):
         """Initialize neutral risk agent."""
         super().__init__()
         self._agent_name = "NeutralRiskAgent"
+

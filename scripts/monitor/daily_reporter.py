@@ -209,3 +209,4 @@ class DailyReporter:
             "timestamp": {"$gte": cutoff}
         }).sort("report_date", -1))
 
+

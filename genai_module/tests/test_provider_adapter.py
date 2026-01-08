@@ -36,3 +36,4 @@ async def _run():
 
 def test_provider_adapter_sync_wraps_blocking_calls():
     asyncio.run(_run())
+

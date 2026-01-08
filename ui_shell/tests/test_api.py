@@ -72,3 +72,4 @@ class TestAPIFacade:
 
         assert provider.engine is custom_engine
         assert dispatcher.engine is custom_engine
+

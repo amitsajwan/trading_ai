@@ -288,3 +288,4 @@ def send_alert(alert_type: str, message: str, severity: str = 'info',
         }.get(severity, logger.info)
         log_method(f"[{alert_type}] {message} | {details}")
         return 0
+

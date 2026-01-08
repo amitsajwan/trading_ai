@@ -6,31 +6,31 @@ from pathlib import Path
 sys.path.insert(0, os.getcwd())
 
 try:
-    cred_path = Path('credentials.json')
-    if not cred_path.exists():
+    from providers.factory import get_provider
+    provider = get_provider()
+
+    if provider is None:
         print('ZERODHA_NO_CREDENTIALS')
         sys.exit(1)
-    
-    with open(cred_path) as f:
-        creds = json.load(f)
-    
-    if not creds.get('access_token'):
-        print('ZERODHA_NO_TOKEN')
+
+    # If provider is a mock, report mock-ok
+    if provider.__class__.__name__.lower().startswith('mock'):
+        print('ZERODHA_MOCK_OK')
+        sys.exit(0)
+
+    # Otherwise try to call profile()
+    try:
+        profile = provider.profile()
+        print('ZERODHA_OK', profile.get('user_id', 'Unknown'))
+        sys.exit(0)
+    except Exception as e:
+        print('ZERODHA_ERROR', str(e)[:50])
         sys.exit(1)
-    
-    # Try to connect
-    from kiteconnect import KiteConnect
-    kite = KiteConnect(api_key=creds.get('api_key', ''))
-    kite.set_access_token(creds.get('access_token', ''))
-    
-    # Test connection
-    profile = kite.profile()
-    print('ZERODHA_OK', profile.get('user_name', 'Unknown'))
-    sys.exit(0)
 except ImportError:
     print('ZERODHA_MODULE_MISSING')
     sys.exit(1)
 except Exception as e:
     print('ZERODHA_ERROR', str(e)[:50])
     sys.exit(1)
+
 

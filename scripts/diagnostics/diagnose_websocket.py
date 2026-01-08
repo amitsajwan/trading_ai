@@ -43,17 +43,20 @@ def on_connect(ws, response):
     
     instruments = kite.instruments("NSE")
     token = None
+    from config import get_config
+    cfg = get_config()
+    desired_symbol = cfg.instrument_symbol
     for inst in instruments:
-        if inst["tradingsymbol"] == "NIFTY BANK":
-            token = inst["instrument_token"]
+        if inst.get("tradingsymbol") == desired_symbol:
+            token = inst.get("instrument_token")
             break
     
     if token:
         ws.subscribe([token])
         ws.set_mode(ws.MODE_FULL, [token])
-        logger.info(f"SUBSCRIBED to token: {token}")
+        logger.info(f"SUBSCRIBED to token: {token} for symbol {desired_symbol}")
     else:
-        logger.error("Could not find Bank Nifty token")
+        logger.error(f"Could not find token for {desired_symbol}")
 
 def on_close(ws, code, reason):
     global connected
@@ -127,4 +130,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 

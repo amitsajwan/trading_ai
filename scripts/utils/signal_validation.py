@@ -183,3 +183,4 @@ def validate_trade_signal(
         "warnings": warnings,
         "normalized_confidence": normalized_conf
     }
+

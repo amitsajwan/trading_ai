@@ -1,70 +1,65 @@
-"""Dashboard shim that delegates to dashboard.app and merges GenAI health into /api/health."""
+"""Enhanced Dashboard Pro - Complete Trading & GenAI Integration
+
+Provides a unified dashboard that seamlessly combines:
+- Advanced Trading Cockpit with signal management and position monitoring
+- GenAI health monitoring and API endpoints
+- Real-time system status and performance analytics
+
+This is the complete dashboard solution for professional trading operations.
+"""
+
+from __future__ import annotations
 
 from dashboard.app import app, add_camel_aliases
 from starlette.requests import Request
-from starlette.responses import JSONResponse
-import json
 
-try:
-    from genai_module.api_endpoints import get_health_fragment, router as genai_router
-except ImportError:
-    # Fallback if genai endpoints not available
-    def get_health_fragment():
-        return {"genai": {"status": "unavailable", "error": "Module not imported"}}
-    genai_router = None
+from dashboard_pro_config import DASHBOARD_HOST, DASHBOARD_PORT
+from dashboard_pro_genai import get_genai_router
+from dashboard_pro_health import enrich_health_response
 
-# Mount genai router (exposes /genai/* endpoints)
-if genai_router:
+
+# Mount GenAI router (exposes /genai/* endpoints) if available
+genai_router = get_genai_router()
+if genai_router is not None:
     try:
         app.include_router(genai_router)
-    except Exception:
-        # If app is not a FastAPI instance or include fails in some environments, skip silently
-        pass
+        print("GenAI router mounted successfully")
+    except Exception as e:
+        print(f"Failed to mount GenAI router: {e}")
+
+# Trading cockpit is already included in dashboard.app, so no additional mounting needed
+print("Trading Cockpit integrated successfully")
 
 __all__ = ["app", "add_camel_aliases"]
 
 
-# Middleware: intercept /api/health responses and merge genai health fragment
+# Middleware: intercept /api/health responses and merge GenAI + trading health fragments
 @app.middleware("http")
 async def merge_genai_health(request: Request, call_next):
-    """Call the underlying app, then merge GenAI health fragment into the response for /api/health.
+    """Call the underlying app, then merge health fragments for /api/health.
 
-    This avoids modifying external `dashboard.app` source and keeps the integration self-contained.
+    This avoids modifying external dashboard.app source and keeps the
+    integration self-contained.
     """
+
     response = await call_next(request)
 
-    # Only modify the main health endpoint
-    if request.url.path != "/api/health":
+    # Only modify the main health endpoint paths we expose
+    if request.url.path not in ("/api/health", "/health"):
         return response
 
-    # Extract existing body from response (consume iterator if present)
-    body_bytes = b""
-    try:
-        async for chunk in response.body_iterator:
-            body_bytes += chunk
-    except Exception:
-        # Fallback to attribute access if iterator not available
-        body_bytes = getattr(response, "body", b"") or b""
+    return await enrich_health_response(request, response)
 
-    try:
-        content = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
-    except Exception:
-        content = {}
 
-    try:
-        genai_frag = get_health_fragment()
-        if "genai" in genai_frag:
-            content["genai"] = genai_frag["genai"]
-            # If GenAI reports degraded, mark overall health as degraded and return 503
-            if genai_frag["genai"].get("status") != "ok":
-                content["status"] = "degraded"
-                return JSONResponse(status_code=503, content=content)
-    except Exception as e:
-        # If fetching the fragment fails, surface it as degraded
-        content.setdefault("genai", {})
-        content["genai"]["status"] = "degraded"
-        content["genai"]["error"] = str(e)
-        content["status"] = "degraded"
-        return JSONResponse(status_code=503, content=content)
+if __name__ == "__main__":
+    import uvicorn
 
-    return JSONResponse(status_code=response.status_code, content=content)
+    print("Starting Enhanced Dashboard Pro - Trading Cockpit + GenAI Integration")
+    print(f"Available at: http://{DASHBOARD_HOST}:{DASHBOARD_PORT}")
+    print("Features:")
+    print("  * Advanced Trading Cockpit with signal management")
+    print("  * GenAI health monitoring and endpoints")
+    print("  * Unified system status and analytics")
+    print("  * Real-time position monitoring and risk management")
+    uvicorn.run(app, host=DASHBOARD_HOST, port=DASHBOARD_PORT)
+

@@ -37,3 +37,4 @@ async def test_execution_agent_validation_failure():
     res = await agent.analyze(ctx)
     assert res.decision == "HOLD"
     assert "errors" in res.details
+

@@ -49,7 +49,7 @@ def verify_components():
         sys.path.insert(0, os.path.dirname(__file__))
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'data_niftybank', 'src'))
 
-        from data_niftybank.api import build_store
+        from market_data.api import build_store
         store = build_store()
         print("[OK] Data Module: Market data handling operational")
     except Exception as e:
@@ -205,3 +205,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

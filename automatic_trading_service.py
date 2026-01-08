@@ -25,7 +25,7 @@ sys.path.insert(0, 'core_kernel/src')
 
 from core_kernel.config.settings import settings
 from engine_module.api import build_orchestrator
-from data_niftybank.api import build_store, build_options_client
+from market_data.api import build_store, build_options_client
 from genai_module.api import build_llm_client
 from user_module.api import build_user_module, execute_user_trade
 from data.options_chain_fetcher import OptionsChainFetcher
@@ -125,7 +125,7 @@ class AutomaticTradingService:
                 "instrument": self.instrument,
                 "market_hours": self.is_market_open(),
                 "cycle_interval": "15min",
-                "timestamp": datetime.now()
+                "timestamp": datetime.now().isoformat()
             }
 
             logger.info(f"Running analysis cycle for {self.instrument}")
@@ -138,7 +138,7 @@ class AutomaticTradingService:
                 "confidence": result.confidence,
                 "strategy": result.details.get("strategy", ""),
                 "reasoning": result.details.get("reasoning", ""),
-                "timestamp": datetime.now(),
+                "timestamp": datetime.now().isoformat(),
                 "instrument": self.instrument,
                 "market_open": context["market_hours"]
             }
@@ -212,7 +212,7 @@ class AutomaticTradingService:
                 "side": side,
                 "quantity": quantity,
                 "entry_price": result.executed_price,
-                "timestamp": datetime.now()
+                "timestamp": datetime.now().isoformat()
             }
         else:
             logger.error(f"❌ Options trade failed: {result.message}")
@@ -244,7 +244,7 @@ class AutomaticTradingService:
                 "side": side,
                 "quantity": quantity,
                 "entry_price": result.executed_price,
-                "timestamp": datetime.now()
+                "timestamp": datetime.now().isoformat()
             }
         else:
             logger.error(f"❌ Futures trade failed: {result.message}")
@@ -366,3 +366,4 @@ if __name__ == "__main__":
     # service = AutomaticTradingService(user_id="your_user_id")
     # await service.initialize()
     # await service.start_automatic_trading()
+

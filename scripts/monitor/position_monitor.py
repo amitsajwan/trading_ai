@@ -255,3 +255,4 @@ class PositionMonitor:
         if trade_id in self.monitored_positions:
             del self.monitored_positions[trade_id]
 
+

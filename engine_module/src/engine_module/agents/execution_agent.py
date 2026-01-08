@@ -95,3 +95,4 @@ class ExecutionAgent(Agent):
 
         details = {"order": order_result, "validation": validation}
         return AnalysisResult(decision=signal_str, confidence=normalized_conf, details=details)
+

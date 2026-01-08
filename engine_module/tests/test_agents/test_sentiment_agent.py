@@ -37,3 +37,4 @@ async def test_sentiment_agent_with_news_and_llm(monkeypatch):
     assert abs(res.confidence - 0.8) < 1e-6
     assert res.details["sentiment_bias"] == "BULLISH"
     assert res.details["retail_sentiment"] == 0.6
+

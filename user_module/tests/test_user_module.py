@@ -99,3 +99,4 @@ class TestAPIFunctions:
         assert RiskProfileManager is not None
         assert build_user_store is not None
         assert create_user_account is not None
+

@@ -103,3 +103,4 @@ class CircuitBreaker:
             "any_triggered": any(self.checks.values())
         }
 
+

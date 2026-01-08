@@ -119,3 +119,4 @@ class TestEngineDataProvider:
         assert decision.signal == "BUY"
         assert decision.confidence == 0.9
         assert decision.reasoning == "Custom engine decision"
+

@@ -5,11 +5,21 @@ dependency injection and async execution flow. Implementation details
 are left as TODOs for incremental development.
 """
 
+import asyncio
 import logging
+import os
 from typing import Any, Dict, Optional, Protocol, runtime_checkable
 from datetime import datetime, timedelta
 
-from .contracts import AnalysisResult
+from .contracts import AnalysisResult, TechnicalDataProvider, PositionManagerProvider
+
+# Import time service for virtual/historical time support
+try:
+    from core_kernel.src.core_kernel.time_service import now as get_system_time
+except ImportError:
+    # Fallback if time service not available
+    def get_system_time() -> datetime:
+        return datetime.now()
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +29,7 @@ logger = logging.getLogger(__name__)
 @runtime_checkable
 class LLMClient(Protocol):
     """LLM client protocol for type hints."""
-    async def request(self, request: Any) -> Any:
+    async def generate(self, request: Any) -> Any:
         ...
 
 
@@ -41,6 +51,29 @@ class OptionsData(Protocol):
 
 
 @runtime_checkable
+class NewsService(Protocol):
+    """News service protocol for type hints."""
+    async def get_latest_news(self, instrument: str, limit: int = 10) -> list[Any]:
+        ...
+
+    async def get_sentiment_summary(self, instrument: str, hours: int = 24) -> Dict[str, Any]:
+        ...
+
+
+@runtime_checkable
+class PositionManager(Protocol):
+    """Position manager protocol for type hints."""
+    async def get_positions(self, symbol: str | None = None) -> list[Any]:
+        ...
+
+    async def execute_trading_decision(self, decision: Dict[str, Any]) -> Any:
+        ...
+
+    def get_portfolio_summary(self) -> Dict[str, Any]:
+        ...
+
+
+@runtime_checkable
 class Agent(Protocol):
     """Agent protocol for type hints."""
     async def analyze(self, context: Dict[str, Any]) -> AnalysisResult:
@@ -57,24 +90,33 @@ class TradingOrchestrator:
     def __init__(
         self,
         llm_client: LLMClient,
-        market_store: MarketStore,
-        options_data: OptionsData,
+        market_data_provider=None,  # Changed from market_store
+        options_data_provider=None,  # Changed from options_data
         agents: Optional[list[Agent]] = None,
+        news_service: Optional[NewsService] = None,
+        technical_data_provider: Optional[TechnicalDataProvider] = None,
+        position_manager: Optional[PositionManager] = None,
         **kwargs: Any,
     ) -> None:
         """Initialize orchestrator with injected dependencies.
         
         Args:
             llm_client: GenAI client for LLM requests
-            market_store: Data source for market ticks/OHLC
-            options_data: Source for options chain data
+            market_data_provider: Provider for market data (OHLC, ticks)
+            options_data_provider: Provider for options chain data
             agents: List of analysis agents (technical, sentiment, etc.)
+            news_service: News service for sentiment analysis (optional)
+            technical_data_provider: Provider for technical indicators (optional)
+            position_manager: Position manager for live position tracking (optional)
             **kwargs: Additional config (e.g., instruments, lookback_days)
         """
         self.llm_client = llm_client
-        self.market_store = market_store
-        self.options_data = options_data
+        self.market_data_provider = market_data_provider
+        self.options_data_provider = options_data_provider
         self.agents = agents or []
+        self.news_service = news_service
+        self.technical_data_provider = technical_data_provider
+        self.position_manager = position_manager
         self.config = kwargs
 
     async def run_cycle(self, context: Dict[str, Any]) -> AnalysisResult:
@@ -94,11 +136,25 @@ class TradingOrchestrator:
             AnalysisResult with options trading decision and analysis
         """
         instrument = context.get("instrument", "BANKNIFTY")
-        timestamp = context.get("timestamp", datetime.now())
+        # Use virtual time if available, otherwise use provided timestamp or current time
+        timestamp = context.get("timestamp", get_system_time())
+        
+        # Handle timestamp as string or datetime object
+        if isinstance(timestamp, str):
+            from dateutil import parser
+            timestamp = parser.isoparse(timestamp)
+        elif not isinstance(timestamp, datetime):
+            timestamp = get_system_time()
+        
+        # Ensure timestamp is timezone-aware
+        if timestamp.tzinfo is None:
+            from datetime import timezone
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+            
         market_hours = context.get("market_hours", False)
         cycle_interval = context.get("cycle_interval", "15min")
 
-        logger.info(f"Starting {cycle_interval} analysis cycle for {instrument}")
+        logger.info(f"Starting {cycle_interval} analysis cycle for {instrument} at {timestamp}")
 
         try:
             # Step 1: Fetch market data (15min OHLC + recent ticks)
@@ -107,8 +163,17 @@ class TradingOrchestrator:
             # Step 2: Fetch options chain data
             options_chain = await self._fetch_options_data(instrument)
 
-            # Step 3: Run all agents in parallel
-            agent_results = await self._run_agents_parallel(market_data, options_chain, context)
+            # Step 3: Fetch news data (if news service available)
+            news_data = await self._fetch_news_data(instrument)
+
+            # Step 3.5: Fetch technical indicators (if technical data provider available)
+            technical_data = await self._fetch_technical_data(instrument)
+
+            # Step 3.6: Fetch position data (if position manager available)
+            position_data = await self._fetch_position_data(instrument)
+
+            # Step 4: Run all agents in parallel
+            agent_results = await self._run_agents_parallel(market_data, options_chain, news_data, technical_data, position_data, context)
 
             # Step 4: Aggregate agent signals
             aggregated_analysis = self._aggregate_results(agent_results)
@@ -132,6 +197,8 @@ class TradingOrchestrator:
                 final_decision = self._generate_fallback_decision(aggregated_analysis, market_hours)
 
             # Step 6: Add metadata and return
+            from datetime import timezone
+            now = datetime.now(timezone.utc)
             final_decision.details.update({
                 "instrument": instrument,
                 "timestamp": timestamp.isoformat(),
@@ -140,11 +207,26 @@ class TradingOrchestrator:
                 "agents_run": len(agent_results),
                 "data_points": len(market_data.get("ohlc", [])),
                 "options_expiries": len(options_chain.get("expiries", [])) if options_chain else 0,
-                "analysis_duration_seconds": (datetime.now() - timestamp).total_seconds()
+                "analysis_duration_seconds": (now - timestamp).total_seconds()
             })
 
             logger.info(f"Completed analysis cycle: {final_decision.decision} "
                        f"(confidence: {final_decision.confidence:.1%})")
+
+            # Step 6: Execute trading decision if position manager available
+            if self.position_manager and final_decision.decision != "HOLD":
+                try:
+                    execution_result = await self.position_manager.execute_trading_decision(
+                        instrument=instrument,
+                        decision=final_decision.decision,
+                        confidence=final_decision.confidence,
+                        analysis_details=final_decision.details
+                    )
+                    final_decision.details["execution_result"] = execution_result
+                    logger.info(f"Executed trading decision: {execution_result}")
+                except Exception as exec_error:
+                    logger.error(f"Failed to execute trading decision: {exec_error}")
+                    final_decision.details["execution_error"] = str(exec_error)
 
             return final_decision
 
@@ -164,24 +246,39 @@ class TradingOrchestrator:
     async def _fetch_market_data(self, instrument: str) -> Dict[str, Any]:
         """Fetch comprehensive market data for analysis."""
         try:
-            # Get recent ticks (last 100)
-            ticks = await self.market_store.get_latest_ticks(instrument, limit=100)
-
-            # Get 15min OHLC data (last 24 hours = 96 bars)
-            # This covers the last trading day for intraday analysis
-            end_time = datetime.utcnow()
-            start_time = end_time - timedelta(hours=24)
-
-            ohlc_data = await self.market_store.get_ohlc(instrument, "15min", start_time, end_time)
-            ohlc_list = list(ohlc_data) if hasattr(ohlc_data, '__iter__') else []
-
-            return {
-                "instrument": instrument,
-                "ticks": ticks or [],
-                "ohlc": ohlc_list,
-                "current_price": ticks[0].last_price if ticks else None,
-                "data_freshness": datetime.utcnow().isoformat()
-            }
+            # Use the market_data_provider if available
+            if self.market_data_provider and hasattr(self.market_data_provider, 'get_ohlc_data'):
+                # New Redis-based provider
+                ohlc_data = await self.market_data_provider.get_ohlc_data(instrument, periods=100)
+                current_price = ohlc_data[-1].get('close', 0) if ohlc_data else 0
+                return {
+                    "instrument": instrument,
+                    "ticks": [],  # Not available from Redis provider
+                    "ohlc": ohlc_data,
+                    "current_price": current_price,
+                    "data_freshness": datetime.utcnow().isoformat()
+                }
+            elif hasattr(self, 'market_store') and self.market_store:
+                # Legacy market_store
+                ticks = await self.market_store.get_latest_ticks(instrument, limit=100)
+                end_time = datetime.utcnow()
+                start_time = end_time - timedelta(hours=24)
+                ohlc_data = await self.market_store.get_ohlc(instrument, "15min", start_time, end_time)
+                ohlc_list = list(ohlc_data) if hasattr(ohlc_data, '__iter__') else []
+                return {
+                    "instrument": instrument,
+                    "ticks": ticks or [],
+                    "ohlc": ohlc_list,
+                    "current_price": ticks[0].last_price if ticks else None,
+                    "data_freshness": datetime.utcnow().isoformat()
+                }
+            else:
+                return {
+                    "instrument": instrument,
+                    "ticks": [],
+                    "ohlc": [],
+                    "error": "No market data provider available"
+                }
 
         except Exception as e:
             logger.warning(f"Failed to fetch market data for {instrument}: {e}")
@@ -195,8 +292,14 @@ class TradingOrchestrator:
     async def _fetch_options_data(self, instrument: str) -> Dict[str, Any]:
         """Fetch options chain data for strategy analysis."""
         try:
-            # Get nearest expiry options chain
-            chain_data = await self.options_data.fetch_chain(instrument)
+            # Use the options_data_provider if available
+            if self.options_data_provider and hasattr(self.options_data_provider, 'fetch_chain'):
+                chain_data = await self.options_data_provider.fetch_chain(instrument)
+            elif hasattr(self, 'options_data') and self.options_data:
+                # Legacy options_data
+                chain_data = await self.options_data.fetch_chain(instrument)
+            else:
+                chain_data = {}
 
             return {
                 "instrument": instrument,
@@ -218,8 +321,132 @@ class TradingOrchestrator:
                 "error": str(e)
             }
 
+    async def _fetch_news_data(self, instrument: str) -> Dict[str, Any]:
+        """Fetch news data for sentiment analysis."""
+        if not self.news_service:
+            return {
+                "instrument": instrument,
+                "latest_news": [],
+                "sentiment_summary": {},
+                "news_available": False
+            }
+
+        try:
+            # Ensure news service is initialized (for RSS collector)
+            if hasattr(self.news_service, '__aenter__'):
+                await self.news_service.__aenter__()
+            
+            # Get latest news for the instrument
+            latest_news = await self.news_service.get_latest_news(instrument, limit=10)
+
+            # Get sentiment summary for the last 24 hours
+            sentiment_summary_obj = await self.news_service.get_sentiment_summary(instrument, hours=24)
+            
+            # Convert to dict for easier access
+            import dataclasses
+            sentiment_summary = dataclasses.asdict(sentiment_summary_obj)
+
+            # Extract aggregate sentiment score for agents
+            aggregate_sentiment = sentiment_summary.get("average_sentiment", 0.0)
+
+            return {
+                "instrument": instrument,
+                "latest_news": [dataclasses.asdict(item) for item in latest_news],  # Convert to dicts for compatibility
+                "sentiment_summary": sentiment_summary,
+                "sentiment_score": aggregate_sentiment,
+                "news_available": True
+            }
+
+        except Exception as e:
+            logger.warning(f"Failed to fetch news data for {instrument}: {e}")
+            return {
+                "instrument": instrument,
+                "latest_news": [],
+                "sentiment_summary": {},
+                "sentiment_score": 0.0,
+                "news_available": False,
+                "error": str(e)
+            }
+
+    async def _fetch_technical_data(self, instrument: str) -> Dict[str, Any]:
+        """Fetch technical indicators data."""
+        if not self.technical_data_provider:
+            return {
+                "instrument": instrument,
+                "technical_indicators": {},
+                "technical_data_available": False
+            }
+
+        try:
+            # Get technical indicators
+            technical_indicators = await self.technical_data_provider.get_technical_indicators(instrument, periods=100)
+
+            # Convert to dict for easier access
+            import dataclasses
+            indicators_dict = dataclasses.asdict(technical_indicators)
+
+            return {
+                "instrument": instrument,
+                "technical_indicators": indicators_dict,
+                "technical_data_available": True
+            }
+
+        except Exception as e:
+            logger.warning(f"Failed to fetch technical data for {instrument}: {e}")
+            return {
+                "instrument": instrument,
+                "technical_indicators": {},
+                "technical_data_available": False,
+                "error": str(e)
+            }
+        finally:
+            # Cleanup news service
+            if hasattr(self.news_service, '__aexit__'):
+                await self.news_service.__aexit__(None, None, None)
+
+    async def _fetch_position_data(self, instrument: str) -> Dict[str, Any]:
+        """Fetch position data for the instrument."""
+        if not self.position_manager:
+            return {
+                "instrument": instrument,
+                "positions": [],
+                "portfolio_summary": {},
+                "position_data_available": False
+            }
+
+        try:
+            # Get current positions for this instrument
+            positions = await self.position_manager.get_positions(instrument)
+            
+            # Get portfolio summary
+            portfolio_summary = await self.position_manager.get_portfolio_summary()
+
+            # Convert positions to dict for easier access
+            import dataclasses
+            positions_dict = [dataclasses.asdict(pos) for pos in positions]
+
+            return {
+                "instrument": instrument,
+                "positions": positions_dict,
+                "portfolio_summary": dataclasses.asdict(portfolio_summary),
+                "position_data_available": True
+            }
+
+        except Exception as e:
+            logger.warning(f"Failed to fetch position data for {instrument}: {e}")
+            return {
+                "instrument": instrument,
+                "positions": [],
+                "portfolio_summary": {},
+                "position_data_available": False,
+                "error": str(e)
+            }
+
     async def _run_agents_parallel(self, market_data: Dict[str, Any],
                                  options_data: Dict[str, Any],
+                                 news_data: Dict[str, Any],
+                                 technical_data: Dict[str, Any],
+                                 position_data: Dict[str, Any],
                                  context: Dict[str, Any]) -> list[AnalysisResult]:
         """Run all agents in parallel and collect their results."""
         if not self.agents:
@@ -231,8 +458,14 @@ class TradingOrchestrator:
             **context,
             **market_data,
             **options_data,
+            **news_data,
+            **technical_data,
+            **position_data,
             "options_chain": options_data,  # Alias for backward compatibility
-            "market_data": market_data      # Alias for backward compatibility
+            "market_data": market_data,      # Alias for backward compatibility
+            "news_data": news_data,          # Alias for backward compatibility
+            "technical_data": technical_data, # Alias for backward compatibility
+            "position_data": position_data   # Alias for backward compatibility
         }
 
         # Run all agents concurrently
@@ -252,7 +485,15 @@ class TradingOrchestrator:
         return valid_results
 
     def _aggregate_results(self, agent_results: list[AnalysisResult]) -> Dict[str, Any]:
-        """Aggregate multiple agent results into unified options trading view."""
+        """Aggregate multiple agent results into unified options trading view with weighted voting.
+        
+        Weighting Strategy:
+        - Analysis Tier (Technical/Sentiment/Macro/Fundamental): 1.5x weight
+        - Technical Specialists (Momentum/Trend/Volume/Reversion): 1.0x weight  
+        - Research Tier (Bull/Bear): 0.5x weight (contrarian views)
+        - Risk Agents: 2.0x weight with veto power
+        - Execution Agents: 0.0x weight (validators, not voters)
+        """
         if not agent_results:
             return {
                 "signal_strength": 0.0,
@@ -260,13 +501,36 @@ class TradingOrchestrator:
                 "confidence_score": 0.0,
                 "risk_assessment": "UNKNOWN",
                 "key_insights": [],
-                "options_strategy": "HOLD"
+                "options_strategy": "HOLD",
+                "weighted_votes": {"buy": 0, "sell": 0, "hold": 0}
             }
 
-        # Initialize aggregation
-        buy_signals = 0
+        # Define agent weights by category
+        AGENT_WEIGHTS = {
+            'technical': 1.5,      # Technical/Sentiment/Macro get higher weight
+            'sentiment': 1.5,
+            'macro': 1.5,
+            'fundamental': 1.5,
+            'momentum': 1.0,       # Specialized technical agents
+            'trend': 1.0,
+            'volume': 1.0,
+            'reversion': 1.0,
+            'mean_reversion': 1.0,
+            'bull': 0.5,           # Bull/Bear researchers get lower weight
+            'bear': 0.5,
+            'research': 0.5,
+            'risk': 2.0,           # Risk agent gets veto power
+            'execution': 0.0       # Execution doesn't vote, only validates
+        }
+
+        # Initialize weighted aggregation
+        buy_signals = 0  # Count
         sell_signals = 0
         hold_signals = 0
+        buy_weight = 0.0  # Weighted score
+        sell_weight = 0.0
+        hold_weight = 0.0
+        total_weight = 0.0
         total_confidence = 0.0
 
         technical_signals = []
@@ -274,75 +538,119 @@ class TradingOrchestrator:
         macro_signals = []
         risk_signals = []
         execution_signals = []
+        bull_bear_signals = []
 
-        # Analyze each agent result
+        # Analyze each agent result with weighted voting
+        risk_veto_triggered = False
+        risk_veto_reason = None
+        
         for result in agent_results:
             confidence = result.confidence
             total_confidence += confidence
-
-            # Categorize by decision
-            if result.decision.upper() == "BUY":
-                buy_signals += 1
-            elif result.decision.upper() == "SELL":
-                sell_signals += 1
-            else:
-                hold_signals += 1
-
+            
             # Extract agent-specific insights
             agent_name = getattr(result, '_agent_name', 'Unknown')
             details = result.details or {}
-
-            if 'technical' in agent_name.lower():
+            
+            # Determine agent weight based on category
+            weight = 1.0  # Default weight
+            for category, category_weight in AGENT_WEIGHTS.items():
+                if category in agent_name.lower():
+                    weight = category_weight
+                    break
+            
+            # RISK VETO: Check if risk agent vetoes the trade
+            if 'risk' in agent_name.lower():
+                risk_level = details.get('risk_level', 'UNKNOWN')
+                if risk_level == 'HIGH':
+                    risk_veto_triggered = True
+                    risk_veto_reason = details.get('veto_reason', 'High risk detected')
+                    logger.warning(f"RISK VETO TRIGGERED by {agent_name}: {risk_veto_reason}")
+            
+            # Categorize by decision with weighted votes
+            decision = result.decision.upper()
+            weighted_vote = weight * confidence
+            
+            if decision == "BUY":
+                buy_signals += 1
+                buy_weight += weighted_vote
+            elif decision == "SELL":
+                sell_signals += 1
+                sell_weight += weighted_vote
+            else:
+                hold_signals += 1
+                hold_weight += weighted_vote
+            
+            total_weight += weight
+            
+            # Categorize signals by agent type
+            signal_data = {
+                "agent": agent_name,
+                "signal": result.decision,
+                "confidence": confidence,
+                "weight": weight,
+                "weighted_vote": weighted_vote
+            }
+            
+            if 'technical' in agent_name.lower() and 'agent' in agent_name.lower():
+                # TechnicalAgent (not momentum/trend/etc)
                 technical_signals.append({
-                    "agent": agent_name,
-                    "signal": result.decision,
-                    "confidence": confidence,
+                    **signal_data,
                     "indicators": details
                 })
             elif 'sentiment' in agent_name.lower():
                 sentiment_signals.append({
-                    "agent": agent_name,
-                    "signal": result.decision,
-                    "confidence": confidence,
+                    **signal_data,
                     "sentiment": details.get('aggregate_sentiment', 0.0)
                 })
             elif 'macro' in agent_name.lower():
                 macro_signals.append({
-                    "agent": agent_name,
-                    "signal": result.decision,
-                    "confidence": confidence,
+                    **signal_data,
                     "indicators": details
                 })
             elif 'risk' in agent_name.lower():
                 risk_signals.append({
-                    "agent": agent_name,
-                    "signal": result.decision,
-                    "confidence": confidence,
+                    **signal_data,
                     "risk_level": details.get('risk_level', 'UNKNOWN')
                 })
             elif 'execution' in agent_name.lower():
                 execution_signals.append({
-                    "agent": agent_name,
-                    "signal": result.decision,
-                    "confidence": confidence,
+                    **signal_data,
                     "execution_readiness": details.get('execution_ready', False)
+                })
+            elif any(x in agent_name.lower() for x in ['bull', 'bear', 'research']):
+                bull_bear_signals.append({
+                    **signal_data,
+                    "thesis": details.get('thesis', 'N/A')
+                })
+            else:
+                # Specialized technical agents (momentum, trend, volume, reversion)
+                technical_signals.append({
+                    **signal_data,
+                    "indicators": details
                 })
 
         # Calculate consensus
         total_agents = len(agent_results)
         avg_confidence = total_confidence / total_agents if total_agents > 0 else 0.0
-
-        # Determine consensus direction
-        max_signals = max(buy_signals, sell_signals, hold_signals)
-        if max_signals == buy_signals and buy_signals > total_agents * 0.4:
-            consensus_direction = "BUY"
-        elif max_signals == sell_signals and sell_signals > total_agents * 0.4:
-            consensus_direction = "SELL"
-        else:
+        
+        # RISK VETO: Override all other signals if risk veto triggered
+        if risk_veto_triggered:
             consensus_direction = "HOLD"
-
-        # Calculate signal strength (0.0 to 1.0)
-        signal_strength = max_signals / total_agents if total_agents > 0 else 0.0
+            signal_strength = 0.0
+            logger.info(f"Consensus overridden to HOLD due to risk veto: {risk_veto_reason}")
+        else:
+            # Determine weighted consensus direction
+            max_weight = max(buy_weight, sell_weight, hold_weight)
+            if max_weight == buy_weight and buy_weight > 0:
+                consensus_direction = "BUY"
+            elif max_weight == sell_weight and sell_weight > 0:
+                consensus_direction = "SELL"
+            else:
+                consensus_direction = "HOLD"
+            
+            # Calculate weighted signal strength (0.0 to 1.0)
+            signal_strength = max_weight / total_weight if total_weight > 0 else 0.0
 
         # Assess overall risk
         risk_assessment = "LOW"
@@ -356,15 +664,22 @@ class TradingOrchestrator:
             consensus_direction, signal_strength, risk_assessment, avg_confidence
         )
 
-        # Compile key insights
+        # Compile key insights with weighted voting details
         key_insights = []
         if technical_signals:
-            key_insights.append(f"Technical: {len([s for s in technical_signals if s['signal'] == consensus_direction])}/{len(technical_signals)} support {consensus_direction}")
+            weighted_support = sum(s['weighted_vote'] for s in technical_signals if s['signal'] == consensus_direction)
+            key_insights.append(f"Technical: {len([s for s in technical_signals if s['signal'] == consensus_direction])}/{len(technical_signals)} agents support {consensus_direction} (weight: {weighted_support:.2f})")
         if sentiment_signals:
             avg_sentiment = sum(s['sentiment'] for s in sentiment_signals) / len(sentiment_signals)
             key_insights.append(f"Sentiment: {avg_sentiment:.2f} (market mood)")
         if macro_signals:
             key_insights.append(f"Macro: {len([s for s in macro_signals if s['signal'] == consensus_direction])}/{len(macro_signals)} support {consensus_direction}")
+        if bull_bear_signals:
+            bull_count = len([s for s in bull_bear_signals if 'bull' in s['agent'].lower()])
+            bear_count = len([s for s in bull_bear_signals if 'bear' in s['agent'].lower()])
+            key_insights.append(f"Research: {bull_count} bullish researchers, {bear_count} bearish researchers (contrarian views)")
+        if risk_veto_triggered:
+            key_insights.append(f"⚠️ RISK VETO: {risk_veto_reason}")
 
         return {
             "signal_strength": signal_strength,
@@ -376,13 +691,24 @@ class TradingOrchestrator:
                 "buy_signals": buy_signals,
                 "sell_signals": sell_signals,
                 "hold_signals": hold_signals,
-                "total_agents": total_agents
+                "total_agents": total_agents,
+                "total_weight": total_weight
+            },
+            "weighted_votes": {
+                "buy": round(buy_weight, 2),
+                "sell": round(sell_weight, 2),
+                "hold": round(hold_weight, 2)
+            },
+            "risk_veto": {
+                "triggered": risk_veto_triggered,
+                "reason": risk_veto_reason
             },
             "technical_signals": technical_signals,
             "sentiment_signals": sentiment_signals,
             "macro_signals": macro_signals,
             "risk_signals": risk_signals,
             "execution_signals": execution_signals,
+            "bull_bear_signals": bull_bear_signals,
             "key_insights": key_insights
         }
 
@@ -426,25 +752,31 @@ class TradingOrchestrator:
             from genai_module.contracts import LLMRequest
 
             llm_request = LLMRequest(
-                model="gpt-4o",  # Use configured model
-                messages=[{"role": "user", "content": prompt}],
+                prompt=prompt,
+                model=os.getenv("LLM_DECISION_MODEL", os.getenv("LLM_MODEL")),
                 temperature=0.1,  # Low temperature for consistent decisions
                 max_tokens=1000
             )
 
-            llm_response = await self.llm_client.request(llm_request)
+            llm_response = await self.llm_client.generate(llm_request)
 
             # Parse LLM response
             return self._parse_llm_response(llm_response, aggregated)
 
         except Exception as e:
-            logger.error(f"LLM decision generation failed: {e}")
+            # Log full stack so provider/LLM issues are easier to diagnose
+            logger.exception(f"LLM decision generation failed: {e}")
             return self._generate_fallback_decision(aggregated, True)
 
     def _build_decision_prompt(self, aggregated: Dict[str, Any], context: Dict[str, Any]) -> str:
-        """Build comprehensive LLM prompt for options trading decision."""
+        """Build comprehensive LLM prompt for options trading decision with weighted voting context."""
         instrument = context.get("instrument", "BANKNIFTY")
         market_hours = context.get("market_hours", False)
+        
+        # Extract weighted voting details
+        weighted_votes = aggregated.get('weighted_votes', {})
+        risk_veto = aggregated.get('risk_veto', {})
+        bull_bear_signals = aggregated.get('bull_bear_signals', [])
 
         prompt = f"""You are an expert options trader analyzing {instrument} for the next 15-minute period.
 
@@ -454,41 +786,70 @@ MARKET ANALYSIS SUMMARY:
 - Average Confidence: {aggregated['confidence_score']:.1%}
 - Risk Assessment: {aggregated['risk_assessment']}
 - Agent Breakdown: {aggregated['agent_breakdown']['buy_signals']} BUY, {aggregated['agent_breakdown']['sell_signals']} SELL, {aggregated['agent_breakdown']['hold_signals']} HOLD
+- Total Agents: {aggregated['agent_breakdown']['total_agents']}
+
+WEIGHTED VOTING RESULTS:
+- BUY Weight: {weighted_votes.get('buy', 0):.2f}
+- SELL Weight: {weighted_votes.get('sell', 0):.2f}
+- HOLD Weight: {weighted_votes.get('hold', 0):.2f}
+- Total Weight: {aggregated['agent_breakdown'].get('total_weight', 0):.2f}
 
 KEY INSIGHTS:
 {chr(10).join(f"- {insight}" for insight in aggregated['key_insights'])}
 
 TECHNICAL ANALYSIS:
-{chr(10).join(f"- {sig['agent']}: {sig['signal']} ({sig['confidence']:.1%})" for sig in aggregated['technical_signals'][:3])}
+{chr(10).join(f"- {sig['agent']}: {sig['signal']} ({sig['confidence']:.1%}, weight: {sig.get('weight', 1.0):.1f}x)" for sig in aggregated['technical_signals'][:5])}
 
 SENTIMENT ANALYSIS:
-{chr(10).join(f"- {sig['agent']}: {sig['signal']} (sentiment: {sig['sentiment']:.2f})" for sig in aggregated['sentiment_signals'][:2])}
+{chr(10).join(f"- {sig['agent']}: {sig['signal']} (sentiment: {sig['sentiment']:.2f}, weight: {sig.get('weight', 1.0):.1f}x)" for sig in aggregated['sentiment_signals'][:3])}
 
 MACRO ANALYSIS:
-{chr(10).join(f"- {sig['agent']}: {sig['signal']} ({sig['confidence']:.1%})" for sig in aggregated['macro_signals'][:2])}
+{chr(10).join(f"- {sig['agent']}: {sig['signal']} ({sig['confidence']:.1%}, weight: {sig.get('weight', 1.0):.1f}x)" for sig in aggregated['macro_signals'][:3])}"""
+
+        # Add Bull/Bear research if available
+        if bull_bear_signals:
+            prompt += f"""
+
+RESEARCH INSIGHTS (Contrarian Views):
+{chr(10).join(f"- {sig['agent']}: {sig['signal']} - {sig.get('thesis', 'N/A')} (weight: {sig.get('weight', 0.5):.1f}x)" for sig in bull_bear_signals)}"""
+
+        prompt += f"""
 
 RISK ASSESSMENT:
-{chr(10).join(f"- {sig['agent']}: {sig['signal']} (risk: {sig.get('risk_level', 'UNKNOWN')})" for sig in aggregated['risk_signals'][:2])}
+{chr(10).join(f"- {sig['agent']}: {sig['signal']} (risk: {sig.get('risk_level', 'UNKNOWN')}, weight: {sig.get('weight', 2.0):.1f}x)" for sig in aggregated['risk_signals'][:2])}"""
+
+        # Add risk veto warning if triggered
+        if risk_veto.get('triggered'):
+            prompt += f"""
+
+⚠️ RISK VETO TRIGGERED: {risk_veto.get('reason', 'High risk detected')}
+All trading signals have been overridden to HOLD due to risk management protocols."""
+
+        prompt += f"""
 
 CURRENT RECOMMENDATION: {aggregated['options_strategy']}
 
 INSTRUCTIONS:
-1. Analyze all signals and provide a final options trading decision
-2. Consider market hours: {'OPEN' if market_hours else 'CLOSED'}
-3. Factor in risk assessment and position sizing
-4. Provide specific options strategy with reasoning
-5. Include confidence level and risk management notes
+1. Analyze all signals with consideration for their weighted importance
+2. Note that Analysis Tier agents (Technical/Sentiment/Macro) have 1.5x weight
+3. Technical Specialists (Momentum/Trend/Volume/Reversion) have 1.0x weight  
+4. Research agents (Bull/Bear) have 0.5x weight as contrarian views
+5. Risk agents have 2.0x weight and can VETO trades
+6. Consider market hours: {'OPEN' if market_hours else 'CLOSED'}
+7. Factor in risk assessment and position sizing
+8. Provide specific options strategy with reasoning
+9. Include confidence level and risk management notes
 
 Respond in this exact JSON format:
-{
+{{
   "decision": "BUY_CALL|BUY_PUT|IRON_CONDOR|HOLD",
   "confidence": 0.0-1.0,
   "strategy": "detailed options strategy description",
-  "reasoning": "comprehensive analysis explanation",
+  "reasoning": "comprehensive analysis explanation with weighted vote consideration",
   "risk_notes": "position sizing and risk management",
   "timeframe": "next 15 minutes to 1 hour",
   "entry_conditions": "specific conditions to wait for"
-}
+}}
 """
 
         return prompt
@@ -555,3 +916,4 @@ Respond in this exact JSON format:
                 "risk_adjusted": True
             }
         )
+

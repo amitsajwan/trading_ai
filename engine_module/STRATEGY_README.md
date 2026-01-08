@@ -44,3 +44,4 @@ The dashboard exposes:
 - Add expiry filtering across multiple expiries.
 - Position sizing via `risk_metrics` and cash/portfolio constraints.
 - Add backtesting gates before auto-placement.
+

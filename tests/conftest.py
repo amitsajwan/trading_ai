@@ -1,4 +1,24 @@
-"""Pytest configuration and fixtures."""
+"""Pytest configuration and fixtures.
+
+This file injects local package `src` directories onto `sys.path` so that
+running `pytest` from the repository root works without setting PYTHONPATH.
+"""
+
+import sys
+from pathlib import Path
+
+# Make any `*/src` directories importable during tests (convenience for devs/CI)
+_root = Path(__file__).resolve().parents[1]
+for child in _root.iterdir():
+    src = child / "src"
+    if src.is_dir():
+        p = str(src)
+        if p not in sys.path:
+            sys.path.insert(0, p)
+# Ensure repository root is also importable
+_root_str = str(_root)
+if _root_str not in sys.path:
+    sys.path.insert(0, _root_str)
 
 import pytest
 import os
@@ -46,4 +66,5 @@ def mock_env_vars(monkeypatch):
     monkeypatch.setenv("MONGODB_URI", "mongodb://localhost:27017/")
     monkeypatch.setenv("REDIS_HOST", "localhost")
     monkeypatch.setenv("PAPER_TRADING_MODE", "true")
+
 

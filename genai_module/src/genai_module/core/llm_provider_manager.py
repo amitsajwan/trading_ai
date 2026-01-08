@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List, Tuple
 from enum import Enum
 from dataclasses import dataclass, field
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +72,6 @@ class LLMProviderManager:
                 class _FallbackSettings:
                     pass
                 fs = _FallbackSettings()
-                import os
                 fs.ollama_base_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
                 fs.groq_api_key = os.getenv("GROQ_API_KEY")
                 fs.google_api_key = os.getenv("GOOGLE_API_KEY")
@@ -150,7 +150,7 @@ class LLMProviderManager:
                 time.sleep(self._health_check_interval)
     
     def _initialize_providers(self):
-        """Initialize all available providers."""
+        """Initialize all available providers (Groq, Cohere, AI21 with multi-key support)."""
         # Helper to load model lists from env (comma-separated) with a single fallback
         def _get_model_list(single_env: str, plural_env: str, default: str) -> List[str]:
             models_env = os.getenv(plural_env)
@@ -160,271 +160,102 @@ class LLMProviderManager:
             single = os.getenv(single_env)
             return [single] if single else [default]
 
-        # Ollama (Local LLM - initialize FIRST for highest priority)
-        ollama_base_url = self.settings.ollama_base_url or "http://localhost:11434"
-        ollama_model = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
-        ollama_models = _get_model_list("OLLAMA_MODEL", "OLLAMA_MODELS", ollama_model)
-        # Check if Ollama is available (no API key needed)
-        try:
-            import httpx
-            response = httpx.get(f"{ollama_base_url}/api/tags", timeout=1.0)  # Fast timeout - don't block
-            if response.status_code == 200:
-                models_data = response.json().get('models', [])
-                available_models = [m.get('name', '') for m in models_data]
-                
-                # Verify the configured model exists
-                if ollama_model not in available_models:
-                    logger.warning(f"⚠️ Ollama model '{ollama_model}' not found. Available models: {', '.join(available_models[:5])}")
-                    # Try to use the first available model as fallback
-                    if available_models:
-                        ollama_model = available_models[0]
-                        ollama_models = [ollama_model]
-                        logger.info(f"Using fallback model: {ollama_model}")
-                    else:
-                        logger.warning("No Ollama models available, skipping Ollama provider")
-                        return  # Skip Ollama initialization if no models
-                
-                # Initialize Ollama provider (with original or fallback model)
-                # Lower priority than cloud providers (cloud is faster and more reliable)
-                self.providers["ollama"] = ProviderConfig(
-                    name="ollama",
-                    api_key="ollama",  # Not used but required
-                    base_url=ollama_base_url,
-                    model=ollama_model,
-                    models=ollama_models,
-                    priority=10,  # Lower priority - cloud providers preferred (faster, more reliable)
-                    rate_limit_per_minute=1000,  # Very high (local)
-                    rate_limit_per_day=10000000,  # Very high (local)
-                    cost_per_1k_tokens=0.0  # Free (local)
-                )
-                try:
-                    from openai import OpenAI
-                    import httpx
-                    # Ollama OpenAI-compatible API requires /v1 endpoint
-                    ollama_api_url = f"{ollama_base_url}/v1" if not ollama_base_url.endswith("/v1") else ollama_base_url
-                    # Set 30 second timeout for Ollama (reduced - prefer cloud providers)
-                    self.provider_clients["ollama"] = OpenAI(
-                        api_key="ollama",  # Not used by Ollama but required by OpenAI client
-                        base_url=ollama_api_url,
-                        timeout=httpx.Timeout(30.0, connect=5.0)  # 30s total, 5s connect (reduced)
-                    )
-                    logger.info(f"✅ Ollama provider initialized FIRST (model: {ollama_model}, base_url: {ollama_api_url})")
-                except Exception as e:
-                    logger.warning(f"Failed to initialize Ollama client: {e}")
-                    self.providers["ollama"].status = ProviderStatus.UNAVAILABLE
-            else:
-                logger.debug(f"Ollama not available at {ollama_base_url} (status: {response.status_code})")
-        except Exception as e:
-            logger.debug(f"Ollama not available: {e}")
-        
-        # Groq Cloud - FASTEST free provider
-        if self.settings.groq_api_key:
-            # Use fastest Groq model (llama-3.1-8b-instant is faster than 70b)
-            groq_model = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")  # Fastest Groq model
+        # Groq - FASTEST provider with load balancing support (Priority: 0 - Highest)
+        groq_keys = self._get_multiple_api_keys("GROQ_API_KEY")
+        if groq_keys:
+            # Best Groq model for fast inference: llama-3.1-70b-versatile or llama-3.1-8b-instant
+            groq_model = os.getenv("GROQ_MODEL", "llama-3.1-70b-versatile")
             groq_models = _get_model_list("GROQ_MODEL", "GROQ_MODELS", groq_model)
+
+            # Store multiple keys for load balancing
+            self._groq_keys = groq_keys
+            self._groq_key_index = 0
+
             self.providers["groq"] = ProviderConfig(
                 name="groq",
-                api_key=self.settings.groq_api_key,
+                api_key=groq_keys[0],  # Primary key for config, but we'll rotate in calls
                 model=groq_model,
                 models=groq_models,
-                priority=0,  # HIGHEST priority - fastest free provider
-                rate_limit_per_minute=30,
-                rate_limit_per_day=100000,
+                priority=0,  # HIGHEST priority - fastest provider
+                rate_limit_per_minute=30 * len(groq_keys),  # Scale rate limits with multiple keys
+                rate_limit_per_day=100000 * len(groq_keys),
                 cost_per_1k_tokens=0.0
             )
-            try:
-                from groq import Groq
-                # Groq client doesn't directly support timeout, but we'll handle it in the call
-                self.provider_clients["groq"] = Groq(api_key=self.settings.groq_api_key)
-                logger.info("✅ Groq provider initialized")
-            except Exception as e:
-                logger.warning(f"Failed to initialize Groq: {e}")
-                self.providers["groq"].status = ProviderStatus.UNAVAILABLE
+            # Store API keys directly - we'll use httpx for requests
+            self.provider_clients["groq"] = groq_keys  # List of API keys for load balancing
+            logger.info(f"✅ Groq provider initialized with {len(groq_keys)} API keys (model: {groq_model})")
         
-        # Google Gemini (only if API key exists AND module is available)
-        if self.settings.google_api_key:
-            try:
-                # Quick check if module exists before trying to initialize
-                import importlib
-                importlib.import_module("google.genai")
-                
-                gemini_model = os.getenv("GEMINI_MODEL", "gemini-flash-latest")
-                gemini_models = _get_model_list("GEMINI_MODEL", "GEMINI_MODELS", gemini_model)
-                self.providers["gemini"] = ProviderConfig(
-                    name="gemini",
-                    api_key=self.settings.google_api_key,
-                    model=gemini_model,  # Use latest flash model (works with free tier)
-                    models=gemini_models,
-                    priority=1,  # Second highest priority (fast, free tier)
-                    rate_limit_per_minute=60,
-                    rate_limit_per_day=15000000,  # Very high limit
-                    cost_per_1k_tokens=0.0
-                )
-                import google.genai as genai
-                genai.configure(api_key=self.settings.google_api_key)
-                self.provider_clients["gemini"] = genai
-                logger.info("✅ Google Gemini provider initialized")
-            except ImportError:
-                # Module not installed - skip silently (don't spam warnings)
-                logger.debug("Google Gemini module not installed, skipping")
-            except Exception as e:
-                logger.warning(f"Failed to initialize Gemini: {e}")
-                # Don't create provider if initialization fails
-        
-        # OpenRouter
-        openrouter_key = getattr(settings, 'openrouter_api_key', None) or os.getenv("OPENROUTER_API_KEY")
-        if openrouter_key:
-            # Use a reliable free model - try meta-llama/llama-3.2-3b-instruct:free or mistralai/mistral-7b-instruct:free
-            # Use fastest free model on OpenRouter
-            openrouter_model = os.getenv("OPENROUTER_MODEL", "meta-llama/llama-3.2-3b-instruct:free")
-            openrouter_models = _get_model_list("OPENROUTER_MODEL", "OPENROUTER_MODELS", openrouter_model)
-            self.providers["openrouter"] = ProviderConfig(
-                name="openrouter",
-                api_key=openrouter_key,
-                base_url="https://openrouter.ai/api/v1",
-                model=openrouter_model,  # Free model - verified working
-                models=openrouter_models,
-                priority=2,  # Third priority (free tier)
-                rate_limit_per_minute=50,
-                rate_limit_per_day=50000,
-                cost_per_1k_tokens=0.0
-            )
-            try:
-                from openai import OpenAI
-                import httpx
-                self.provider_clients["openrouter"] = OpenAI(
-                    api_key=openrouter_key,
-                    base_url="https://openrouter.ai/api/v1",
-                    timeout=httpx.Timeout(60.0, connect=10.0)
-                )
-                logger.info("✅ OpenRouter provider initialized")
-            except Exception as e:
-                logger.warning(f"Failed to initialize OpenRouter: {e}")
-                self.providers["openrouter"].status = ProviderStatus.UNAVAILABLE
-        
-        # Together AI (if configured)
-        if self.settings.together_api_key:
-            # Use faster model if available
-            together_model = os.getenv("TOGETHER_MODEL", "mistralai/Mixtral-8x7B-Instruct-v0.1")
-            together_models = _get_model_list("TOGETHER_MODEL", "TOGETHER_MODELS", together_model)
-            self.providers["together"] = ProviderConfig(
-                name="together",
-                api_key=self.settings.together_api_key,
-                base_url="https://api.together.xyz/v1",
-                model=together_model,
-                models=together_models,
-                priority=3,  # Fourth priority
-                rate_limit_per_minute=40,
-                rate_limit_per_day=100000,
-                cost_per_1k_tokens=0.0
-            )
-            try:
-                from openai import OpenAI
-                import httpx
-                self.provider_clients["together"] = OpenAI(
-                    api_key=self.settings.together_api_key,
-                    base_url="https://api.together.xyz/v1",
-                    timeout=httpx.Timeout(60.0, connect=10.0)
-                )
-                logger.info("✅ Together AI provider initialized")
-            except Exception as e:
-                logger.warning(f"Failed to initialize Together AI: {e}")
-                self.providers["together"].status = ProviderStatus.UNAVAILABLE        
-        # OpenAI (if configured)
-        if self.settings.openai_api_key:
-            self.providers["openai"] = ProviderConfig(
-                name="openai",
-                api_key=self.settings.openai_api_key,
-                model="gpt-4o-mini",  # Cost-effective
-                models=_get_model_list("OPENAI_MODEL", "OPENAI_MODELS", "gpt-4o-mini"),
-                priority=5,  # Lower priority (paid)
-                rate_limit_per_minute=60,
-                rate_limit_per_day=1000000,
-                cost_per_1k_tokens=0.15  # Approximate
-            )
-            try:
-                from openai import OpenAI
-                import httpx
-                self.provider_clients["openai"] = OpenAI(
-                    api_key=self.settings.openai_api_key,
-                    timeout=httpx.Timeout(60.0, connect=10.0)
-                )
-                logger.info("✅ OpenAI provider initialized")
-            except Exception as e:
-                logger.warning(f"Failed to initialize OpenAI: {e}")
-                self.providers["openai"].status = ProviderStatus.UNAVAILABLE
-        
-        # Cohere (if configured)
-        if self.settings.cohere_api_key:
-            cohere_model = os.getenv("COHERE_MODEL", "command")
+        # Cohere - Advanced reasoning with multi-key support (Priority: 1)
+        cohere_keys = self._get_multiple_api_keys("COHERE_API_KEY")
+        if cohere_keys:
+            # Best Cohere model: command-r-plus (best) or command-r (faster)
+            cohere_model = os.getenv("COHERE_MODEL", "command-r-plus")
             cohere_models = _get_model_list("COHERE_MODEL", "COHERE_MODELS", cohere_model)
+            
+            # Store multiple keys for load balancing
+            self._cohere_keys = cohere_keys
+            self._cohere_key_index = 0
+            
             self.providers["cohere"] = ProviderConfig(
                 name="cohere",
-                api_key=self.settings.cohere_api_key,
+                api_key=cohere_keys[0],  # Primary key, will rotate
                 model=cohere_model,
                 models=cohere_models,
-                priority=6,  # Lower priority (paid)
-                rate_limit_per_minute=100,
-                rate_limit_per_day=5000000,
-                cost_per_1k_tokens=0.0  # Free tier available
+                priority=1,  # Second priority
+                rate_limit_per_minute=100 * len(cohere_keys),
+                rate_limit_per_day=5000000 * len(cohere_keys),
+                cost_per_1k_tokens=0.0
             )
-            try:
-                import cohere
-                self.provider_clients["cohere"] = cohere.Client(api_key=self.settings.cohere_api_key)
-                logger.info("✅ Cohere provider initialized")
-            except ImportError:
-                logger.debug("Cohere library not installed, skipping")
-            except Exception as e:
-                logger.warning(f"Failed to initialize Cohere: {e}")
-                self.providers["cohere"].status = ProviderStatus.UNAVAILABLE
+            # Store API keys for load balancing
+            self.provider_clients["cohere"] = cohere_keys
+            logger.info(f"✅ Cohere provider initialized with {len(cohere_keys)} API keys (model: {cohere_model})")
         
-        # AI21 (if configured)
-        if self.settings.ai21_api_key:
-            ai21_model = os.getenv("AI21_MODEL", "j2-mid")
+        # AI21 - Quality language models with multi-key support (Priority: 2)
+        ai21_keys = self._get_multiple_api_keys("AI21_API_KEY")
+        if ai21_keys:
+            # Best AI21 model: jamba-instruct (latest) or j2-ultra (powerful)
+            ai21_model = os.getenv("AI21_MODEL", "jamba-instruct")
             ai21_models = _get_model_list("AI21_MODEL", "AI21_MODELS", ai21_model)
+            
+            # Store multiple keys for load balancing
+            self._ai21_keys = ai21_keys
+            self._ai21_key_index = 0
+            
             self.providers["ai21"] = ProviderConfig(
                 name="ai21",
-                api_key=self.settings.ai21_api_key,
+                api_key=ai21_keys[0],  # Primary key, will rotate
                 model=ai21_model,
                 models=ai21_models,
-                priority=7,  # Lower priority (paid)
-                rate_limit_per_minute=60,
-                rate_limit_per_day=300000,
-                cost_per_1k_tokens=0.0  # Free tier available
+                priority=2,  # Third priority
+                rate_limit_per_minute=60 * len(ai21_keys),
+                rate_limit_per_day=300000 * len(ai21_keys),
+                cost_per_1k_tokens=0.0
             )
-            try:
-                import requests
-                # AI21 uses REST API, no special client needed
-                self.provider_clients["ai21"] = None  # Will use requests directly
-                logger.info("✅ AI21 provider initialized")
-            except Exception as e:
-                logger.warning(f"Failed to initialize AI21: {e}")
-                self.providers["ai21"].status = ProviderStatus.UNAVAILABLE
-        
-        # HuggingFace (if configured)
-        if self.settings.huggingface_api_key:
-            huggingface_model = os.getenv("HUGGINGFACE_MODEL", "microsoft/DialoGPT-medium")
-            huggingface_models = _get_model_list("HUGGINGFACE_MODEL", "HUGGINGFACE_MODELS", huggingface_model)
-            self.providers["huggingface"] = ProviderConfig(
-                name="huggingface",
-                api_key=self.settings.huggingface_api_key,
-                model=huggingface_model,
-                models=huggingface_models,
-                priority=8,  # Lowest priority (free but slower)
-                rate_limit_per_minute=30,
-                rate_limit_per_day=30000,
-                cost_per_1k_tokens=0.0  # Free
-            )
-            try:
-                import requests
-                # HuggingFace uses REST API, no special client needed
-                self.provider_clients["huggingface"] = None  # Will use requests directly
-                logger.info("✅ HuggingFace provider initialized")
-            except Exception as e:
-                logger.warning(f"Failed to initialize HuggingFace: {e}")
-                self.providers["huggingface"].status = ProviderStatus.UNAVAILABLE
+            # Store API keys for load balancing
+            self.provider_clients["ai21"] = ai21_keys
+            logger.info(f"✅ AI21 provider initialized with {len(ai21_keys)} API keys (model: {ai21_model})")
         
         logger.info(f"Initialized {len([p for p in self.providers.values() if p.status == ProviderStatus.AVAILABLE])} LLM providers")
+    
+    def _get_multiple_api_keys(self, base_key_name: str) -> List[str]:
+        """Get multiple API keys for load balancing (e.g., GROQ_API_KEY, GROQ_API_KEY_2, etc.)."""
+        keys = []
+
+        # Primary key
+        primary_key = getattr(self.settings, base_key_name.lower(), None) or os.getenv(base_key_name)
+        if primary_key:
+            keys.append(primary_key)
+
+        # Additional keys (2, 3, 4, etc.)
+        for i in range(2, 10):  # Support up to 9 keys
+            key_name = f"{base_key_name}_{i}"
+            key = os.getenv(key_name)
+            if key:
+                keys.append(key)
+            else:
+                break
+
+        return keys
     
     def _select_best_provider(self, use_rotation: bool = False) -> Optional[str]:
         """Select the best available provider based on priority and status."""
@@ -938,6 +769,55 @@ class LLMProviderManager:
         
         return self.provider_clients[provider_name], provider_name
     
+    def generate_text(
+        self,
+        prompt: str,
+        max_tokens: int = 512,
+        temperature: float = 0.2,
+        model_override: Optional[str] = None,
+        system_prompt: Optional[str] = None,
+        provider_name: Optional[str] = None,
+    ) -> Tuple[str, int, Optional[float]]:
+        """Legacy helper that powers the ProviderManagerClient adapter.
+
+        Accepts a prompt string and returns the raw text along with lightweight
+        token/cost estimates so the new `LLMClient` interface can wrap the
+        existing provider manager without each caller re-implementing the
+        selection / retry logic.
+        """
+        if not prompt:
+            raise ValueError("prompt is required")
+
+        default_system_prompt = os.getenv(
+            "LLM_SYSTEM_PROMPT",
+            "You are Zerodha's multi-agent trading assistant. Provide concise, risk-aware reasoning.",
+        )
+        system_prompt = system_prompt or default_system_prompt
+
+        response_text = self.call_llm(
+            system_prompt=system_prompt,
+            user_message=prompt,
+            model=model_override,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            provider_name=provider_name,
+        )
+
+        # Rough token estimate to keep downstream telemetry consistent
+        combined_prompt = f"{system_prompt}\n\n{prompt}"
+        prompt_tokens = len(combined_prompt.split())
+        response_tokens = len(str(response_text).split())
+        tokens_used = max(1, prompt_tokens + response_tokens)
+
+        resolved_provider = provider_name or self.current_provider
+        cost = None
+        if resolved_provider and resolved_provider in self.providers:
+            per_thousand = self.providers[resolved_provider].cost_per_1k_tokens or 0.0
+            if per_thousand > 0:
+                cost = round((tokens_used / 1000.0) * per_thousand, 6)
+
+        return response_text, tokens_used, cost
+
     def call_llm(
         self,
         system_prompt: str,
@@ -976,122 +856,112 @@ class LLMProviderManager:
                 call_start_time = time.time()
                 logger.info(f"🔄 Attempt {attempt + 1}/{max_retries}: Trying {provider} (model: {model_name})")
 
-                if provider == "gemini":
-                    def _call_gemini():
-                        genai_model = client.GenerativeModel(model_name)
-                        prompt = f"{system_prompt}\n\n{user_message}"
-                        response = genai_model.generate_content(
-                            prompt,
-                            generation_config={
-                                "temperature": temperature,
-                                "max_output_tokens": max_tokens
-                            }
-                        )
-                        return response.text
-
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                        future = executor.submit(_call_gemini)
-                        result = future.result(timeout=60.0)
-                elif provider == "groq":
+                if provider == "groq":
                     def _call_groq():
-                        return client.chat.completions.create(
-                            model=model_name,
-                            messages=[
+                        import httpx
+
+                        # Load balancing: rotate between multiple Groq API keys
+                        if hasattr(self, '_groq_keys') and len(self._groq_keys) > 1:
+                            # Round-robin key selection for load balancing
+                            key_index = getattr(self, '_groq_key_index', 0)
+                            api_key = self._groq_keys[key_index % len(self._groq_keys)]
+                            self._groq_key_index = (key_index + 1) % len(self._groq_keys)
+                            logger.debug(f"Using Groq key #{(key_index % len(self._groq_keys)) + 1} for load balancing")
+                        else:
+                            # Single key fallback
+                            api_key = self.provider_clients.get(provider)
+                            if isinstance(api_key, list):
+                                api_key = api_key[0]  # Use first key if it's a list
+
+                        # Direct HTTP call to Groq API
+                        headers = {
+                            "Authorization": f"Bearer {api_key}",
+                            "Content-Type": "application/json"
+                        }
+
+                        data = {
+                            "model": model_name,
+                            "messages": [
                                 {"role": "system", "content": system_prompt},
                                 {"role": "user", "content": user_message}
                             ],
-                            temperature=temperature,
-                            max_tokens=max_tokens
+                            "temperature": temperature,
+                            "max_tokens": max_tokens
+                        }
+
+                        response = httpx.post(
+                            "https://api.groq.com/openai/v1/chat/completions",
+                            headers=headers,
+                            json=data,
+                            timeout=60.0
                         )
+                        response.raise_for_status()
+                        result = response.json()
+                        return result
 
                     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
                         future = executor.submit(_call_groq)
                         response = future.result(timeout=60.0)
-                        result = response.choices[0].message.content
-                elif provider == "ollama":
-                    ollama_model = config.model
-                    logger.debug(f"Using Ollama model: {ollama_model} (requested: {model_name})")
-
-                    if self._ollama_semaphore is None:
-                        import threading
-                        self._ollama_semaphore = threading.Semaphore(2)
-
-                    def _call_ollama():
-                        with self._ollama_semaphore:
-                            logger.debug("Ollama call starting (semaphore acquired)")
-                            return client.chat.completions.create(
-                                model=ollama_model,
-                                messages=[
-                                    {"role": "system", "content": system_prompt},
-                                    {"role": "user", "content": user_message}
-                                ],
-                                temperature=temperature,
-                                max_tokens=max_tokens
-                            )
-
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                        future = executor.submit(_call_ollama)
-                        try:
-                            response = future.result(timeout=30.0)
-                            result = response.choices[0].message.content
-                        except concurrent.futures.TimeoutError:
-                            logger.error("❌ Ollama call timed out after 30 seconds")
-                            self.providers["ollama"].status = ProviderStatus.UNAVAILABLE
-                            self.providers["ollama"].last_error = "Timeout after 30 seconds"
-                            self.providers["ollama"].last_error_time = datetime.now()
-                            raise TimeoutError("Ollama call timed out after 30 seconds")
-                elif provider in ["openrouter", "together", "openai"]:
-                    response = client.chat.completions.create(
-                        model=model_name,
-                        messages=[
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": user_message}
-                        ],
-                        temperature=temperature,
-                        max_tokens=max_tokens
-                    )
-                    result = response.choices[0].message.content
+                        result = response["choices"][0]["message"]["content"]
                 elif provider == "cohere":
                     import cohere
-                    co = cohere.Client(api_key=config.api_key)
-                    response = co.generate(
+                    
+                    # Load balancing: rotate between multiple Cohere API keys
+                    if hasattr(self, '_cohere_keys') and len(self._cohere_keys) > 1:
+                        # Round-robin key selection for load balancing
+                        key_index = getattr(self, '_cohere_key_index', 0)
+                        api_key = self._cohere_keys[key_index % len(self._cohere_keys)]
+                        self._cohere_key_index = (key_index + 1) % len(self._cohere_keys)
+                        logger.debug(f"Using Cohere key #{(key_index % len(self._cohere_keys)) + 1} for load balancing")
+                    else:
+                        # Single key fallback
+                        api_key = self.provider_clients.get(provider)
+                        if isinstance(api_key, list):
+                            api_key = api_key[0]  # Use first key if it's a list
+                    
+                    co = cohere.Client(api_key=api_key)
+                    response = co.chat(
                         model=model_name,
-                        prompt=f"{system_prompt}\n\n{user_message}",
+                        message=user_message,
+                        preamble=system_prompt,
                         max_tokens=max_tokens,
-                        temperature=temperature,
-                        num_generations=1
+                        temperature=temperature
                     )
-                    result = response.generations[0].text
+                    result = response.text
                 elif provider == "ai21":
                     import requests
-                    url = f"https://api.ai21.com/studio/v1/{model_name}/complete"
+                    
+                    # Load balancing: rotate between multiple AI21 API keys
+                    if hasattr(self, '_ai21_keys') and len(self._ai21_keys) > 1:
+                        # Round-robin key selection for load balancing
+                        key_index = getattr(self, '_ai21_key_index', 0)
+                        api_key = self._ai21_keys[key_index % len(self._ai21_keys)]
+                        self._ai21_key_index = (key_index + 1) % len(self._ai21_keys)
+                        logger.debug(f"Using AI21 key #{(key_index % len(self._ai21_keys)) + 1} for load balancing")
+                    else:
+                        # Single key fallback
+                        api_key = self.provider_clients.get(provider)
+                        if isinstance(api_key, list):
+                            api_key = api_key[0]  # Use first key if it's a list
+                    
+                    # Use modern chat completions API for jamba-instruct
+                    url = f"https://api.ai21.com/studio/v1/chat/completions"
                     headers = {
-                        "Authorization": f"Bearer {config.api_key}",
+                        "Authorization": f"Bearer {api_key}",
                         "Content-Type": "application/json"
                     }
                     data = {
-                        "prompt": f"{system_prompt}\n\n{user_message}",
-                        "maxTokens": max_tokens,
+                        "model": model_name,
+                        "messages": [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_message}
+                        ],
+                        "max_tokens": max_tokens,
                         "temperature": temperature
                     }
                     response = requests.post(url, headers=headers, json=data, timeout=60)
                     response.raise_for_status()
-                    result = response.json()["completions"][0]["data"]["text"]
-                elif provider == "huggingface":
-                    import requests
-                    api_url = f"https://api-inference.huggingface.co/models/{model_name}"
-                    headers = {"Authorization": f"Bearer {config.api_key}"}
-                    data = {
-                        "inputs": f"{system_prompt}\n\n{user_message}",
-                        "parameters": {
-                            "max_new_tokens": max_tokens,
-                            "temperature": temperature,
-                            "do_sample": True
-                        }
-                    }
-                    response = requests.post(api_url, headers=headers, json=data, timeout=60)
-                    response.raise_for_status()
-                    result = response.json()[0]["generated_text"]
+                    result = response.json()["choices"][0]["message"]["content"]
                 else:
                     raise ValueError(f"Unsupported provider: {provider}")
 
@@ -1113,19 +983,9 @@ class LLMProviderManager:
                 logger.error(f"❌ Provider {current_provider} timed out")
                 if current_provider in self.providers:
                     self._handle_provider_error(current_provider, e)
-                    if current_provider == "ollama":
-                        self.providers["ollama"].status = ProviderStatus.UNAVAILABLE
-                        logger.warning("⚠️ Skipping Ollama for future calls (too slow)")
                 provider_name = None
                 if attempt < max_retries - 1:
                     next_provider = self._select_best_provider()
-                    if next_provider == "ollama" and current_provider == "ollama":
-                        cloud_providers = [p for p in self.providers.keys()
-                                          if p not in ["ollama", current_provider]
-                                          and self.providers[p].status == ProviderStatus.AVAILABLE]
-                        if cloud_providers:
-                            next_provider = cloud_providers[0]
-                            logger.info(f"🔄 Skipping Ollama, switching to cloud provider: {next_provider}")
                     if next_provider and next_provider != current_provider:
                         logger.info(f"🔄 Switching to provider: {next_provider} after timeout")
                         continue
@@ -1252,78 +1112,89 @@ class LLMProviderManager:
             return False
         config = self.providers[provider_name]
         try:
-            # For Ollama, check tags endpoint
-            if provider_name == 'ollama' and config.base_url:
-                import httpx
-                r = httpx.get(f"{config.base_url}/api/tags", timeout=timeout)
-                return r.status_code == 200
-
-            # For cloud providers, make a tiny request (non-blocking) via client if available
-            client = self.provider_clients.get(provider_name)
-            if client is None:
-                return False
-
             # Try to call a minimal API with very small max_tokens
             try:
-                # Use API-specific lightweight pattern
-                if provider_name in ['openai', 'openrouter', 'together']:
-                    response = client.chat.completions.create(
-                        model=config.model,
-                        messages=[{"role": "system", "content": "health check"}, {"role": "user", "content": "ping"}],
-                        max_tokens=1
-                    )
-                    return True if getattr(response, 'choices', None) else True
-                elif provider_name == 'groq':
-                    # Groq: call chat.completions.create with minimal tokens
-                    response = client.chat.completions.create(
-                        model=config.model,
-                        messages=[{"role": "system", "content": "health check"}, {"role": "user", "content": "ping"}],
-                        max_tokens=1
-                    )
-                    return True
-                elif provider_name == 'gemini':
-                    mg = client.GenerativeModel(config.model)
-                    r = mg.generate_content('ping', generation_config={"max_output_tokens": 1})
-                    return True
+                if provider_name == 'groq':
+                    import httpx
+
+                    # Groq: direct HTTP call for health check
+                    # Use load balancing for health checks too
+                    if hasattr(self, '_groq_keys') and len(self._groq_keys) > 1:
+                        # Test all keys, succeed if any work
+                        for i, api_key in enumerate(self._groq_keys):
+                            try:
+                                headers = {
+                                    "Authorization": f"Bearer {api_key}",
+                                    "Content-Type": "application/json"
+                                }
+                                data = {
+                                    "model": config.model,
+                                    "messages": [{"role": "system", "content": "health check"}, {"role": "user", "content": "ping"}],
+                                    "max_tokens": 1
+                                }
+                                response = httpx.post(
+                                    "https://api.groq.com/openai/v1/chat/completions",
+                                    headers=headers,
+                                    json=data,
+                                    timeout=timeout
+                                )
+                                if response.status_code == 200:
+                                    return True  # At least one key works
+                            except Exception:
+                                continue  # Try next key
+                        return False  # All keys failed
+                    else:
+                        # Single key health check
+                        api_key = self.provider_clients.get(provider_name)
+                        if isinstance(api_key, list):
+                            api_key = api_key[0]
+
+                        headers = {
+                            "Authorization": f"Bearer {api_key}",
+                            "Content-Type": "application/json"
+                        }
+                        data = {
+                            "model": config.model,
+                            "messages": [{"role": "system", "content": "health check"}, {"role": "user", "content": "ping"}],
+                            "max_tokens": 1
+                        }
+                        response = httpx.post(
+                            "https://api.groq.com/openai/v1/chat/completions",
+                            headers=headers,
+                            json=data,
+                            timeout=timeout
+                        )
+                        return response.status_code == 200
                 elif provider_name == 'cohere':
                     import cohere
-                    co = cohere.Client(api_key=config.api_key)
-                    response = co.generate(
+                    api_key = self.provider_clients.get(provider_name)
+                    if isinstance(api_key, list):
+                        api_key = api_key[0]
+                    co = cohere.Client(api_key=api_key)
+                    response = co.chat(
                         model=config.model,
-                        prompt="ping",
+                        message="ping",
                         max_tokens=1,
-                        temperature=0.0,
-                        num_generations=1
+                        temperature=0.0
                     )
                     return True
                 elif provider_name == 'ai21':
                     import requests
-                    url = f"https://api.ai21.com/studio/v1/{config.model}/complete"
+                    api_key = self.provider_clients.get(provider_name)
+                    if isinstance(api_key, list):
+                        api_key = api_key[0]
+                    url = f"https://api.ai21.com/studio/v1/chat/completions"
                     headers = {
-                        "Authorization": f"Bearer {config.api_key}",
+                        "Authorization": f"Bearer {api_key}",
                         "Content-Type": "application/json"
                     }
                     data = {
-                        "prompt": "ping",
-                        "maxTokens": 1,
+                        "model": config.model,
+                        "messages": [{"role": "user", "content": "ping"}],
+                        "max_tokens": 1,
                         "temperature": 0.0
                     }
                     response = requests.post(url, headers=headers, json=data, timeout=timeout)
-                    response.raise_for_status()
-                    return True
-                elif provider_name == 'huggingface':
-                    import requests
-                    api_url = f"https://api-inference.huggingface.co/models/{config.model}"
-                    headers = {"Authorization": f"Bearer {config.api_key}"}
-                    data = {
-                        "inputs": "ping",
-                        "parameters": {
-                            "max_new_tokens": 1,
-                            "temperature": 0.0,
-                            "do_sample": False
-                        }
-                    }
-                    response = requests.post(api_url, headers=headers, json=data, timeout=timeout)
                     response.raise_for_status()
                     return True
                 else:
@@ -1357,4 +1228,5 @@ def get_llm_manager(settings: Optional[Any] = None) -> LLMProviderManager:
                 settings = None
         _llm_manager = LLMProviderManager(settings=settings)
     return _llm_manager
+
 

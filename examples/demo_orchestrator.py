@@ -23,7 +23,12 @@ class MockLLMClient:
                 "timeframe": "Hold for next 15-30 minutes",
                 "entry_conditions": "Enter on next 15-minute candle open"
             }'''
+        
         return MockResponse()
+    
+    async def generate(self, request):
+        """Bridge method for compatibility with orchestrator."""
+        return await self.request(request)
 
 class MockMarketStore:
     async def get_latest_ticks(self, instrument, limit=100):
@@ -142,3 +147,4 @@ async def demonstrate_15min_cycle():
 
 if __name__ == '__main__':
     asyncio.run(demonstrate_15min_cycle())
+

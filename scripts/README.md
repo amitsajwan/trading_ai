@@ -12,7 +12,7 @@ python scripts/test_api_keys.py
 ```
 
 **Features:**
-- Tests all 6 providers: Groq, OpenAI, Google, Cohere, AI21, HuggingFace
+- Tests 3 production providers: Groq, Cohere, AI21 (with multi-key support)
 - Measures response times and success rates
 - Provides recommendations for optimal configuration
 
@@ -49,23 +49,33 @@ LLM_SELECTION_STRATEGY=single
 - **Automatic Fallback**: Falls back to other providers if primary fails
 
 ### Performance Results
-- **Groq**: 0.69s (primary - free, 100K tokens/day)
-- **AI21**: 1.39s (fastest paid alternative)
-- **Cohere**: 1.53s (good paid option)
-- **HuggingFace**: 1.77s (free but limited)
-- **OpenAI**: 1.93s (reliable but slower)
+- **Groq**: 0.69s (primary - llama-3.1-70b-versatile, free, 100K tokens/day)
+- **AI21**: 1.39s (tertiary - jamba-instruct, fastest paid alternative)
+- **Cohere**: 1.53s (secondary - command-r-plus, good paid option)
+
+**Note:** System now uses only these 3 production providers with multi-key load balancing for optimal performance.
 
 ## API Key Management
 
-### Required Keys (from user)
-```
-HUGGINGFACE_API_KEY=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
-GOOGLE_API_KEY=AIzaSyCEYoOsbt-FXzyV3Kh9i_fwmhvF3EsZSME
+### Required Keys (Production Providers)
+```bash
+# Primary provider (Groq) - supports up to 9 keys for load balancing
 GROQ_API_KEY=GROQ_API_KEY_REDACTED
+GROQ_API_KEY_2=your_second_groq_key  # Optional
+# ... up to GROQ_API_KEY_9
+
+# Secondary provider (Cohere) - supports up to 9 keys
 COHERE_API_KEY=xXWGFBOCljq4vp5YNKJz7XTHAcPCv3e7lPDNsFHj
-OPENAI_API_KEY=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
-AI21_API_KEY=e7616a6d-78bd-47dc-b076-539bacd710d9
+COHERE_API_KEY_2=your_second_cohere_key  # Optional
+# ... up to COHERE_API_K (Production Providers)
+- **Groq**: 100K tokens/day (free tier, llama-3.1-70b-versatile)
+- **Cohere**: Variable limits (paid, command-r-plus)
+- **AI21**: Variable limits (paid, jamba-instruct)
+
+**Recommendation:** Configure multiple API keys per provider to increase effective rate limits through load balancing.
 ```
+
+**Multi-Key Load Balancing:** The system automatically rotates through available keys using round-robin for high throughput.
 
 ### Token Limits & Usage
 - **Groq**: 100K tokens/day (free)

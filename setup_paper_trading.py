@@ -56,3 +56,4 @@ if __name__ == "__main__":
     if user_id:
         print(f"\nReady to start paper trading with user ID: {user_id}")
         print("Use this ID with the trading APIs to execute paper trades.")
+

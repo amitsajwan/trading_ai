@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "genai_module"
+version = "0.1.0"
+description = "GenAI module for trading system with multi-provider LLM support"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "httpx>=0.24.0",
+    "cohere>=4.0.0",
+    "ai21>=2.0.0",
+    "requests>=2.28.0",
+    "python-dotenv>=1.0.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -87,3 +87,4 @@ class MacroAgent(Agent):
         if "inflation" in prompt and "high" in prompt:
             return {"macro_regime": "RISK_OFF", "macro_headwind_score": -0.2, "confidence_score": 0.6}
         return {"macro_regime": "MIXED", "macro_headwind_score": 0.0, "confidence_score": 0.5}
+

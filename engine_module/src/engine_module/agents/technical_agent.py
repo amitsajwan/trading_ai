@@ -150,3 +150,4 @@ class TechnicalAgent(Agent):
             indicators["trend_strength"] = 30.0
 
         return indicators
+

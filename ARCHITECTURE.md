@@ -32,7 +32,7 @@ module_name/
 
 **API Facade** ([data_niftybank/src/data_niftybank/api.py](data_niftybank/src/data_niftybank/api.py)):
 ```python
-from data_niftybank.api import build_store, build_options_client
+from market_data.api import build_store, build_options_client
 
 store = build_store(redis_client=None)  # in-memory
 chain = build_options_client(kite, fetcher)
@@ -73,7 +73,7 @@ response = await client.generate(LLMRequest(prompt="Analyze trend"))
 store = build_prompt_store(file_root="./prompts")
 ```
 
-**Dependencies**: OpenAI/Groq/Google/Cohere/AI21/HuggingFace APIs, MongoDB (optional)
+**Dependencies**: Groq/Cohere/AI21 APIs (with multi-key load balancing), MongoDB (optional)
 **Test Layers**:
 - Unit: Provider orchestration, protocol adapters, prompt management
 - Integration: `scripts/test_api_keys.py` for all provider validation
@@ -91,7 +91,7 @@ store = build_prompt_store(file_root="./prompts")
 **API Facade** ([engine_module/src/engine_module/api.py](engine_module/src/engine_module/api.py)):
 ```python
 from engine_module.api import build_orchestrator
-from data_niftybank.api import build_store, build_options_client
+from market_data.api import build_store, build_options_client
 from genai_module.api import build_llm_client
 
 orchestrator = build_orchestrator(
@@ -223,8 +223,8 @@ result = await execute_user_trade(user_id=user.user_id, instrument="BANKNIFTY", 
 | Module | Injected Dependency | Source | Lifecycle |
 |--------|---------------------|--------|-----------|
 | Engine | `llm_client: LLMClient` | `genai_module.api.build_llm_client()` | Singleton |
-| Engine | `market_store: MarketStore` | `data_niftybank.api.build_store()` | Singleton |
-| Engine | `options_data: OptionsData` | `data_niftybank.api.build_options_client()` | Singleton |
+| Engine | `market_store: MarketStore` | `market_data.api.build_store()` | Singleton |
+| Engine | `options_data: OptionsData` | `market_data.api.build_options_client()` | Singleton |
 | Engine | `agents: list[Agent]` | Agent factories (pending) | Per-orchestrator |
 | GenAI | `legacy_manager: LLMProviderManager` | Legacy codebase | Singleton |
 | GenAI | `prompt_manager: PromptManager` | Legacy codebase (optional) | Singleton |
@@ -252,7 +252,7 @@ legacy_llm = LLMProviderManager()
 legacy_fetcher = OptionsChainFetcher()
 
 # 3. Module factories
-from data_niftybank.api import build_store, build_options_client
+from market_data.api import build_store, build_options_client
 from genai_module.api import build_llm_client
 from engine_module.api import build_orchestrator
 
@@ -371,7 +371,7 @@ pytest -m integration
 
 ### Wire Full Stack (Minimal Example)
 ```python
-from data_niftybank.api import build_store
+from market_data.api import build_store
 from genai_module.api import build_llm_client
 from engine_module.api import build_orchestrator
 from genai_module import LLMProviderManager
@@ -408,3 +408,4 @@ print(result.decision)  # "HOLD" (stub)
   - [config/prompt_manager.py](config/prompt_manager.py)
 - Docker: [docker-compose.data.yml](docker-compose.data.yml)
 - CI: [pytest.ini](pytest.ini) (integration markers)
+

@@ -232,3 +232,4 @@ class TradingConfig(BaseModel):
 # Global configuration instance
 settings = TradingConfig.from_env()
 
+

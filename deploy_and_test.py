@@ -64,7 +64,7 @@ async def test_data_module():
 
     try:
         # Test data module imports
-        from data_niftybank.api import build_store, build_options_client
+        from market_data.api import build_store, build_options_client
         print("[OK] Data module imports successful")
 
         # Test in-memory store
@@ -260,3 +260,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+

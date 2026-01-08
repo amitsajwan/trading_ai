@@ -1,8 +1,8 @@
 # ENGINE_MODULE - Trading Intelligence & Analysis
 
-**Status: ✅ CORE IMPLEMENTED** - Multi-agent trading analysis with orchestrator and 15-minute decision cycles.
+**Status: ✅ PRODUCTION READY** - Multi-agent trading analysis with Redis direct access for maximum performance.
 
-A sophisticated trading intelligence module featuring 9 specialized agents, LLM-powered decision making, and comprehensive market analysis for options trading strategies.
+A sophisticated trading intelligence module featuring 9 specialized agents, LLM-powered decision making, and comprehensive market analysis for options trading strategies. Now includes direct Redis access for market data and technical indicators, eliminating API call overhead.
 
 ## 🎯 Purpose & Architecture
 
@@ -18,6 +18,12 @@ Market Data → Agent Analysis → Signal Aggregation → LLM Decision → Trade
 - **Signal Aggregation**: Combines agent opinions into consensus
 - **LLM Integration**: Final decision making with reasoning
 - **15-Minute Cycles**: Real-time analysis cadence
+- **Direct Redis Access**: Reads market data and technical indicators directly from Redis for maximum performance
+
+### **Data Access Options:**
+- **Redis Direct** (Recommended): Reads OHLC data and technical indicators directly from Redis for maximum performance
+- **API Fallback**: Uses market_data and news_module APIs for compatibility
+- **API Fallback**: Uses market_data and news_module APIs for compatibility
 
 ## 🤖 Agent Ecosystem
 
@@ -182,39 +188,64 @@ def _recommend_options_strategy(direction, strength, risk, confidence):
 
 ## 🚀 Usage Examples
 
-### **Basic Orchestrator Usage**
+### **Direct Redis Access (Recommended for Performance)**
+```python
+import redis
+from engine_module.api import build_orchestrator
+from genai_module.api import build_llm_client
+from news_module.api import build_news_service
+
+# Connect to Redis directly
+r = redis.Redis(host='localhost', port=6379, decode_responses=True)
+
+# Build dependencies
+llm = build_llm_client(legacy_manager)
+news = build_news_service(mongo_collection)
+
+# Build orchestrator with direct Redis access (bypasses API calls)
+orchestrator = build_orchestrator(
+    llm_client=llm,
+    news_service=news,
+    redis_client=r,  # Direct Redis access for market data & technicals
+    instrument="BANKNIFTY"
+)
+
+# Run analysis cycle - data fetched directly from Redis
+result = await orchestrator.run_cycle({
+    'instrument': 'BANKNIFTY',
+    'market_hours': True,
+    'cycle_interval': '15min'
+})
+
+print(f"Decision: {result.decision}")
+print(f"Confidence: {result.confidence:.1%}")
+```
+
+### **Legacy API-Based Usage**
 ```python
 from engine_module.api import build_orchestrator
 from genai_module.api import build_llm_client
-from data_niftybank.api import build_store, build_options_client
+from market_data.api import build_store, build_options_client
 
 # Build dependencies
 llm = build_llm_client(legacy_manager)
 store = build_store(redis_client)
 options = build_options_client(kite, fetcher)
 
-# Configure agents
-agents = [TechnicalAgent(), SentimentAgent(), MacroAgent()]
-
-# Build orchestrator
+# Build orchestrator with API calls
 orchestrator = build_orchestrator(
     llm_client=llm,
     market_store=store,
     options_data=options,
-    agents=agents
+    instrument="BANKNIFTY"
 )
 
 # Run analysis cycle
 result = await orchestrator.run_cycle({
     'instrument': 'BANKNIFTY',
     'market_hours': True,
-    'cycle_interval': '15min',
-    'timestamp': '2026-01-05T14:45:00Z'
+    'cycle_interval': '15min'
 })
-
-print(f"Decision: {result.decision}")
-print(f"Confidence: {result.confidence:.1%}")
-print(f"Strategy: {result.details.get('strategy')}")
 ```
 
 ### **Agent-Only Analysis**
@@ -411,3 +442,4 @@ The engine module provides the complete **artificial intelligence layer** for al
 - **Production Performance**: Optimized for live trading
 
 **Ready to make intelligent trading decisions! 🤖📊**
+

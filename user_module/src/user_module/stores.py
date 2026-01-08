@@ -328,12 +328,12 @@ class MongoTradeStore(TradeStore):
                 "quantity": trade.quantity,
                 "price": float(trade.price),
                 "order_type": trade.order_type,
-                "timestamp": trade.timestamp,
+                "timestamp": trade.timestamp.isoformat() if hasattr(trade.timestamp, 'isoformat') else str(trade.timestamp),
                 "status": trade.status,
                 "broker_fees": float(trade.broker_fees),
                 "exchange_fees": float(trade.exchange_fees),
                 "strike_price": float(trade.strike_price) if trade.strike_price else None,
-                "expiry_date": trade.expiry_date,
+                "expiry_date": trade.expiry_date.isoformat() if trade.expiry_date and hasattr(trade.expiry_date, 'isoformat') else trade.expiry_date,
                 "option_type": trade.option_type,
                 "stop_loss_price": float(trade.stop_loss_price) if trade.stop_loss_price else None,
                 "take_profit_price": float(trade.take_profit_price) if trade.take_profit_price else None,
@@ -476,3 +476,4 @@ __all__ = [
     "MongoPortfolioStore",
     "MongoTradeStore",
 ]
+

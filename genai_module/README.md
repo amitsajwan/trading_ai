@@ -28,48 +28,58 @@ A comprehensive GenAI module providing intelligent LLM orchestration with multi-
 
 ## 🤖 LLM Provider Orchestration
 
-### **LLMProviderManager** - Intelligent Provider Management
+### **LLMProviderManager** - Production-Ready Multi-Provider System
+
+The system now uses **3 production-grade LLM providers** with **multi-key load balancing**:
+
+1. **Groq** (Primary) - llama-3.1-70b-versatile, fastest, free tier
+2. **Cohere** (Secondary) - command-r-plus, enterprise-grade
+3. **AI21** (Tertiary) - jamba-instruct, advanced reasoning
 
 ```python
 class LLMProviderManager:
-    """Multi-provider LLM manager with automatic optimization."""
+    """Multi-provider LLM manager with load balancing."""
 
-    # Single provider mode for performance
-    single_provider_mode: bool = True
-    primary_provider: str = "groq"
-
-    # Provider configurations with token limits
+    # Provider configurations with multi-key support
     providers: Dict[str, ProviderConfig]
+    
+    # Round-robin key rotation for load balancing
+    _groq_keys: List[str] = []
+    _cohere_keys: List[str] = []
+    _ai21_keys: List[str] = []
+    _groq_key_index: int = 0
+    _cohere_key_index: int = 0
+    _ai21_key_index: int = 0
 
     def call_llm(self, system_prompt: str, user_message: str) -> str:
-        """Intelligent LLM call with provider optimization."""
+        """Intelligent LLM call with automatic failover."""
         pass
 ```
 
-### **Provider Intelligence Features:**
-- **Single Provider Mode**: Uses primary provider (Groq) for optimal performance
-- **Token-Aware Selection**: Chooses providers based on available token quotas
-- **Automatic Failover**: Falls back gracefully when providers fail
-- **Rate Limit Management**: Prevents API throttling with smart delays
-- **Cost Optimization**: Prioritizes free tiers before paid providers
+### **Multi-Key Load Balancing Features:**
+- **Round-Robin Rotation**: Distributes requests across up to 9 keys per provider
+- **Automatic Failover**: Falls back to next provider on errors
+- **High Throughput**: Effective rate limit multiplication
+- **Best Model Selection**: Uses optimal models per use case
 
 ## 🚀 Usage Examples
 
 ### **Direct LLM Provider Management (Recommended)**
 
 ```python
-from genai_module import LLMProviderManager
+from genai_module.core.llm_provider_manager import LLMProviderManager
 
-# Initialize with optimized settings
+# Initialize with 3 production providers
 manager = LLMProviderManager()
 
-# Automatic single-provider mode with Groq
+# Automatic multi-key load balancing across Groq/Cohere/AI21
 response = manager.call_llm(
     system_prompt="You are a trading analyst",
     user_message="Analyze this market trend",
     max_tokens=500
 )
 print(response)
+# System automatically rotates through available API keys
 ```
 
 ### **LLM Client Protocol (For Engine Integration)**
@@ -111,33 +121,42 @@ prompt = await store.get("trading_agent", version="v2")
 ### **Configuration Examples**
 
 ```bash
-# Single provider mode (optimal performance)
-SINGLE_PROVIDER=true
-PRIMARY_PROVIDER=groq
+# Production setup with multi-key load balancing
 
-# Multi-provider fallback mode
-SINGLE_PROVIDER=false
-LLM_SELECTION_STRATEGY=weighted
-
-# Provider API keys
+# Groq (Primary) - up to 9 keys for load balancing
 GROQ_API_KEY=gsk_...
-OPENAI_API_KEY=sk-proj-...
-GOOGLE_API_KEY=AIza...
+GROQ_API_KEY_2=gsk_...  # Optional
+GROQ_API_KEY_3=gsk_...  # Optional
+# ... up to GROQ_API_KEY_9
+
+# Cohere (Secondary) - up to 9 keys
+COHERE_API_KEY=...
+COHERE_API_KEY_2=...  # Optional
+# ... up to COHERE_API_KEY_9
+
+# AI21 (Tertiary) - up to 9 keys
+AI21_API_KEY=...
+AI21_API_KEY_2=...  # Optional
+# ... up to AI21_API_KEY_9
 ```
 
 ## 📊 Performance & Features
 
-### **Single Provider Mode Benefits:**
-- **60% Faster**: 0.69s vs 1.93s average response time
-- **Token Optimization**: Maximizes primary provider's quota
-- **Cost Efficiency**: Prioritizes free tiers
-- **Reduced Complexity**: Single API management
+### **Multi-Key Load Balancing Benefits:**
+- **High Throughput**: Multiply rate limits by number of keys (up to 9x)
+- **0.69s Average Response**: Groq primary with llama-3.1-70b-versatile
+- **Automatic Failover**: Groq → Cohere → AI21 on errors
+- **Production Ready**: Enterprise-grade models for all providers
 
-### **Multi-Provider Intelligence:**
-- **Automatic Failover**: Seamless switching on failures
-- **Token-Aware Routing**: Chooses providers with available capacity
-- **Rate Limit Management**: Prevents API throttling
-- **Cost Optimization**: Free → Paid provider progression
+### **Provider Performance:**
+- **Groq**: 0.69s (llama-3.1-70b-versatile, 100K tokens/day per key)
+- **Cohere**: 1.53s (command-r-plus, enterprise-grade)
+- **AI21**: 1.39s (jamba-instruct, advanced reasoning)
+
+### **Intelligent Features:**
+- **Round-Robin Key Rotation**: Even distribution across API keys
+- **Health Checks**: Multi-key provider validation
+- **Cost Efficiency**: Free tier maximization (Groq) before paid
 
 ## 🔧 API Keys & Configuration
 
@@ -168,20 +187,22 @@ Security note: these endpoints are not protected by default and should be mounte
 
 ### **Required Environment Variables**
 ```bash
-# Primary providers (Groq recommended for performance)
+# Production providers with multi-key support
+
+# Groq (Primary - Free tier, fastest)
 GROQ_API_KEY=GROQ_API_KEY_REDACTED
-GOOGLE_API_KEY=AIzaSyCEYoOsbt-FXzyV3Kh9i_fwmhvF3EsZSME
+GROQ_API_KEY_2=gsk_...  # Add more keys for load balancing
+# ... up to GROQ_API_KEY_9
 
-# Fallback providers
-OPENAI_API_KEY=sk-proj-...
+# Cohere (Secondary - Enterprise grade)
 COHERE_API_KEY=xXWGFBOCljq4vp5YNKJz7XTHAcPCv3e7lPDNsFHj
-AI21_API_KEY=e7616a6d-78bd-47dc-b076-539bacd710d9
-HUGGINGFACE_API_KEY=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
+COHERE_API_KEY_2=...  # Add more keys for load balancing
+# ... up to COHERE_API_KEY_9
 
-# Performance optimization
-SINGLE_PROVIDER=true          # Use single provider mode
-PRIMARY_PROVIDER=groq         # Primary provider selection
-LLM_MAX_CONCURRENCY=3         # Concurrent request limit
+# AI21 (Tertiary - Advanced reasoning)
+AI21_API_KEY=e7616a6d-78bd-47dc-b076-539bacd710d9
+AI21_API_KEY_2=...  # Add more keys for load balancing
+# ... up to AI21_API_KEY_9
 ```
 
 ### **Automatic Configuration**
@@ -267,3 +288,4 @@ The genai_module provides the complete **artificial intelligence foundation**:
 - **Production Performance**: Optimized for high-frequency trading analysis
 
 **Ready to power intelligent trading decisions at scale! 🤖⚡**
+

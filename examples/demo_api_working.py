@@ -154,7 +154,7 @@ def test_direct_api():
         if str(module_path) not in sys.path:
             sys.path.insert(0, str(module_path))
 
-        from data_niftybank.api import build_store, build_historical_replay
+        from market_data.api import build_store, build_historical_replay
         import asyncio
 
         print("Testing data module directly...")
@@ -214,3 +214,4 @@ if __name__ == "__main__":
         print("\n" + "=" * 60)
         print("⚠️  API server not responding")
         print("To start the server: python dashboard/app.py")
+

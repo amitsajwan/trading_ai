@@ -43,3 +43,4 @@ def test_sell_signal_returns_bear_put_spread():
     assert {legs[0]["side"], legs[1]["side"]} == {"BUY", "SELL"}
     assert legs[0]["option_type"] == legs[1]["option_type"] == "PE"
     assert result.get("net_debit") is not None
+

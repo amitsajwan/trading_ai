@@ -24,3 +24,4 @@ async def test_macro_agent_inflation_risk(monkeypatch):
     assert res.decision == "SELL"
     assert abs(res.confidence - 0.8) < 1e-6
     assert res.details["macro_bias"] == "BEARISH"
+

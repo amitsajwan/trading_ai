@@ -20,3 +20,4 @@ class ServiceContainer(Protocol):
 
     def reset(self) -> None:
         ...
+

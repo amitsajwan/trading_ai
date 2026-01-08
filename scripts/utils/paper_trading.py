@@ -158,3 +158,4 @@ class PaperTrading:
             "closed_positions": len(closed_positions)
         }
 
+

@@ -241,3 +241,4 @@ def evaluate(signal: str, chain: Dict[str, Any], orderflow: Dict[str, Any], cfg:
     else:
         result["reason"] = "No valid leg matched constraints"
     return result
+

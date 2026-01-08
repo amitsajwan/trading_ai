@@ -149,3 +149,4 @@ M_VAR=middle
         # Variables should be in alphabetical order
         var_names = [line.split("=", 1)[0] for line in lines]
         assert var_names == sorted(var_names)
+

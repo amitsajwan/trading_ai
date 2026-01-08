@@ -169,9 +169,48 @@ def add_camel_aliases(data: dict) -> dict:
 async def dashboard(request: Request):
     """Main dashboard page."""
     try:
-        return templates.TemplateResponse("index.html", {
+        # Get system status for template
+        try:
+            import redis
+            r = redis.Redis(host='localhost', port=6379, db=0)
+            r.ping()
+            redis_status = "ok"
+        except Exception:
+            redis_status = "error"
+        
+        try:
+            from pymongo import MongoClient
+            client = MongoClient("mongodb://localhost:27017/", serverSelectionTimeoutMS=2000)
+            client.admin.command('ping')
+            mongo_status = "ok"
+        except Exception:
+            mongo_status = "error"
+        
+        # Check if market is open
+        now = datetime.now()
+        market_open = (now.weekday() < 5 and  # Monday-Friday
+                      now.time() >= datetime.strptime("09:15", "%H:%M").time() and
+                      now.time() <= datetime.strptime("15:30", "%H:%M").time())
+        
+        system_status = {
+            "status": "ok" if mongo_status == "ok" and redis_status == "ok" else "degraded",
+            "database": mongo_status,
+            "cache": redis_status,
+            "market_open": market_open
+        }
+        
+        # Paper trading configuration
+        paper_trading = {
+            "enabled": True,
+            "mode": "paper"
+        }
+        
+        return templates.TemplateResponse("dashboard.html", {
             "request": request,
-            "INSTRUMENT": "BANKNIFTY"
+            "INSTRUMENT": "BANKNIFTY",
+            "timestamp": datetime.now().isoformat(),
+            "system_status": system_status,
+            "paper_trading": paper_trading
         })
     except Exception as e:
         # Fallback to JSON if template fails

@@ -35,3 +35,4 @@ class PortfolioManagerAgent(Agent):
         confidence = min(0.9, 0.4 + votes[decision] * 0.2)
         details = {"votes": votes}
         return AnalysisResult(decision=decision, confidence=confidence, details=details)
+

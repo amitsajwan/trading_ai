@@ -29,3 +29,4 @@ if latest:
 else:
     print("No analysis found")
 
+

@@ -27,3 +27,4 @@ class FundamentalAgent(Agent):
 
         details = {"earnings_surprise": earnings, "revenue_growth": revenue}
         return AnalysisResult(decision=decision, confidence=confidence, details=details)
+
