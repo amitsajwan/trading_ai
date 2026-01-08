@@ -927,7 +927,7 @@ async def main():
         
         # Kill existing processes on all ports
         print("   🧹 Cleaning up existing processes...")
-        ports_to_clean = [8004, 8005, 8006, 8888]
+        ports_to_clean = [8004, 8005, 8006, 8007, 8888]
         for port in ports_to_clean:
             kill_process_on_port(port)
         print("   ✅ Ports cleaned")
@@ -1134,21 +1134,22 @@ async def main():
         # These will be passed to the Engine API process via start_service (which copies os.environ)
         # Only set if not already in environment (allows local.env to override)
         required_env_vars = {
-            'AI21_API_KEY': 'e7616a6d-78bd-47dc-b076-539bacd710d9',
-            'AI21_API_KEY_2': 'c86f7e05-75a3-4d1d-88f3-725aba7db285',
+            # API keys intentionally left blank — set these in your local .env (copy from .env.example)
+            'AI21_API_KEY': '',
+            'AI21_API_KEY_2': '',
             'AI21_MODEL': 'j2-mid',
-            'COHERE_API_KEY': 'xXWGFBOCljq4vp5YNKJz7XTHAcPCv3e7lPDNsFHj',
-            'COHERE_API_KEY_2': 'clEBjpqpFi4eKpgfhUPx75FjC40COUIIcbjBrYwd',
+            'COHERE_API_KEY': '',
+            'COHERE_API_KEY_2': '',
             'COHERE_MODEL': 'command-a-03-2025',
             'COHERE_REASONING_MODEL': 'command-a-reasoning-08-2025',
             'DAILY_LOSS_LIMIT_PCT': '5.0',
             'DATA_SOURCE': 'ZERODHA',
             'DEFAULT_STOP_LOSS_PCT': '1.5',
             'DEFAULT_TAKE_PROFIT_PCT': '3.0',
-            'GOOGLE_API_KEY': 'AIzaSyCEYoOsbt-FXzyV3Kh9i_fwmhvF3EsZSME',
-            'GROQ_API_KEY': 'GROQ_API_KEY_REDACTED',
-            'GROQ_API_KEY_2': 'GROQ_API_KEY_REDACTED',
-            'GROQ_API_KEY_3': 'GROQ_API_KEY_REDACTED',
+            'GOOGLE_API_KEY': '',
+            'GROQ_API_KEY': '',
+            'GROQ_API_KEY_2': '',
+            'GROQ_API_KEY_3': '',
             'GROQ_MODEL': 'llama-3.1-8b-instant',
             'GROQ_MODELS': 'llama-3.1-8b-instant',
         }
@@ -1223,6 +1224,46 @@ async def main():
                         pass
                 return
 
+        # Step 4.5: Start and Verify User API
+        print("\n" + "=" * 60)
+        print("👤 Step 4.5: User API")
+        print("=" * 60)
+
+        # Install user_module in editable mode for User API
+        print("   📦 Installing user_module...")
+        try:
+            subprocess.run([sys.executable, "-m", "pip", "install", "-e", "./user_module"],
+                         capture_output=True, text=True, check=True)
+            print("   ✅ user_module installed successfully")
+        except subprocess.CalledProcessError as e:
+            print(f"   ❌ Failed to install user_module: {e}")
+            print(f"   Error output: {e.stderr}")
+            return
+
+        kill_process_on_port(8007)
+        user_process = start_service(
+            "User API (port 8007)",
+            ["python", "-m", "user_module.api_service"]
+        )
+        processes.append(user_process)
+
+        if args.skip_validation:
+            print("⚠️  Skipping User API verification")
+        else:
+            # Check health endpoint
+            user_health = wait_for_service("User API", "http://localhost:8007/health")
+            if not user_health:
+                print("❌ User API health check failed!")
+                print("   Stopping startup. Please check the User API logs.")
+                # Cleanup started processes
+                for process in processes:
+                    try:
+                        process.terminate()
+                    except:
+                        pass
+                return
+            print("   ✅ User API is healthy and ready!")
+
         # Step 5: Start and Verify Dashboard UI
         print("\n" + "=" * 60)
         print("🖥️  Step 5: Dashboard UI")
@@ -1273,6 +1314,7 @@ async def main():
         print("   💰 Market Data:  http://localhost:8004/health")
         print("   📰 News:         http://localhost:8005/health")
         print("   🤖 Engine:       http://localhost:8006/health")
+        print("   👤 User:         http://localhost:8007/health")
         print("\n🎯 The UI should now be able to show data from all APIs.")
         print("\n🛑 Press Ctrl+C to stop all services")
 
