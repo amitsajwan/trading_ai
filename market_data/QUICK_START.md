@@ -1,7 +1,6 @@
-# Quick Start Guide
+# DEPRECATED: Refer to `market_data/README.md`
 
-## 🚀 Get Started in 3 Steps
-
+This file is deprecated — the `market_data/README.md` contains the consolidated module documentation and quick start guide.
 ### Step 1: Start Redis
 
 ```powershell

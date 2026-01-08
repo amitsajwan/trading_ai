@@ -1,7 +1,6 @@
-# Starting the Market Data API
+# DEPRECATED: Refer to `market_data/README.md`
 
-## 🚀 Quick Start
-
+This file is deprecated — the `market_data/README.md` contains the consolidated module documentation and instructions for starting the API and all workflows.
 **From `market_data/` folder:**
 ```powershell
 cd market_data

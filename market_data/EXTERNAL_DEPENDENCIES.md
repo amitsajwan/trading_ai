@@ -1,8 +1,6 @@
-# External Dependencies
+# DEPRECATED: External dependencies moved to `market_data/README.md`
 
-This document outlines all external dependencies required by the `market_data` module.
-
-## Overview
+This file is deprecated. See `market_data/README.md` for consolidated documentation.
 
 The `market_data` module requires external services and Python packages for production use. **All dependencies are designed with graceful degradation** - the module can function in test mode without external services or credentials.
 

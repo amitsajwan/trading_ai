@@ -328,6 +328,45 @@ Get market depth (order book) data.
 
 ---
 
+## External dependencies
+
+See below for the key external services and packages required by the module. These were previously kept in `EXTERNAL_DEPENDENCIES.md`.
+
+### System services
+- Redis (production): `redis:7-alpine` (default port 6379). Used for ticks, prices, OHLC, indicators.
+- MongoDB (optional): `mongo:7` (for news and optional stores).
+
+### Python packages
+- Required (examples): `redis`, `kiteconnect`, `python-dotenv`, `uvicorn`, `fastapi`
+- Optional (analysis): `pandas`, `numpy`
+
+### Zerodha Kite Connect
+- API keys: `KITE_API_KEY`, `KITE_API_SECRET` (from https://kite.zerodha.com/apps/)
+- Access token is generated via `python -m market_data.tools.kite_auth` (interactive browser flow)
+
+---
+
+## Environment & deployment
+
+This module supports per-module `.env` configuration. Use the example templates in the repository (e.g., `market_data/.env.example`, `genai_module/.env.example`) and copy them into a local `.env` file which you must not commit.
+
+- Copy and edit module template:
+  - `cp market_data/.env.example market_data/.env`
+  - `cp genai_module/.env.example genai_module/.env`
+  - `cp engine_module/.env.example engine_module/.env`
+  - `cp news_module/.env.example news_module/.env`
+
+- Docker compose services use the module-scoped env files (e.g. `market_data/.env.banknifty`).
+
+**Note:** `start_local.py` will prefer a `local.env` if present, otherwise it will load per-module `.env` files (e.g., `market_data/.env`) if found.
+
+## Troubleshooting
+
+- Redis: `docker-compose -f docker-compose.data.yml up -d redis` and `redis-cli ping`
+- Generate access token: `python -m market_data.tools.kite_auth`
+
+---
+
 ## 📝 Command Line Arguments
 
 ### start_local.py Arguments
@@ -374,6 +413,9 @@ python start_local.py --provider historical --historical-source data/historical.
 ---
 
 ## 🏗️ Architecture
+
+(Consolidated docs) This README is the single canonical reference for the `market_data` module. Previously separate documents (EXTERNAL_DEPENDENCIES.md, QUICK_START.md, START_API.md) have been merged here — see the "External dependencies" and "Environment & deployment" sections below.
+
 
 ```
 ┌─────────────────────────────────────────────────────────┐

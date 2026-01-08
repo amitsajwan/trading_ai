@@ -27,15 +27,49 @@ if sys.platform == 'win32':
 
 
 def load_env():
-    """Load environment variables from local.env"""
-    if os.path.exists('local.env'):
-        with open('local.env') as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith('#'):
-                    key, value = line.split('=', 1)
-                    os.environ[key] = value
-        print("Loaded environment from local.env")
+    """Load environment variables from local.env or per-module env files.
+
+    Order of precedence (first existing file is loaded, existing env vars are not overridden):
+      - local.env (project root)
+      - .env (project root)
+      - market_data/.env
+      - genai_module/.env
+      - engine_module/.env
+      - news_module/.env
+
+    This makes `start_local.py` behave similarly to docker-compose (which reads service env files), while keeping per-module configuration files isolated.
+    """
+    candidates = [
+        'local.env',
+        '.env',
+        'market_data/.env',
+        'genai_module/.env',
+        'engine_module/.env',
+        'news_module/.env',
+    ]
+
+    loaded_any = False
+    for path in candidates:
+        if os.path.exists(path):
+            try:
+                with open(path) as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line or line.startswith('#'):
+                            continue
+                        if '=' not in line:
+                            continue
+                        key, value = line.split('=', 1)
+                        # Do not overwrite explicitly set environment variables
+                        os.environ.setdefault(key.strip(), value.strip())
+                print(f"Loaded environment from {path}")
+                loaded_any = True
+            except Exception:
+                print(f"Failed to load environment file: {path}")
+
+    if not loaded_any:
+        print("No env file found (search order: local.env, .env, market_data/.env, genai_module/.env, engine_module/.env, news_module/.env).")
+        print("Copy module templates from their `.env.example` files and create local .env files.")
 
 
 def kill_process_on_port(port):
