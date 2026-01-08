@@ -9,6 +9,9 @@ import logging
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
 
+# Use absolute import to avoid relative import issues when run via python -c
+from engine_module.contracts import TechnicalIndicators
+
 logger = logging.getLogger(__name__)
 
 
@@ -92,10 +95,11 @@ class RedisTechnicalDataProvider:
         except Exception as exc:
             logger.warning("Redis unavailable for technical data: %s", exc)
 
-    async def get_technical_indicators(self, symbol: str, periods: int = 100) -> Optional[Dict[str, Any]]:
+    async def get_technical_indicators(self, symbol: str, periods: int = 100) -> Optional[TechnicalIndicators]:
         """Get technical indicators for symbol from Redis.
 
-        Reads from indicators:{symbol}:{indicator_name} keys
+        Reads from indicators:{symbol}:{indicator_name} keys created by market_data TechnicalIndicatorsService.
+        Returns a TechnicalIndicators dataclass instance.
         """
         if not self._available:
             return None
@@ -106,9 +110,11 @@ class RedisTechnicalDataProvider:
             keys = self.redis.keys(pattern)
 
             if not keys:
+                logger.debug(f"No technical indicators found in Redis for {symbol}")
                 return None
 
-            indicators = {}
+            # Read all indicator values from Redis
+            indicator_values = {}
             for key in keys:
                 try:
                     # Extract indicator name from key
@@ -119,33 +125,64 @@ class RedisTechnicalDataProvider:
                     value_str = self.redis.get(key)
                     if value_str:
                         value = value_str.decode('utf-8') if isinstance(value_str, bytes) else value_str
-                        # Try to convert to appropriate type
+                        # Try to convert to appropriate type (float for most indicators)
                         try:
-                            # Try float first
-                            indicators[indicator_name] = float(value)
+                            # Try float first (most indicators are floats)
+                            indicator_values[indicator_name] = float(value)
                         except ValueError:
                             # Try int
                             try:
-                                indicators[indicator_name] = int(value)
+                                indicator_values[indicator_name] = int(value)
                             except ValueError:
-                                # Keep as string
-                                indicators[indicator_name] = value
+                                # Keep as string for non-numeric indicators
+                                indicator_values[indicator_name] = value
                 except Exception as e:
-                    logger.warning(f"Failed to parse indicator {key}: {e}")
+                    logger.debug(f"Failed to parse indicator {key}: {e}")
                     continue
 
-            # Add metadata
-            indicators.update({
-                "timestamp": datetime.now().isoformat(),
-                "instrument": symbol,
-                "current_price": indicators.get("current_price", 0),
-                "timeframe": "1min"
-            })
+            if not indicator_values:
+                logger.debug(f"No valid indicator values found for {symbol}")
+                return None
 
+            # Get current price separately if available
+            price_key = self.redis.get(f"price:{symbol}:latest")
+            current_price = None
+            if price_key:
+                try:
+                    price_str = price_key.decode('utf-8') if isinstance(price_key, bytes) else price_key
+                    current_price = float(price_str)
+                except (ValueError, TypeError):
+                    pass
+
+            # Map Redis keys to TechnicalIndicators fields
+            # market_data uses keys like: rsi, sma_20, sma_50, ema_12, ema_26, macd, macd_signal, macd_histogram, etc.
+            indicators = TechnicalIndicators(
+                rsi=indicator_values.get('rsi'),
+                sma_20=indicator_values.get('sma_20'),
+                sma_50=indicator_values.get('sma_50'),
+                ema_12=indicator_values.get('ema_12'),
+                ema_26=indicator_values.get('ema_26'),
+                macd=indicator_values.get('macd'),
+                macd_signal=indicator_values.get('macd_signal'),
+                macd_histogram=indicator_values.get('macd_histogram'),
+                adx=indicator_values.get('adx'),
+                bb_upper=indicator_values.get('bb_upper'),
+                bb_middle=indicator_values.get('bb_middle'),
+                bb_lower=indicator_values.get('bb_lower'),
+                volume_sma=indicator_values.get('volume_sma'),
+                volume_ratio=indicator_values.get('volume_ratio'),
+                price_change_pct=indicator_values.get('price_change_pct'),
+                volatility=indicator_values.get('volatility'),
+                timestamp=datetime.now().isoformat()
+            )
+
+            logger.debug(f"Loaded {len([v for v in indicator_values.values() if v is not None])} technical indicators for {symbol} from Redis")
             return indicators
 
         except Exception as e:
             logger.warning(f"Failed to fetch technical indicators for {symbol}: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
             return None
 
 

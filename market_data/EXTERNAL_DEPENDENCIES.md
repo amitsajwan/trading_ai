@@ -156,24 +156,34 @@ pip install pandas numpy  # For technical indicators
    - Note API Key and Secret
 
 2. **Configure Redirect URI:**
-   - Add redirect URI: `http://127.0.0.1:5000/login`
-   - Or use available port (script will find one)
+   - Add redirect URI: `http://127.0.0.1:<PORT>/login` (use `127.0.0.1` for local auth)
+   - The auth helper will pick an available local port (starting at 5000) and print the exact redirect URI to use — **ensure the redirect URI configured in your Kite app matches the printed URI**.
 
-3. **Generate Access Token:**
+3. **Generate Access Token (interactive):**
    ```bash
-   python market_data/src/market_data/tools/kite_auth.py
+   # Runs the in-package CLI which opens a browser and captures the token
+   python -m market_data.tools.kite_auth
    ```
    - Opens browser for login
-   - Captures token automatically
-   - Saves to `credentials.json`
+   - Captures request token on the configured redirect URI
+   - Exchanges request token for an access token and writes `credentials.json`
 
-4. **Verify Credentials:**
+4. **Automatic token refresh (optional):**
+   - The `market_data` package includes an auth service that can monitor tokens and trigger interactive re-login when needed.
+   - Environment variables to control behavior:
+     - `KITE_ALLOW_INTERACTIVE_LOGIN` (default `1`) — if set to `0`, the service will not launch a browser automatically.
+     - `KITE_TOKEN_MAX_AGE_HOURS` (default `23`) — token age (in hours) after which the token is considered stale and will trigger a re-login attempt.
+
+5. **Verify Credentials:**
    ```python
    from kiteconnect import KiteConnect
    kite = KiteConnect(api_key="...")
    kite.set_access_token("...")
    profile = kite.profile()  # Should return user profile
    ```
+
+**Notes:**
+- Prefer running the in-package CLI (`python -m market_data.tools.kite_auth`) instead of calling a top-level script. If you see references to older helper scripts (e.g., `auto_login.py`), prefer the in-package commands instead.
 
 ## Docker Compose Services
 
@@ -287,8 +297,8 @@ python -c "import redis; r = redis.Redis(); r.ping()"
 ### Zerodha Authentication Issues
 
 ```bash
-# Regenerate access token
-python market_data/src/market_data/tools/kite_auth.py
+# Regenerate access token (interactive)
+python -m market_data.tools.kite_auth
 
 # Verify token
 python -c "from kiteconnect import KiteConnect; kite = KiteConnect('key'); kite.set_access_token('token'); print(kite.profile())"

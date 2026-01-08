@@ -62,15 +62,58 @@ class NewsDataAdapter(NewsData):
                 # If not enough stored news, collect fresh news
                 if len(news_items) < limit:
                     await self._ensure_collector_initialized()
-                    fresh_news = await self.collector.collect_news_for_instrument(
-                        instrument, limit=limit - len(news_items)
-                    )
+
+                    # Try collecting specifically for instrument a couple of times (quick retry)
+                    fresh_news = []
+                    for attempt in range(2):
+                        fresh_news = await self.collector.collect_news_for_instrument(
+                            instrument, limit=limit - len(news_items)
+                        )
+                        if fresh_news:
+                            break
+                        # small pause between attempts
+                        import asyncio as _asyncio
+                        await _asyncio.sleep(1)
+
+                    # If still empty, fall back to general collection and filter by relevance
+                    if not fresh_news:
+                        try:
+                            general_news = await self.collector.collect_news(limit=limit * 3)
+                        except Exception:
+                            general_news = []
+
+                        filtered = []
+                        # Use collector's relevance helpers when available
+                        if hasattr(self.collector, '_get_instrument_keywords') and hasattr(self.collector, '_is_relevant_to_instrument'):
+                            keywords = self.collector._get_instrument_keywords(instrument)
+                            for item in general_news:
+                                try:
+                                    if self.collector._is_relevant_to_instrument(item, instrument, keywords):
+                                        item.instruments.append(instrument)
+                                        filtered.append(item)
+                                except Exception:
+                                    # Fallback to simple text match
+                                    text = f"{item.title} {item.content}".lower()
+                                    if instrument.lower() in text:
+                                        item.instruments.append(instrument)
+                                        filtered.append(item)
+                        else:
+                            for item in general_news:
+                                text = f"{item.title} {item.content}".lower()
+                                if instrument.lower() in text:
+                                    item.instruments.append(instrument)
+                                    filtered.append(item)
+
+                        fresh_news = filtered[: (limit - len(news_items))]
 
                     # Analyze sentiment and store
                     analyzed_news = []
                     for item in fresh_news:
-                        analyzed_item = await self.sentiment_analyzer.analyze_news_item(item)
-                        analyzed_news.append(analyzed_item)
+                        try:
+                            analyzed_item = await self.sentiment_analyzer.analyze_news_item(item)
+                            analyzed_news.append(analyzed_item)
+                        except Exception as e:
+                            logger.warning(f"Sentiment analysis failed for item: {e}")
 
                     if analyzed_news:
                         await self.storage.store_news_batch(analyzed_news)

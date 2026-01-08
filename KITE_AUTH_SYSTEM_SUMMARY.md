@@ -4,7 +4,8 @@
 
 ### 1. **kite-auth-service** - Centralized Authentication Manager
 - **Purpose**: Maintains valid Kite API credentials for all services
-- **Location**: `kite_auth_service.py` + Docker service
+- **Location**: `market_data.tools.kite_auth_service` (in-package) + Docker service
+- **CLI**: `python -m market_data.tools.kite_auth` (interactive browser flow)
 - **Features**:
   - Periodically validates access tokens
   - Updates shared `credentials.json` file

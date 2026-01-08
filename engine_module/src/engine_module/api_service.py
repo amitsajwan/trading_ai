@@ -10,6 +10,8 @@ This provides HTTP endpoints for:
 from __future__ import annotations
 
 import os
+import sys
+import logging
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, HTTPException, Body
@@ -19,6 +21,36 @@ from pymongo import MongoClient
 
 from .api import build_orchestrator
 from .contracts import Orchestrator, AnalysisResult
+
+logger = logging.getLogger(__name__)
+# Ensure a basic logging configuration so messages appear and unicode is handled safely
+logging.basicConfig(level=logging.INFO)
+
+
+def convert_numpy_types(obj: Any) -> Any:
+    """Recursively convert numpy types to native Python types for JSON serialization."""
+    try:
+        import numpy as np
+        
+        # Handle numpy scalar types
+        if isinstance(obj, (np.integer, np.int_, np.intc, np.intp, np.int8, np.int16, np.int32, np.int64,
+                           np.uint8, np.uint16, np.uint32, np.uint64)):
+            return int(obj)
+        elif isinstance(obj, (np.floating, np.float16, np.float32, np.float64)):
+            return float(obj)
+        elif isinstance(obj, np.bool_):
+            return bool(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, dict):
+            return {k: convert_numpy_types(v) for k, v in obj.items()}
+        elif isinstance(obj, (list, tuple)):
+            return [convert_numpy_types(item) for item in obj]
+        else:
+            return obj
+    except ImportError:
+        # If numpy is not available, just return the object as-is
+        return obj
 
 
 # Pydantic models for API requests/responses
@@ -90,6 +122,8 @@ def get_mongo_client() -> MongoClient:
 @app.on_event("startup")
 async def startup_event():
     """Initialize services on startup."""
+    global _orchestrator
+    
     try:
         # Check Redis connection
         redis_client = get_redis_client()
@@ -99,12 +133,58 @@ async def startup_event():
         mongo_client = get_mongo_client()
         mongo_client.admin.command('ping')
         
-        # Note: Orchestrator requires LLM client and market store
-        # These should be initialized separately with proper dependencies
-        print("Engine API: Services initialized successfully")
-        print("Note: Orchestrator requires LLM client and market store to be configured")
+        logger.info("Engine API: Services initialized successfully")
+        
+        # Initialize orchestrator with LLM client and Redis
+        try:
+            # Debug: Check if genai_module is in Python path
+            logger.debug("Engine API: Python path includes: %s", [p for p in sys.path if 'genai' in p.lower()])
+            logger.debug("Engine API: Current working directory: %s", os.getcwd())
+            
+            # Import LLM provider manager and client builder
+            from genai_module.core.llm_provider_manager import LLMProviderManager
+            from genai_module.api import build_llm_client
+            
+            # Build LLM client (reads API keys from environment)
+            logger.info("Engine API: Building LLM client...")
+            llm_manager = LLMProviderManager()
+            llm_client = build_llm_client(llm_manager)
+            logger.info("Engine API: LLM client initialized")
+            
+            # Build agents
+            logger.info("Engine API: Building agents...")
+            from engine_module.agent_factory import create_default_agents
+            
+            # Create default agents with balanced profile
+            agents = create_default_agents(
+                profile="balanced",
+                llm_client=llm_client,
+                news_service=None  # Will be added later if needed
+            )
+            logger.info("Engine API: Created %d agents", len(agents))
+            
+            # Build orchestrator with Redis client for market data and agents
+            logger.info("Engine API: Building orchestrator...")
+            _orchestrator = build_orchestrator(
+                llm_client=llm_client,
+                redis_client=redis_client,
+                agents=agents,
+                instrument="BANKNIFTY"  # Default instrument
+            )
+            logger.info("Engine API: Orchestrator initialized successfully")
+            
+        except ImportError as e:
+            logger.warning("Engine API: Failed to import dependencies: %s", e)
+            logger.debug("Engine API: Python path: %s", sys.path)
+            logger.warning("Engine API: Make sure genai_module/src is in PYTHONPATH")
+            logger.warning("Engine API: Orchestrator will not be available")
+            _orchestrator = None
+        except Exception as e:
+            logger.exception("Engine API: Failed to initialize orchestrator: %s", e)
+            _orchestrator = None
+            
     except Exception as e:
-        print(f"Engine API: Startup error: {e}")
+        logger.exception("Engine API: Startup error: %s", e)
 
 
 @app.on_event("shutdown")
@@ -160,17 +240,32 @@ async def analyze(request: AnalysisRequest):
         
         result = await _orchestrator.run_cycle(context)
         
+        # Convert numpy types in details to native Python types for JSON serialization
+        details = result.details
+        if details:
+            details = convert_numpy_types(details)
+        
+        # Ensure confidence is a native Python float
+        confidence = float(result.confidence) if result.confidence is not None else 0.0
+        
         return AnalysisResponse(
             instrument=request.instrument,
-            decision=result.decision,
-            confidence=result.confidence,
-            details=result.details,
+            decision=str(result.decision) if result.decision else "HOLD",
+            confidence=confidence,
+            details=details,
             timestamp=datetime.utcnow().isoformat()
         )
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        # Log full traceback for debugging
+        import traceback
+        error_detail = str(e)
+        traceback_str = traceback.format_exc()
+        print(f"ERROR in analyze endpoint: {error_detail}")
+        print(f"Traceback:\n{traceback_str}")
+        logger.error(f"Error in analyze endpoint: {error_detail}\n{traceback_str}")
+        raise HTTPException(status_code=500, detail=f"{error_detail}")
 
 
 @app.get("/api/v1/signals/{instrument}", response_model=List[SignalResponse])

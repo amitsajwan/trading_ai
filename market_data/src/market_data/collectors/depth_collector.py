@@ -49,6 +49,62 @@ def sanitize_key(symbol: str) -> str:
     return symbol.upper().replace(" ", "").replace("-", "_").replace(":", "_")
 
 
+def get_banknifty_futures_symbol(kite, exchange: str = "NFO") -> Optional[str]:
+    """Get the current/next expiry BANKNIFTY futures contract symbol.
+    
+    Args:
+        kite: KiteConnect instance
+        exchange: Exchange code (default: "NFO" for futures)
+    
+    Returns:
+        Trading symbol like "BANKNIFTY26JAN2026FUT" or None if not found
+    """
+    try:
+        # Get all NFO instruments
+        instruments = kite.instruments(exchange)
+        
+        # Filter for BANKNIFTY futures
+        from datetime import datetime
+        today = datetime.now()
+        
+        banknifty_futures = [
+            inst for inst in instruments
+            if inst.get("name") == "BANKNIFTY"
+            and inst.get("instrument_type") == "FUT"
+            and inst.get("expiry")
+        ]
+        
+        if not banknifty_futures:
+            return None
+        
+        # Sort by expiry date and get the nearest (current/next expiry)
+        def get_expiry_date(inst):
+            expiry_str = inst.get("expiry", "")
+            try:
+                return datetime.strptime(expiry_str, "%Y-%m-%d")
+            except:
+                return datetime.max
+        
+        banknifty_futures.sort(key=get_expiry_date)
+        
+        # Get the nearest expiry that's not expired
+        for fut in banknifty_futures:
+            expiry_date = get_expiry_date(fut)
+            if expiry_date >= today:
+                trading_symbol = fut.get("tradingsymbol")
+                if trading_symbol:
+                    return trading_symbol
+        
+        # If all are expired, return the most recent one anyway
+        if banknifty_futures:
+            return banknifty_futures[0].get("tradingsymbol")
+        
+        return None
+    except Exception as e:
+        print(f"[depth] Error getting BANKNIFTY futures: {e}", file=sys.stderr)
+        return None
+
+
 class DepthCollector:
     """Collects and stores market depth data for any instrument."""
     
@@ -64,6 +120,10 @@ class DepthCollector:
         self.full_symbol = f"{self.exchange}:{self.symbol}"
         self.key = sanitize_key(self.symbol)
         
+        # Cache for futures symbol (for indices)
+        self._futures_symbol = None
+        self._futures_symbol_cache_time = None
+        
         # Build Redis client if not provided
         if redis_client is None:
             redis_host = os.getenv("REDIS_HOST", "localhost")
@@ -78,38 +138,78 @@ class DepthCollector:
             if not self.kite:
                 raise ValueError("Kite client required for live depth data")
             
-            # Normalize symbol: BANKNIFTY -> NIFTY BANK (Zerodha format)
-            normalized_symbol = self.symbol
-            if normalized_symbol.upper() == "BANKNIFTY":
-                normalized_symbol = "NIFTY BANK"
-            elif normalized_symbol.upper() == "NIFTYBANK":
-                normalized_symbol = "NIFTY BANK"
-            elif normalized_symbol.upper() == "NIFTY":
-                normalized_symbol = "NIFTY 50"
+            # Check if we're trying to get depth for an index (which doesn't have depth)
+            # If so, automatically switch to the futures contract
+            symbol_upper = self.symbol.upper()
+            is_index = symbol_upper in ["BANKNIFTY", "NIFTY BANK", "NIFTYBANK", "NIFTY", "NIFTY 50"]
+            
+            # If it's an index, get the futures contract instead
+            if is_index and self.exchange == "NSE":
+                # Cache futures symbol lookup (refresh every hour)
+                current_time = time.time()
+                if (self._futures_symbol is None or 
+                    self._futures_symbol_cache_time is None or 
+                    (current_time - self._futures_symbol_cache_time) > 3600):
+                    
+                    # Get the actual KiteConnect instance (might be wrapped in provider)
+                    kite_instance = self.kite
+                    if hasattr(self.kite, 'kite'):
+                        kite_instance = self.kite.kite
+                    
+                    futures_symbol = get_banknifty_futures_symbol(kite_instance, "NFO")
+                    if futures_symbol:
+                        self._futures_symbol = futures_symbol
+                        self._futures_symbol_cache_time = current_time
+                        print(f"[depth] Using BANKNIFTY futures {futures_symbol} for depth data (index doesn't have depth)")
+                    else:
+                        print(f"[depth] Warning: Could not find BANKNIFTY futures contract, trying index anyway")
+                        depth_symbol = f"{self.exchange}:NIFTY BANK"
+                
+                if self._futures_symbol:
+                    depth_symbol = f"NFO:{self._futures_symbol}"
+                else:
+                    depth_symbol = f"{self.exchange}:NIFTY BANK"
+            else:
+                # Use the configured symbol
+                normalized_symbol = self.symbol
+                if normalized_symbol.upper() == "BANKNIFTY":
+                    normalized_symbol = "NIFTY BANK"
+                elif normalized_symbol.upper() == "NIFTYBANK":
+                    normalized_symbol = "NIFTY BANK"
+                elif normalized_symbol.upper() == "NIFTY":
+                    normalized_symbol = "NIFTY 50"
+                
+                depth_symbol = f"{self.exchange}:{normalized_symbol}"
             
             # Fetch quote with depth
             q = None
             try:
-                # Try primary format: NSE:NIFTY BANK
-                primary_symbol = f"{self.exchange}:{normalized_symbol}"
-                quotes = self.kite.quote([primary_symbol])
+                # Get the actual KiteConnect instance (might be wrapped in provider)
+                kite_instance = self.kite
+                if hasattr(self.kite, 'kite'):
+                    kite_instance = self.kite.kite
+                
+                quotes = kite_instance.quote([depth_symbol])
                 if quotes and len(quotes) > 0:
                     q = list(quotes.values())[0]
                 else:
-                    raise ValueError(f"No quote data returned for {primary_symbol}")
+                    raise ValueError(f"No quote data returned for {depth_symbol}")
             except (IndexError, KeyError, ValueError) as e:
                 # Try alternative symbol formats
                 alt_symbols = [
-                    f"NSE:{normalized_symbol}",
-                    f"NSE:{self.symbol}",  # Original symbol
-                    f"NFO:{normalized_symbol}",
-                    normalized_symbol,  # Just symbol without exchange
-                    self.symbol,  # Original symbol without exchange
+                    depth_symbol,
+                    f"NSE:NIFTY BANK",
+                    f"NSE:{self.symbol}",
+                    self.symbol,
                 ]
+                
+                kite_instance = self.kite
+                if hasattr(self.kite, 'kite'):
+                    kite_instance = self.kite.kite
                 
                 for alt_symbol in alt_symbols:
                     try:
-                        quotes = self.kite.quote([alt_symbol])
+                        quotes = kite_instance.quote([alt_symbol])
                         if quotes and len(quotes) > 0:
                             q = list(quotes.values())[0]
                             break
@@ -124,22 +224,50 @@ class DepthCollector:
                 sell_depth = []
                 return
             
-            # Normalize if it's a Quote dataclass
-            if hasattr(q, 'to_dict'):
-                q = q.to_dict()
+            # KiteConnect quote() returns a dict-like object or dict
+            # The depth data can be accessed in multiple ways depending on the response format
+            buy_depth = []
+            sell_depth = []
             
-            # Extract depth data
-            depth = q.get('depth', {})
-            if not depth:
-                # No depth data available
-                print(f"[depth] Warning: No depth data in quote for {self.full_symbol}")
-                buy_depth = []
-                sell_depth = []
+            # Try to extract depth data - handle both dict and object formats
+            depth_data = None
+            
+            # Method 1: If it's a dict, get depth key
+            if isinstance(q, dict):
+                depth_data = q.get('depth')
+            # Method 2: If it has a depth attribute
+            elif hasattr(q, 'depth'):
+                depth_data = q.depth
+            
+            # Now extract buy/sell from depth_data
+            if depth_data:
+                # If depth_data is a dict
+                if isinstance(depth_data, dict):
+                    buy_depth = depth_data.get('buy', [])
+                    sell_depth = depth_data.get('sell', [])
+                # If depth_data is an object with buy/sell attributes
+                elif hasattr(depth_data, 'buy') and hasattr(depth_data, 'sell'):
+                    buy_depth = list(depth_data.buy) if depth_data.buy else []
+                    sell_depth = list(depth_data.sell) if depth_data.sell else []
+                # If depth_data has to_dict method
+                elif hasattr(depth_data, 'to_dict'):
+                    depth_dict = depth_data.to_dict()
+                    buy_depth = depth_dict.get('buy', [])
+                    sell_depth = depth_dict.get('sell', [])
+            
+            # If still no depth data, check if market is open and depth is available
+            if not buy_depth and not sell_depth:
+                # KiteConnect quote() API may not return depth data for:
+                # - Indices (like BANKNIFTY, NIFTY) - depth is only for stocks/options
+                # - Outside market hours
+                # - Some instruments don't have depth available
+                # This is normal behavior, so we'll log less verbosely
+                # Only log once per minute to avoid spam
+                current_time = time.time()
+                if not hasattr(self, '_last_depth_warning_time') or (current_time - self._last_depth_warning_time) > 60:
+                    self._last_depth_warning_time = current_time
+                    print(f"[depth] Info: Depth data not available for {self.full_symbol} (normal for indices or outside market hours)")
                 return
-            
-            # Extract buy/sell depth
-            buy_depth = depth.get('buy', [])
-            sell_depth = depth.get('sell', [])
             
             # Store in Redis
             timestamp = datetime.now().isoformat()

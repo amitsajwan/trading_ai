@@ -620,7 +620,7 @@ services:
       - ./credentials.json:/app/credentials.json
       - ./logs:/app/logs
     working_dir: /app
-    command: ["python", "kite_auth_service.py"]
+    command: ["python", "-m", "market_data.tools.kite_auth_service"]
     restart: unless-stopped
     networks:
       - trading-network

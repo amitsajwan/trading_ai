@@ -30,7 +30,16 @@ class RSSNewsCollector(NewsCollector):
     async def __aenter__(self):
         """Async context manager entry."""
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/rss+xml, application/xml, text/xml, */*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate',  # Removed 'br' (Brotli) - aiohttp handles gzip/deflate automatically
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Cache-Control': 'max-age=0'
         }
         self.session = aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=self.timeout),
@@ -101,12 +110,24 @@ class RSSNewsCollector(NewsCollector):
         """Collect news from a single RSS source."""
         try:
             async with self.session.get(source.url) as response:
-                if response.status != 200:
+                if response.status == 403:
+                    # HTTP 403 Forbidden - site is blocking requests
+                    logger.warning(f"Failed to fetch {source.url}: HTTP 403 Forbidden (site may be blocking requests)")
+                    logger.info(f"Skipping {source.name} - will try other sources")
+                    return []
+                elif response.status != 200:
                     logger.warning(f"Failed to fetch {source.url}: HTTP {response.status}")
                     return []
 
                 content = await response.text()
                 feed = feedparser.parse(content)
+                
+                # Check if feed parsing was successful
+                if feed.bozo and feed.bozo_exception:
+                    logger.warning(f"Feed parsing error for {source.name}: {feed.bozo_exception}")
+                    # Still try to parse entries if available
+                    if not feed.entries:
+                        return []
 
                 news_items = []
                 for entry in feed.entries[:limit]:
@@ -119,6 +140,15 @@ class RSSNewsCollector(NewsCollector):
 
                 return news_items
 
+        except aiohttp.ClientError as e:
+            error_msg = str(e)
+            # Handle Brotli decompression errors gracefully
+            if 'brotli' in error_msg.lower() or 'br' in error_msg.lower():
+                logger.warning(f"Brotli decompression not available for {source.name}. Install 'Brotli' package or server will use gzip/deflate.")
+                logger.info(f"Skipping {source.name} due to encoding issue - will try other sources")
+            else:
+                logger.error(f"Network error collecting from {source.name}: {e}")
+            return []
         except Exception as e:
             logger.error(f"Failed to collect from {source.name}: {e}")
             return []

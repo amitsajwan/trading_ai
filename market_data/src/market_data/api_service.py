@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, HTTPException, Depends
 from contextlib import asynccontextmanager
@@ -22,6 +22,9 @@ import redis
 # Add parent directory to path for config
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 from config import get_config
+
+# IST timezone for Indian financial markets
+IST = timezone(timedelta(hours=5, minutes=30))
 
 from .api import build_store
 from .adapters.mock_options_chain import MockOptionsChainAdapter
@@ -177,10 +180,22 @@ def get_options_client() -> Optional[OptionsData]:
         kite = KiteConnect(api_key=api_key)
         kite.set_access_token(access_token)
         
-        # Determine if we're in live mode (zerodha provider) or historical mode
-        provider_name = os.getenv("TRADING_PROVIDER", "").lower()
-        use_mock_env = os.getenv("USE_MOCK_KITE", "false").lower() in ('1', 'true', 'yes')
-        is_live_mode = provider_name in ('zerodha', 'kite') and not use_mock_env
+        # Determine if we're in live mode or historical mode
+        # Check Redis for virtual time status (more reliable than env vars)
+        is_live_mode = True  # Default to live mode
+        try:
+            redis_client = get_redis_client()
+            virtual_time_enabled = redis_client.get("system:virtual_time:enabled")
+            if virtual_time_enabled:
+                # If virtual_time is enabled, we're in historical replay mode
+                virtual_time_str = virtual_time_enabled.decode() if isinstance(virtual_time_enabled, bytes) else virtual_time_enabled
+                if virtual_time_str == "1":
+                    is_live_mode = False
+        except Exception:
+            # If Redis check fails, fall back to environment variable
+            provider_name = os.getenv("TRADING_PROVIDER", "").lower()
+            use_mock_env = os.getenv("USE_MOCK_KITE", "false").lower() in ('1', 'true', 'yes')
+            is_live_mode = provider_name in ('zerodha', 'kite') and not use_mock_env
         
         # Use Zerodha Options Chain Adapter
         # For live mode: uses kite.quote() for real-time bid/ask prices
@@ -345,7 +360,7 @@ async def get_latest_tick(instrument: str):
         if price:
             # Return from Redis
             from datetime import datetime
-            ts = datetime.fromisoformat(timestamp) if timestamp else datetime.utcnow()
+            ts = datetime.fromisoformat(timestamp) if timestamp else datetime.now(IST)
             return MarketTickResponse(
                 instrument=instrument.upper(),
                 timestamp=ts.isoformat(),
@@ -435,7 +450,7 @@ async def get_options_chain(instrument: str):
             instrument=instrument.upper(),
             expiry=expiry_str,
             strikes=chain.get("strikes", []),
-            timestamp=datetime.utcnow().isoformat()
+            timestamp=datetime.now(IST).isoformat()
         )
     except HTTPException:
         raise
@@ -509,7 +524,7 @@ async def get_technical_indicators(
         
         return TechnicalIndicatorsResponse(
             instrument=instrument.upper(),
-            timestamp=datetime.utcnow().isoformat(),
+            timestamp=datetime.now(IST).isoformat(),
             indicators=indicators_dict
         )
     except HTTPException:
@@ -676,7 +691,7 @@ async def get_raw_market_data(instrument: str, limit: int = 100):
             "instrument": instrument.upper(),
             "keys_found": len(all_keys),
             "data": data,
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(IST).isoformat()
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -736,7 +751,7 @@ async def get_market_depth(instrument: str):
             from datetime import datetime, timedelta
             try:
                 redis_time = datetime.fromisoformat(timestamp)
-                if datetime.utcnow() - redis_time > timedelta(minutes=5):
+                if datetime.now(IST) - redis_time > timedelta(minutes=5):
                     # Redis data is stale, use in-memory store instead
                     store = get_store()
                     latest_tick = store.get_latest_tick(instrument.upper())

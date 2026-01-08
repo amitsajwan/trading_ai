@@ -62,9 +62,15 @@ def build_historical_replay(store: MarketStore, data_source: str = "synthetic", 
     """
     if data_source == "zerodha" and kite:
         # Use real Zerodha historical data
-        from dateutil.relativedelta import relativedelta
-        to_date = (start_date or datetime.now()).date()
-        from_date = to_date - relativedelta(days=7)  # Last 7 days
+        if start_date:
+            # User specified a specific date - fetch data for that date only
+            to_date = start_date.date()
+            from_date = to_date  # Same day
+        else:
+            # No specific date - fallback to last 7 days
+            from dateutil.relativedelta import relativedelta
+            to_date = datetime.now().date()
+            from_date = to_date - relativedelta(days=7)
 
         replayer = HistoricalTickReplayer(
             store=store,
@@ -74,9 +80,8 @@ def build_historical_replay(store: MarketStore, data_source: str = "synthetic", 
             from_date=from_date,
             to_date=to_date,
             interval="minute",
-            rebase=True,
-            rebase_to=start_date or datetime.now(),
-            speed=0.0  # Instant speed (0.0) for faster replay - all ticks replay immediately
+            rebase=False,  # Don't rebase historical data - keep original timestamps
+            speed=10.0  # Use speed=10.0 to avoid instant replay issues with large datasets
         )
         return replayer
     else:

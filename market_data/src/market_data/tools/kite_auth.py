@@ -114,14 +114,14 @@ def start_http_server():
                 </html>
                 """
                 self.wfile.write(success_msg)
-                print(f"\n✓ Request token received: {request_token[:20]}...")
+                print(f"\n[SUCCESS] Request token received: {request_token[:20]}...")
             elif status == "success" and not request_token:
                 # Sometimes Zerodha redirects with status=success but token in different format
                 self.send_response(200)
                 self.send_header('Content-type', 'text/html')
                 self.end_headers()
                 self.wfile.write(b"<html><body><h1>Processing...</h1><p>Please check the terminal for status.</p></body></html>")
-                print(f"\n⚠️  Received status=success but no request_token in URL")
+                print(f"\n[WARNING] Received status=success but no request_token in URL")
                 print(f"   Full path: {self.path}")
             else:
                 self.send_response(400)
@@ -138,7 +138,7 @@ def start_http_server():
                 </html>
                 """
                 self.wfile.write(error_msg)
-                print(f"\n⚠️  Failed to capture request_token from path: {self.path}")
+                print(f"\n[WARNING] Failed to capture request_token from path: {self.path}")
 
     # Try to find an available port (start with 5000, try others if needed)
     port = 5000
@@ -149,13 +149,13 @@ def start_http_server():
         try:
             server = http.server.HTTPServer(("127.0.0.1", port), RequestHandler)
             server.request_token = None
-            print(f"✓ HTTP server started on http://127.0.0.1:{port}")
+            print(f"[OK] HTTP server started on http://127.0.0.1:{port}")
             break
         except OSError as e:
             if "Address already in use" in str(e) or "address is already in use" in str(e).lower():
                 port += 1
                 if attempt < max_attempts - 1:
-                    print(f"⚠️  Port {port-1} in use, trying {port}...")
+                    print(f"[WARNING] Port {port-1} in use, trying {port}...")
                     continue
             raise
     
@@ -174,45 +174,53 @@ def start_http_server():
     return server
 
 
-def main():
-    # Parse command line arguments
-    verify_mode = "--verify" in sys.argv
-    force_mode = "--force" in sys.argv
-    
-    # Get API key and secret from environment variables
-    api_key = os.environ.get("KITE_API_KEY")
-    api_secret = os.environ.get("KITE_API_SECRET")
+def login_via_browser(api_key: Optional[str] = None,
+                      api_secret: Optional[str] = None,
+                      verify_mode: bool = False,
+                      force_mode: bool = False,
+                      timeout: int = 120):
+    """Perform the browser-based Kite Connect login flow.
+
+    Returns a tuple: (credentials_dict | None, exit_code)
+    - credentials_dict: dict written to `credentials.json` on success (or existing creds if valid)
+    - exit_code: 0 on success, non-zero on failure
+    """
+    # Resolve keys from environment if not provided
+    if api_key is None:
+        api_key = os.environ.get("KITE_API_KEY")
+    if api_secret is None:
+        api_secret = os.environ.get("KITE_API_SECRET")
 
     if not api_key or not api_secret:
         print("Error: Please set KITE_API_KEY and KITE_API_SECRET as environment variables.")
         print("   Or add them to your .env file")
-        return 1
+        return None, 1
 
     # Check existing credentials
     cred_path = Path("credentials.json")
     validator = CredentialsValidator()
-    
+
     if cred_path.exists() and not force_mode:
         try:
             existing_creds = json.loads(cred_path.read_text())
-            
+
             if verify_mode:
                 # Verify existing credentials
                 print("Verifying existing credentials...")
                 if validator.verify_credentials(api_key, existing_creds.get("access_token", "")):
-                    print("✓ Existing credentials are valid")
-                    return 0
+                    print("[OK] Existing credentials are valid")
+                    return existing_creds, 0
                 else:
                     print("Existing credentials are invalid or expired")
-                    return 1
-            
+                    return None, 1
+
             # Check if token is still valid
             if validator.is_token_valid(existing_creds):
                 print("Valid credentials found (less than 23 hours old)")
                 if validator.verify_credentials(api_key, existing_creds.get("access_token", "")):
                     print("Credentials verified with Kite API")
                     print("   Use --force to generate new credentials")
-                    return 0
+                    return existing_creds, 0
         except Exception as e:
             print(f"Error reading existing credentials: {e}")
 
@@ -225,11 +233,11 @@ def main():
     server = start_http_server()
     server_port = server.server_address[1]
     redirect_uri = f"http://127.0.0.1:{server_port}/login"
-    
-    print(f"\n📋 Redirect URI: {redirect_uri}")
-    print("   ⚠️  IMPORTANT: Make sure this redirect URI is configured in your Kite Connect app settings!")
-    print("   💡 Go to: https://kite.zerodha.com/apps/")
-    print("   💡 Edit your app and add this redirect URI if not already present\n")
+
+    print(f"\n[INFO] Redirect URI: {redirect_uri}")
+    print("   [WARNING] IMPORTANT: Make sure this redirect URI is configured in your Kite Connect app settings!")
+    print("   [INFO] Go to: https://kite.zerodha.com/apps/")
+    print("   [INFO] Edit your app and add this redirect URI if not already present\n")
 
     # Generate login URL with explicit redirect_uri
     # Note: login_url() may use default redirect_uri from Kite Connect app settings
@@ -239,19 +247,19 @@ def main():
         login_url = kite.login_url()
     except Exception as e:
         print(f"Error generating login URL: {e}")
-        return 1
-    
+        return None, 1
+
     print("Login URL:")
     print("   ", login_url)
-    print(f"\n⚠️  IMPORTANT: The redirect URI in your Kite Connect app must match:")
+    print(f"\n[WARNING] IMPORTANT: The redirect URI in your Kite Connect app must match:")
     print(f"   {redirect_uri}")
-    print(f"\n💡 If you get 'URL not found' error, check:")
+    print(f"\n[INFO] If you get 'URL not found' error, check:")
     print(f"   1. Go to https://kite.zerodha.com/apps/")
     print(f"   2. Edit your app (API Key: {api_key[:8]}...)")
     print(f"   3. Add/verify redirect URI: {redirect_uri}")
     print(f"   4. Also try: http://127.0.0.1:{server_port}/ (without /login)")
     print("\nOpening browser... please log in and authorize the app")
-    print("   (You have 120 seconds to complete the login)\n")
+    print(f"   (You have {timeout} seconds to complete the login)\n")
 
     try:
         webbrowser.open(login_url)
@@ -261,14 +269,13 @@ def main():
 
     # Wait for request_token with timeout
     print("Waiting for authentication...")
-    timeout = 120  # 2 minutes
     start_time = time.time()
 
     while not server.request_token:
         if time.time() - start_time > timeout:
-            print("\nTimeout: No response received within 120 seconds")
+            print(f"\nTimeout: No response received within {timeout} seconds")
             server.shutdown()
-            return 1
+            return None, 1
         time.sleep(0.5)
 
     request_token = server.request_token
@@ -285,7 +292,7 @@ def main():
         except Exception as e:
             if attempt == max_retries - 1:
                 print(f"\nFailed to generate session after {max_retries} attempts: {e}")
-                return 1
+                return None, 1
             print(f"Attempt {attempt + 1} failed: {e}")
             time.sleep(2)
 
@@ -323,10 +330,20 @@ def main():
     print("\nVerifying saved credentials...")
     if validator.verify_credentials(api_key, cred["access_token"]):
         print("All systems ready! You can now start the trading containers.")
-        return 0
+        return cred, 0
     else:
         print("Credentials saved but verification failed. Please try again.")
-        return 1
+        return cred, 1
+
+
+def main():
+    # CLI wrapper preserves original behavior (exit codes)
+    verify_mode = "--verify" in sys.argv
+    force_mode = "--force" in sys.argv
+
+    creds, code = login_via_browser(verify_mode=verify_mode, force_mode=force_mode)
+    return code
+
 
 if __name__ == "__main__":
     exit(main())

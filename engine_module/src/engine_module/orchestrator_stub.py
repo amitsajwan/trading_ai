@@ -342,16 +342,31 @@ class TradingOrchestrator:
             # Get sentiment summary for the last 24 hours
             sentiment_summary_obj = await self.news_service.get_sentiment_summary(instrument, hours=24)
             
-            # Convert to dict for easier access
+            # Convert to dict for easier access (handle both dicts and dataclass instances)
             import dataclasses
-            sentiment_summary = dataclasses.asdict(sentiment_summary_obj)
+            if isinstance(sentiment_summary_obj, dict):
+                sentiment_summary = sentiment_summary_obj
+            elif sentiment_summary_obj and dataclasses.is_dataclass(sentiment_summary_obj):
+                sentiment_summary = dataclasses.asdict(sentiment_summary_obj)
+            else:
+                sentiment_summary = {}
 
             # Extract aggregate sentiment score for agents
             aggregate_sentiment = sentiment_summary.get("average_sentiment", 0.0)
 
+            # Convert news items to dicts (handle both dicts and dataclass instances)
+            news_dicts = []
+            for item in latest_news:
+                if isinstance(item, dict):
+                    news_dicts.append(item)
+                elif dataclasses.is_dataclass(item):
+                    news_dicts.append(dataclasses.asdict(item))
+                else:
+                    news_dicts.append(dict(item) if hasattr(item, '__dict__') else {})
+
             return {
                 "instrument": instrument,
-                "latest_news": [dataclasses.asdict(item) for item in latest_news],  # Convert to dicts for compatibility
+                "latest_news": news_dicts,
                 "sentiment_summary": sentiment_summary,
                 "sentiment_score": aggregate_sentiment,
                 "news_available": True
@@ -381,9 +396,23 @@ class TradingOrchestrator:
             # Get technical indicators
             technical_indicators = await self.technical_data_provider.get_technical_indicators(instrument, periods=100)
 
+            if technical_indicators is None:
+                return {
+                    "instrument": instrument,
+                    "technical_indicators": {},
+                    "technical_data_available": False
+                }
+
             # Convert to dict for easier access
+            # Handle both dataclass instances and dicts
             import dataclasses
-            indicators_dict = dataclasses.asdict(technical_indicators)
+            if isinstance(technical_indicators, dict):
+                indicators_dict = technical_indicators
+            elif dataclasses.is_dataclass(technical_indicators):
+                indicators_dict = dataclasses.asdict(technical_indicators)
+            else:
+                # Fallback: try to convert to dict
+                indicators_dict = dict(technical_indicators) if hasattr(technical_indicators, '__dict__') else {}
 
             return {
                 "instrument": instrument,
@@ -419,16 +448,33 @@ class TradingOrchestrator:
             positions = await self.position_manager.get_positions(instrument)
             
             # Get portfolio summary
-            portfolio_summary = await self.position_manager.get_portfolio_summary()
+            portfolio_summary = self.position_manager.get_portfolio_summary()
 
-            # Convert positions to dict for easier access
+            # Convert positions to dict for easier access (handle both dicts and dataclass instances)
             import dataclasses
-            positions_dict = [dataclasses.asdict(pos) for pos in positions]
+            positions_dict = []
+            for pos in positions:
+                if isinstance(pos, dict):
+                    positions_dict.append(pos)
+                elif pos and dataclasses.is_dataclass(pos):
+                    positions_dict.append(dataclasses.asdict(pos))
+                else:
+                    positions_dict.append(dict(pos) if hasattr(pos, '__dict__') else {})
+
+            # Convert portfolio summary
+            portfolio_dict = {}
+            if portfolio_summary:
+                if isinstance(portfolio_summary, dict):
+                    portfolio_dict = portfolio_summary
+                elif dataclasses.is_dataclass(portfolio_summary):
+                    portfolio_dict = dataclasses.asdict(portfolio_summary)
+                else:
+                    portfolio_dict = dict(portfolio_summary) if hasattr(portfolio_summary, '__dict__') else {}
 
             return {
                 "instrument": instrument,
                 "positions": positions_dict,
-                "portfolio_summary": dataclasses.asdict(portfolio_summary),
+                "portfolio_summary": portfolio_dict,
                 "position_data_available": True
             }
 

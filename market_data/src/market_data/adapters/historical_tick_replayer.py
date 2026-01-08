@@ -329,8 +329,8 @@ class HistoricalTickReplayer(MarketIngestion):
                 return []
             
             logger.info(f"Fetched {len(historical_data)} candles from Zerodha")
-            
-            # Convert OHLC candles to ticks
+
+            # Convert OHLC candles to ticks (filter for market hours only)
             ticks = []
             for candle in historical_data:
                 # Parse timestamp (Zerodha returns datetime objects)
@@ -341,14 +341,22 @@ class HistoricalTickReplayer(MarketIngestion):
                     # Ensure timezone aware
                     if timestamp.tzinfo is None:
                         timestamp = timestamp.replace(tzinfo=IST)
-                
+
+                # Filter for market hours only (9:15 AM to 3:30 PM IST)
+                market_open = timestamp.replace(hour=9, minute=15, second=0, microsecond=0)
+                market_close = timestamp.replace(hour=15, minute=30, second=0, microsecond=0)
+
+                # Only process candles within market hours (9:15 AM to 3:30 PM IST)
+                if timestamp.hour < 9 or (timestamp.hour == 9 and timestamp.minute < 15) or timestamp.hour > 15 or (timestamp.hour == 15 and timestamp.minute > 30):
+                    continue
+
                 # Parse OHLC
                 open_price = float(candle.get("open", 0))
                 high_price = float(candle.get("high", 0))
                 low_price = float(candle.get("low", 0))
                 close_price = float(candle.get("close", 0))
                 volume = int(candle.get("volume", 0))
-                
+
                 # Convert OHLC candle to multiple ticks
                 candle_ticks = self._ohlc_to_ticks(
                     timestamp=timestamp,
@@ -359,7 +367,7 @@ class HistoricalTickReplayer(MarketIngestion):
                     volume=volume,
                     instrument=self.instrument_symbol
                 )
-                
+
                 ticks.extend(candle_ticks)
             
             # Sort by timestamp to ensure chronological order

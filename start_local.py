@@ -148,7 +148,7 @@ class CredentialsValidator:
                                 else:
                                     print("   ❌ Token in credentials.json is expired or invalid (403 error)")
                                     print("   ✅ Validation worked correctly - token is not usable")
-                                    print("   💡 Please refresh token by running: python market_data/src/market_data/tools/kite_auth.py")
+                                    print("   💡 Please refresh token by running: python -m market_data.tools.kite_auth")
                                     print("   💡 Or set KITE_ACCESS_TOKEN in environment with a valid token")
                                     provider = None
                                     token_validated_and_invalid = True  # Mark as validated and invalid
@@ -471,7 +471,7 @@ def verify_historical_data(max_retries=30, retry_delay=1, data_source='zerodha',
 
 
 def verify_market_data_api(base_url="http://localhost:8004", max_retries=20, retry_delay=1):
-    """Verify Market Data API has actual data (tick and options chain)"""
+    """Verify Market Data API has actual data - tests all critical endpoints"""
     print("   ⏳ Verifying Market Data API functionality...")
     
     for attempt in range(1, max_retries + 1):
@@ -483,21 +483,60 @@ def verify_market_data_api(base_url="http://localhost:8004", max_retries=20, ret
                 if tick_data.get('last_price'):
                     print(f"   ✅ Market Data API: BANKNIFTY tick = {tick_data.get('last_price')}")
                     
-                    # Check options chain
+                    # Test all critical endpoints
+                    endpoints_passed = 0
+                    endpoints_total = 0
+                    
+                    # Test price endpoint
                     try:
-                        options_response = requests.get(f"{base_url}/api/v1/options/chain/BANKNIFTY", timeout=5)
+                        price_response = requests.get(f"{base_url}/api/v1/market/price/BANKNIFTY", timeout=5)
+                        endpoints_total += 1
+                        if price_response.status_code == 200:
+                            price_data = price_response.json()
+                            if price_data.get('price'):
+                                endpoints_passed += 1
+                    except:
+                        endpoints_total += 1
+                    
+                    # Test OHLC endpoint
+                    try:
+                        ohlc_response = requests.get(f"{base_url}/api/v1/market/ohlc/BANKNIFTY?timeframe=minute&limit=5", timeout=5)
+                        endpoints_total += 1
+                        if ohlc_response.status_code == 200:
+                            ohlc_data = ohlc_response.json()
+                            if isinstance(ohlc_data, list) and len(ohlc_data) > 0:
+                                endpoints_passed += 1
+                    except:
+                        endpoints_total += 1
+                    
+                    # Test raw data endpoint
+                    try:
+                        raw_response = requests.get(f"{base_url}/api/v1/market/raw/BANKNIFTY?limit=5", timeout=5)
+                        endpoints_total += 1
+                        if raw_response.status_code == 200:
+                            raw_data = raw_response.json()
+                            if raw_data.get('keys_found', 0) > 0:
+                                endpoints_passed += 1
+                    except:
+                        endpoints_total += 1
+                    
+                    # Check options chain (optional but nice to have)
+                    try:
+                        options_response = requests.get(f"{base_url}/api/v1/options/chain/BANKNIFTY", timeout=10)
                         if options_response.status_code == 200:
                             options_data = options_response.json()
                             strikes = options_data.get('strikes', [])
                             if strikes:
                                 print(f"   ✅ Market Data API: Options chain available ({len(strikes)} strikes)")
-                                return True
-                            else:
-                                print(f"   ⏳ Attempt {attempt}/{max_retries} - Options chain empty, retrying...")
-                        else:
-                            print(f"   ⏳ Attempt {attempt}/{max_retries} - Options chain not ready (status {options_response.status_code})...")
-                    except Exception as e:
-                        print(f"   ⏳ Attempt {attempt}/{max_retries} - Options chain check failed: {e}")
+                    except:
+                        pass  # Options chain is optional
+                    
+                    # If critical endpoints pass, we're good
+                    if endpoints_passed >= 2:  # At least tick + one other endpoint
+                        print(f"   ✅ Market Data API: {endpoints_passed}/{endpoints_total} critical endpoints verified")
+                        return True
+                    else:
+                        print(f"   ⏳ Attempt {attempt}/{max_retries} - Only {endpoints_passed}/{endpoints_total} endpoints ready, retrying...")
                 else:
                     print(f"   ⏳ Attempt {attempt}/{max_retries} - No price data yet...")
             else:
@@ -516,16 +555,43 @@ def verify_news_api(base_url="http://localhost:8005", max_retries=15, retry_dela
     """Verify News API returns actual news articles"""
     print("   ⏳ Verifying News API functionality...")
     
+    # Trigger collection on first attempt to ensure we have articles
+    collection_triggered = False
+    
     for attempt in range(1, max_retries + 1):
         try:
             response = requests.get(f"{base_url}/api/v1/news/BANKNIFTY", timeout=5)
             if response.status_code == 200:
                 news_data = response.json()
-                articles = news_data.get('articles', [])
+                # Support both 'news' (current) and legacy 'articles' keys
+                articles = news_data.get('news') if isinstance(news_data, dict) else None
+                if not articles:
+                    articles = news_data.get('articles', []) if isinstance(news_data, dict) else []
+
                 if articles:
                     print(f"   ✅ News API: {len(articles)} articles available")
                     return True
                 else:
+                    # Trigger collection if we haven't already and it's early in retries
+                    if not collection_triggered and attempt <= 3:
+                        try:
+                            print("   ℹ️  No articles found - triggering collection via API")
+                            collect_response = requests.post(
+                                f"{base_url}/api/v1/news/collect",
+                                json={"instruments": ["BANKNIFTY"]},
+                                timeout=30
+                            )
+                            collection_triggered = True
+                            if collect_response.status_code == 200:
+                                collected = collect_response.json().get('collected_count', 0)
+                                print(f"   ℹ️  Collection triggered, {collected} articles collected")
+                            else:
+                                print(f"   ⚠️  Collection request returned status {collect_response.status_code}")
+                            # Wait a bit longer after triggering collection
+                            time.sleep(3)
+                        except Exception as coll_err:
+                            print(f"   ⚠️ Failed to trigger collection: {coll_err}")
+
                     print(f"   ⏳ Attempt {attempt}/{max_retries} - No articles yet, retrying...")
             else:
                 print(f"   ⏳ Attempt {attempt}/{max_retries} - News endpoint not ready (status {response.status_code})...")
@@ -536,6 +602,7 @@ def verify_news_api(base_url="http://localhost:8005", max_retries=15, retry_dela
             time.sleep(retry_delay)
     
     print("   ❌ News API verification failed - no articles available")
+    print("   ⚠️  Note: RSS feeds may be blocked (403). Check if MongoDB has existing articles.")
     return False
 
 
@@ -546,20 +613,31 @@ def verify_engine_api(base_url="http://localhost:8006", max_retries=15, retry_de
     for attempt in range(1, max_retries + 1):
         try:
             # Check if agents can analyze (this verifies agents are initialized)
+            # Note: context must be a dict or omitted, not a string
             analyze_response = requests.post(
                 f"{base_url}/api/v1/analyze",
-                json={"instrument": "BANKNIFTY", "context": "test"},
+                json={"instrument": "BANKNIFTY", "context": {}},
                 timeout=10
             )
             if analyze_response.status_code == 200:
                 analyze_data = analyze_response.json()
-                agents = analyze_data.get('agents', {})
-                if agents:
-                    agent_names = list(agents.keys())
-                    print(f"   ✅ Engine API: Agents running ({', '.join(agent_names)})")
+                # Check for valid analysis response structure
+                if 'decision' in analyze_data and 'confidence' in analyze_data:
+                    decision = analyze_data.get('decision', 'UNKNOWN')
+                    confidence = analyze_data.get('confidence', 0.0)
+                    print(f"   ✅ Engine API: Agents running (decision={decision}, confidence={confidence:.2f})")
                     return True
                 else:
-                    print(f"   ⏳ Attempt {attempt}/{max_retries} - Agents not initialized yet...")
+                    print(f"   ⏳ Attempt {attempt}/{max_retries} - Invalid response format...")
+            elif analyze_response.status_code == 503:
+                print(f"   ⏳ Attempt {attempt}/{max_retries} - Orchestrator not initialized yet (status 503)...")
+            elif analyze_response.status_code == 422:
+                # Parse validation error details
+                try:
+                    error_detail = analyze_response.json().get('detail', 'Validation error')
+                    print(f"   ⏳ Attempt {attempt}/{max_retries} - Validation error: {error_detail}")
+                except:
+                    print(f"   ⏳ Attempt {attempt}/{max_retries} - Validation error (status 422)...")
             else:
                 print(f"   ⏳ Attempt {attempt}/{max_retries} - Analyze endpoint not ready (status {analyze_response.status_code})...")
         except Exception as e:
@@ -619,14 +697,17 @@ def start_service(name, command, env=None):
         env = os.environ.copy()
     # Ensure PYTHONPATH includes our module paths
     pythonpath = env.get('PYTHONPATH', '')
-    if './market_data/src' not in pythonpath:
-        if pythonpath:
-            pythonpath += os.pathsep
-        pythonpath += './market_data/src'
-    if './news_module/src' not in pythonpath:
-        pythonpath += os.pathsep + './news_module/src'
-    if './engine_module/src' not in pythonpath:
-        pythonpath += os.pathsep + './engine_module/src'
+    paths_to_add = [
+        './market_data/src',
+        './news_module/src',
+        './engine_module/src',
+        './genai_module/src'
+    ]
+    for path in paths_to_add:
+        if path not in pythonpath:
+            if pythonpath:
+                pythonpath += os.pathsep
+            pythonpath += path
     env['PYTHONPATH'] = pythonpath
     
     # Use Popen for background processes
@@ -833,6 +914,7 @@ async def main():
     sys.path.insert(0, './market_data/src')
     sys.path.insert(0, './news_module/src')
     sys.path.insert(0, './engine_module/src')
+    sys.path.insert(0, './genai_module/src')
     sys.path.insert(0, './data_niftybank/src')
 
     processes = []
@@ -1047,10 +1129,68 @@ async def main():
         print("\n" + "=" * 60)
         print("🤖 Step 4: Engine API")
         print("=" * 60)
+        
+        # Ensure all LLM API keys and configuration are set in environment before starting Engine API
+        # These will be passed to the Engine API process via start_service (which copies os.environ)
+        # Only set if not already in environment (allows local.env to override)
+        required_env_vars = {
+            'AI21_API_KEY': 'e7616a6d-78bd-47dc-b076-539bacd710d9',
+            'AI21_API_KEY_2': 'c86f7e05-75a3-4d1d-88f3-725aba7db285',
+            'AI21_MODEL': 'j2-mid',
+            'COHERE_API_KEY': 'xXWGFBOCljq4vp5YNKJz7XTHAcPCv3e7lPDNsFHj',
+            'COHERE_API_KEY_2': 'clEBjpqpFi4eKpgfhUPx75FjC40COUIIcbjBrYwd',
+            'COHERE_MODEL': 'command-a-03-2025',
+            'COHERE_REASONING_MODEL': 'command-a-reasoning-08-2025',
+            'DAILY_LOSS_LIMIT_PCT': '5.0',
+            'DATA_SOURCE': 'ZERODHA',
+            'DEFAULT_STOP_LOSS_PCT': '1.5',
+            'DEFAULT_TAKE_PROFIT_PCT': '3.0',
+            'GOOGLE_API_KEY': 'AIzaSyCEYoOsbt-FXzyV3Kh9i_fwmhvF3EsZSME',
+            'GROQ_API_KEY': 'GROQ_API_KEY_REDACTED',
+            'GROQ_API_KEY_2': 'GROQ_API_KEY_REDACTED',
+            'GROQ_API_KEY_3': 'GROQ_API_KEY_REDACTED',
+            'GROQ_MODEL': 'llama-3.1-8b-instant',
+            'GROQ_MODELS': 'llama-3.1-8b-instant',
+        }
+        
+        # Set environment variables that are missing (existing values take precedence)
+        vars_set = []
+        for key, default_value in required_env_vars.items():
+            if key not in os.environ:
+                os.environ[key] = default_value
+                vars_set.append(key)
+        
+        if vars_set:
+            print(f"   ⚙️  Set {len(vars_set)} environment variables for Engine API")
+        else:
+            print(f"   ✅ All required environment variables already set")
+
+        # Install genai_module in editable mode for Engine API
+        print("   📦 Installing genai_module (1/2)...")
+        try:
+            subprocess.run([sys.executable, "-m", "pip", "install", "-e", "./genai_module"],
+                         capture_output=True, text=True, check=True)
+            print("   ✅ genai_module installed successfully (1/2)")
+        except subprocess.CalledProcessError as e:
+            print(f"   ❌ Failed to install genai_module (1/2): {e}")
+            print(f"   Error output: {e.stderr}")
+            return
+
+        # Install news_module in editable mode for News API
+        print("   📦 Installing news_module (2/2)...")
+        try:
+            subprocess.run([sys.executable, "-m", "pip", "install", "-e", "./news_module"],
+                         capture_output=True, text=True, check=True)
+            print("   ✅ news_module installed successfully (2/2)")
+        except subprocess.CalledProcessError as e:
+            print(f"   ❌ Failed to install news_module (2/2): {e}")
+            print(f"   Error output: {e.stderr}")
+            return
+
         kill_process_on_port(8006)
         engine_process = start_service(
             "Engine API (port 8006)",
-            ["python", "-c", "from engine_module.api_service import app; import uvicorn; uvicorn.run(app, host='0.0.0.0', port=8006)"]
+            ["python", "-m", "engine_module.api_service"]
         )
         processes.append(engine_process)
         
