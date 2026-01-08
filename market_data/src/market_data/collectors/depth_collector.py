@@ -88,6 +88,7 @@ class DepthCollector:
                 normalized_symbol = "NIFTY 50"
             
             # Fetch quote with depth
+            q = None
             try:
                 # Try primary format: NSE:NIFTY BANK
                 primary_symbol = f"{self.exchange}:{normalized_symbol}"
@@ -106,7 +107,6 @@ class DepthCollector:
                     self.symbol,  # Original symbol without exchange
                 ]
                 
-                q = None
                 for alt_symbol in alt_symbols:
                     try:
                         quotes = self.kite.quote([alt_symbol])
@@ -115,21 +115,31 @@ class DepthCollector:
                             break
                     except:
                         continue
-                
-                if q is None:
-                    # All attempts failed
-                    print(f"[depth] Warning: Could not fetch depth for {self.full_symbol} (tried: NSE:NIFTY BANK, {self.exchange}:{self.symbol}, and alternatives)")
-                    buy_depth = []
-                    sell_depth = []
-                    return
-                # Normalize if it's a Quote dataclass
-                if hasattr(q, 'to_dict'):
-                    q = q.to_dict()
-                depth = q.get('depth', {})
-                
-                # Extract buy/sell depth
-                buy_depth = depth.get('buy', [])
-                sell_depth = depth.get('sell', [])
+            
+            # Check if we got a quote
+            if q is None:
+                # All attempts failed
+                print(f"[depth] Warning: Could not fetch depth for {self.full_symbol} (tried: NSE:NIFTY BANK, {self.exchange}:{self.symbol}, and alternatives)")
+                buy_depth = []
+                sell_depth = []
+                return
+            
+            # Normalize if it's a Quote dataclass
+            if hasattr(q, 'to_dict'):
+                q = q.to_dict()
+            
+            # Extract depth data
+            depth = q.get('depth', {})
+            if not depth:
+                # No depth data available
+                print(f"[depth] Warning: No depth data in quote for {self.full_symbol}")
+                buy_depth = []
+                sell_depth = []
+                return
+            
+            # Extract buy/sell depth
+            buy_depth = depth.get('buy', [])
+            sell_depth = depth.get('sell', [])
             
             # Store in Redis
             timestamp = datetime.now().isoformat()

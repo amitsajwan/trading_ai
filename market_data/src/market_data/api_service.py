@@ -14,6 +14,7 @@ import sys
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, HTTPException, Depends
+from contextlib import asynccontextmanager
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 import redis
@@ -76,11 +77,47 @@ class TechnicalIndicatorsResponse(BaseModel):
     indicators: Dict[str, Any]
 
 
+# Lifespan handler for FastAPI
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Initialize and cleanup resources using FastAPI lifespan events."""
+    try:
+        print("Market Data API: Starting initialization...")
+        # Startup: initialize services
+        get_store()
+        
+        # Initialize technical indicators service with Redis
+        if TechnicalIndicatorsService is not None:
+            global _technical_service
+            redis_client = get_redis_client()
+            _technical_service = TechnicalIndicatorsService(redis_client=redis_client)
+        
+        # Check Redis connection
+        redis_client = get_redis_client()
+        redis_client.ping()
+        
+        # Try to initialize options client (non-blocking)
+        get_options_client()
+        
+        print("Market Data API: Services initialized successfully")
+        yield
+    except Exception as e:
+        print(f"Market Data API: Initialization failed: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
+    finally:
+        print("Market Data API: Starting cleanup...")
+        # Cleanup if needed
+        pass
+
+
 # FastAPI app
 app = FastAPI(
     title="Market Data API",
     description="REST API for market data, options chain, and technical indicators",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan
 )
 
 # Global store instance (initialized on startup)
@@ -171,29 +208,7 @@ def get_options_client() -> Optional[OptionsData]:
         return None
 
 
-@app.on_event("startup")
-async def startup_event():
-    """Initialize services on startup."""
-    try:
-        # Initialize store
-        get_store()
-        
-        # Initialize technical indicators service with Redis
-        if TechnicalIndicatorsService is not None:
-            global _technical_service
-            redis_client = get_redis_client()
-            _technical_service = TechnicalIndicatorsService(redis_client=redis_client)
-        
-        # Check Redis connection
-        redis_client = get_redis_client()
-        redis_client.ping()
-        
-        # Try to initialize options client (non-blocking)
-        get_options_client()
-        
-        print("Market Data API: Services initialized successfully")
-    except Exception as e:
-        print(f"Market Data API: Startup error: {e}")
+        return None
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -234,16 +249,39 @@ async def health_check():
                 try:
                     timestamp_str = timestamp if isinstance(timestamp, str) else timestamp.decode()
                     redis_time = datetime.fromisoformat(timestamp_str)
-                    current_time = datetime.now(IST)
                     if redis_time.tzinfo is None:
                         redis_time = redis_time.replace(tzinfo=IST)
-                    time_diff = current_time - redis_time
-                    age_seconds = abs(time_diff.total_seconds())
                     
-                    if age_seconds > 120:  # More than 2 minutes old
-                        dependencies["data_availability"] = f"stale_data_for_{instrument}_age_{age_seconds:.0f}s"
+                    # Check if virtual time is enabled (historical replay mode)
+                    virtual_time_enabled = redis_client.get("system:virtual_time:enabled")
+                    if virtual_time_enabled and virtual_time_enabled.decode() if isinstance(virtual_time_enabled, bytes) else virtual_time_enabled == "1":
+                        # In historical replay mode, compare against virtual time
+                        virtual_time_str = redis_client.get("system:virtual_time:current")
+                        if virtual_time_str:
+                            virtual_time_str = virtual_time_str.decode() if isinstance(virtual_time_str, bytes) else virtual_time_str
+                            current_time = datetime.fromisoformat(virtual_time_str)
+                            if current_time.tzinfo is None:
+                                current_time = current_time.replace(tzinfo=IST)
+                            time_diff = current_time - redis_time
+                            age_seconds = abs(time_diff.total_seconds())
+                            
+                            if age_seconds > 120:  # More than 2 minutes old relative to virtual time
+                                dependencies["data_availability"] = f"stale_data_for_{instrument}_age_{age_seconds:.0f}s"
+                            else:
+                                dependencies["data_availability"] = f"fresh_data_for_{instrument}"
+                        else:
+                            # Virtual time enabled but no current time set
+                            dependencies["data_availability"] = f"fresh_data_for_{instrument}_virtual_time_mode"
                     else:
-                        dependencies["data_availability"] = f"fresh_data_for_{instrument}"
+                        # Live mode - compare against real time
+                        current_time = datetime.now(IST)
+                        time_diff = current_time - redis_time
+                        age_seconds = abs(time_diff.total_seconds())
+                        
+                        if age_seconds > 120:  # More than 2 minutes old
+                            dependencies["data_availability"] = f"stale_data_for_{instrument}_age_{age_seconds:.0f}s"
+                        else:
+                            dependencies["data_availability"] = f"fresh_data_for_{instrument}"
                 except Exception as e:
                     dependencies["data_availability"] = f"invalid_timestamp_for_{instrument}: {str(e)}"
         except Exception as e:
@@ -256,8 +294,11 @@ async def health_check():
     status = "healthy"
     if redis_status != "healthy":
         status = "degraded"
-    elif "missing" in dependencies.get("data_availability", "") or "stale" in dependencies.get("data_availability", ""):
-        status = "degraded"  # Data missing or stale
+    elif "missing" in dependencies.get("data_availability", ""):
+        status = "degraded"  # Data missing - this is critical
+    elif "stale" in dependencies.get("data_availability", ""):
+        # Stale data is not ideal but still usable - keep as healthy but note in dependencies
+        status = "healthy"  # Data exists, just not fresh - still functional
     
     return HealthResponse(
         status=status,

@@ -1,541 +1,503 @@
-# market_data - Market Data Module
+# Market Data Module
 
-**Status: ✅ Production Ready - Real Data Sources Only**
+**Status: ✅ Production Ready**
 
-A production-ready market data module for trading systems. Supports real-time and historical data from Zerodha API, with Redis-backed persistence and complete offline testing capabilities.
+A production-ready market data module for trading systems. Provides REST API access to market data from both **live** and **historical** sources via Zerodha API, with Redis-backed persistence.
 
-## 🎯 Key Features
+## 🎯 Core Concept
 
-- **Real Data Sources**: Zerodha API for live and historical data (no synthetic data)
-- **Market Data Storage**: Redis-backed persistence + in-memory for testing
-- **Real-time Ingestion**: WebSocket streaming + REST API fallbacks
-- **Historical Replay**: Real Zerodha historical data with configurable replay speed
-- **Options Data**: Live options chains via Zerodha
-- **Technical Indicators**: Real-time calculation and caching
-- **100% Testable**: Complete functionality with in-memory storage for testing
+The Market Data API is **mode-agnostic** - it reads from Redis regardless of data source. Two modes populate Redis differently:
 
-## 📦 Architecture
+- **LIVE MODE**: Real-time data collectors continuously update Redis
+- **HISTORICAL MODE**: Historical replay populates Redis with past data
 
+The same API code serves both modes seamlessly.
+
+---
+
+## 📊 Operating Modes
+
+### Mode 1: Live Data Mode
+
+**What it does:**
+- Collects real-time market data from Zerodha API
+- Updates Redis every 2-5 seconds with current prices
+- Uses real system time (no virtual time)
+
+**How to start:**
+```powershell
+# From project root
+python start_local.py --provider zerodha
 ```
-market_data/
-├── contracts/          # Protocol definitions (MarketStore, MarketIngestion, etc.)
-├── store/              # Market data storage (Redis + In-Memory)
-├── adapters/           # External service adapters (Redis, Zerodha)
-├── collectors/         # LTP, depth, options collectors
-├── tools/              # Utilities (auth, demo data)
-└── tests/              # Comprehensive test suite
+
+**What gets started:**
+- LTP Collector (Last Traded Price) - updates every 2 seconds
+- Depth Collector (Market Depth) - updates every 5 seconds
+- Market Data API (port 8004) - serves data from Redis
+
+**Key characteristics:**
+- Virtual Time: **DISABLED**
+- Data timestamps: Current time (IST)
+- Data freshness: < 5 minutes (if market is open)
+
+---
+
+### Mode 2: Historical Replay Mode
+
+**What it does:**
+- Fetches historical data from Zerodha API or CSV file
+- Replays it into Redis at configurable speed
+- Can replay data from any date (past or today)
+
+**How to start:**
+```powershell
+# From project root
+python start_local.py --provider historical --historical-source zerodha --historical-speed 10 --historical-from 2026-01-07
 ```
+
+**Arguments:**
+- `--provider historical` - Enables historical replay mode
+- `--historical-source zerodha` - Use Zerodha API for data (or `path/to/file.csv` for CSV)
+- `--historical-speed 10` - Replay speed (0.0 = instant, 1.0 = real-time, 10 = 10x speed)
+- `--historical-from 2026-01-07` - Start date for replay (YYYY-MM-DD format)
+
+**What gets started:**
+- Historical Replay Service - fetches and replays data
+- Market Data API (port 8004) - serves data from Redis
+
+**Key characteristics:**
+- Virtual Time: **ENABLED** (for system-wide time synchronization)
+- Data timestamps: From the specified historical date
+- Replay speed: Configurable (0.0 to any multiplier)
+
+---
 
 ## 🚀 Quick Start
 
 ### Prerequisites
 
-1. **Docker & Docker Compose** (for Redis and MongoDB)
-2. **Python 3.8+**
-3. **Zerodha Kite Connect API credentials** (for real data)
+1. **Redis** running on `localhost:6379`
+2. **Python 3.8+** with dependencies installed
+3. **Zerodha credentials** (for live mode or Zerodha historical data)
 
-### Step 1: Start Data Services (Docker)
+### Step 1: Start Data Services
 
-```bash
-# Start Redis and MongoDB
-docker-compose -f docker-compose.data.yml up -d
-
-# Verify services are running
-docker-compose -f docker-compose.data.yml ps
+```powershell
+# Start Redis (if using Docker)
+docker-compose -f docker-compose.data.yml up -d redis
 ```
 
-**Services:**
-- **Redis** (port 6379): Market data storage (ticks, OHLC, prices)
-- **MongoDB** (port 27017): Optional - for prompt storage
+### Step 2: Configure Credentials
 
-### Step 2: Configure Environment Variables
-
-Create a `.env` file or set environment variables:
-
+Set environment variables or use `credentials.json`:
 ```bash
-# Required for Zerodha data
 KITE_API_KEY="your_api_key"
 KITE_API_SECRET="your_api_secret"
-KITE_ACCESS_TOKEN="your_access_token"  # Optional - can be generated via kite_auth.py
-
-# Redis configuration (defaults shown)
-REDIS_HOST="localhost"
-REDIS_PORT="6379"
-
-# Instrument configuration
-INSTRUMENT_SYMBOL="BANKNIFTY"  # or "NIFTY BANK", "NIFTY", etc.
+KITE_ACCESS_TOKEN="your_access_token"  # Optional - auto-generated
 ```
 
-### Step 3: Authenticate with Zerodha (First Time)
+### Step 3: Start in Your Desired Mode
 
-```bash
-# Generate access token
-python market_data/src/market_data/tools/kite_auth.py
-
-# This will:
-# 1. Open browser for Zerodha login
-# 2. Capture request_token from redirect
-# 3. Generate access_token
-# 4. Save to credentials.json
+**For Live Mode:**
+```powershell
+python start_local.py --provider zerodha
 ```
 
-### Step 4: Use the Module
-
-```python
-from market_data.api import build_store, build_historical_replay
-import redis
-from datetime import datetime, date
-
-# Build Redis-backed store
-redis_client = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
-store = build_store(redis_client=redis_client)
-
-# Start historical replay with Zerodha data
-from kiteconnect import KiteConnect
-kite = KiteConnect(api_key="...")
-kite.set_access_token("...")
-
-replay = build_historical_replay(
-    store=store,
-    data_source="zerodha",  # Real Zerodha data
-    start_date=datetime(2026, 1, 7),
-    kite=kite
-)
-replay.start()
-
-# Access data
-tick = store.get_latest_tick("BANKNIFTY")
-bars = list(store.get_ohlc("BANKNIFTY", "1min", limit=100))
-
-replay.stop()
+**For Historical Mode:**
+```powershell
+python start_local.py --provider historical --historical-source zerodha --historical-speed 10 --historical-from 2026-01-07
 ```
 
-## 📊 Data Sources
+### Step 4: Verify It's Working
 
-### Zerodha API (Recommended)
+```powershell
+# Check health
+python -c "import requests; print(requests.get('http://localhost:8004/health').json())"
 
-**Real historical and live market data from Zerodha:**
-
-```python
-replay = build_historical_replay(
-    store=store,
-    data_source="zerodha",
-    kite=kite,
-    start_date=datetime(2026, 1, 7)
-)
+# Or use verification script
+cd market_data
+python verify_modes.py
 ```
 
-**Requirements:**
-- Valid Zerodha Kite Connect credentials
-- `KITE_API_KEY` and `KITE_ACCESS_TOKEN` in environment or `credentials.json`
-- Market data available for the requested date
+---
 
-**Features:**
-- Real market data (no synthetic/dummy data)
-- Multiple intervals (minute, 5minute, day, etc.)
-- Automatic OHLC to tick conversion
-- Configurable replay speed (0.0 = instant, 1.0 = real-time)
+## 🔌 REST API Endpoints
 
-**Note:** If credentials are missing, use CSV files (see below) as an alternative. The system will clearly indicate when credentials are required.
+The Market Data API exposes the following endpoints (all modes use the same API):
 
-### CSV File (Works Without Credentials)
+### Health Check
 
-**Historical data from CSV file - No Zerodha credentials required:**
+**GET** `/health`
 
-```python
-replay = build_historical_replay(
-    store=store,
-    data_source="path/to/data.csv"  # CSV file path
-)
+Check service health and data availability.
+
+**Response:**
+```json
+{
+  "status": "healthy",
+  "module": "market_data",
+  "timestamp": "2026-01-08T12:00:00+05:30",
+  "dependencies": {
+    "redis": "healthy",
+    "store": "initialized",
+    "data_availability": "fresh_data_for_BANKNIFTY"
+  }
+}
 ```
 
-**CSV Format:**
-```csv
-Date,Time,Open,High,Low,Close,Volume
-2024-01-15,09:15,45000,45100,44950,45050,1500000
-2024-01-15,09:16,45050,45150,45000,45100,1600000
+### Market Data Endpoints
+
+**GET** `/api/v1/market/tick/{instrument}`
+
+Get latest tick data for an instrument.
+
+**Example:** `GET /api/v1/market/tick/BANKNIFTY`
+
+**Response:**
+```json
+{
+  "instrument": "BANKNIFTY",
+  "timestamp": "2026-01-08T12:00:00+05:30",
+  "last_price": 59650.0,
+  "volume": 1234567
+}
 ```
 
-**Benefits:**
-- ✅ Works without Zerodha credentials
-- ✅ No API rate limits
-- ✅ Offline testing capability
-- ✅ Use your own historical data files
+**GET** `/api/v1/market/price/{instrument}`
 
-## 🔄 Graceful Degradation (Missing Credentials)
+Get latest price (fast access from Redis).
 
-**✅ The system works seamlessly even without Zerodha credentials!**
+**Example:** `GET /api/v1/market/price/BANKNIFTY`
 
-### What Works Without Credentials
+**Response:**
+```json
+{
+  "instrument": "BANKNIFTY",
+  "price": 59650.0,
+  "timestamp": "2026-01-08T12:00:00+05:30",
+  "source": "redis"
+}
+```
 
-1. **In-Memory Storage (No Redis, No Credentials):**
-   ```python
-   # Works completely offline
-   store = build_store()  # In-memory store
-   tick = store.get_latest_tick("BANKNIFTY")
-   bars = list(store.get_ohlc("BANKNIFTY", "1min", limit=100))
+**GET** `/api/v1/market/ohlc/{instrument}`
+
+Get OHLC (Open/High/Low/Close) bars.
+
+**Parameters:**
+- `timeframe` (query, optional): `minute`, `5minute`, `day` (default: `minute`)
+- `limit` (query, optional): Number of bars (default: 100)
+
+**Example:** `GET /api/v1/market/ohlc/BANKNIFTY?timeframe=minute&limit=10`
+
+**Response:**
+```json
+[
+  {
+    "instrument": "BANKNIFTY",
+    "timeframe": "minute",
+    "open": 59600.0,
+    "high": 59700.0,
+    "low": 59550.0,
+    "close": 59650.0,
+    "volume": 1234567,
+    "start_at": "2026-01-08T12:00:00+05:30"
+  }
+]
+```
+
+**GET** `/api/v1/market/raw/{instrument}`
+
+Get raw market data keys from Redis.
+
+**Parameters:**
+- `limit` (query, optional): Max keys to return (default: 100)
+
+**Example:** `GET /api/v1/market/raw/BANKNIFTY?limit=10`
+
+### Options Chain
+
+**GET** `/api/v1/options/chain/{instrument}`
+
+Get options chain data.
+
+**Example:** `GET /api/v1/options/chain/BANKNIFTY`
+
+**Response:**
+```json
+{
+  "instrument": "BANKNIFTY",
+  "expiry": "2026-01-27",
+  "strikes": [
+    {
+      "strike": 59500,
+      "call_oi": 12345,
+      "put_oi": 12345,
+      "call_ltp": 100.0,
+      "put_ltp": 95.0
+    }
+  ],
+  "timestamp": "2026-01-08T12:00:00+05:30"
+}
+```
+
+### Technical Indicators
+
+**GET** `/api/v1/technical/indicators/{instrument}`
+
+Get calculated technical indicators.
+
+**Parameters:**
+- `timeframe` (query, optional): `minute`, `5minute`, `day` (default: `minute`)
+
+**Example:** `GET /api/v1/technical/indicators/BANKNIFTY?timeframe=minute`
+
+**Response:**
+```json
+{
+  "instrument": "BANKNIFTY",
+  "timestamp": "2026-01-08T12:00:00+05:30",
+  "indicators": {
+    "rsi_14": 65.5,
+    "sma_20": 59600.0,
+    "ema_20": 59620.0,
+    "macd_value": 50.0,
+    "bollinger_upper": 59800.0,
+    "bollinger_lower": 59400.0,
+    "atr_14": 200.0,
+    "adx": 25.5
+  }
+}
+```
+
+**Available Indicators:**
+- Trend: SMA (20, 50), EMA (20, 50)
+- Momentum: RSI (14), MACD
+- Volatility: ATR (14), Bollinger Bands
+- Volume: Volume SMA, Volume Ratio
+- Other: ADX, Price Change %, Volatility
+
+### Market Depth
+
+**GET** `/api/v1/market/depth/{instrument}`
+
+Get market depth (order book) data.
+
+**Example:** `GET /api/v1/market/depth/BANKNIFTY`
+
+**Response:**
+```json
+{
+  "instrument": "BANKNIFTY",
+  "buy": [
+    {"price": 59650.0, "quantity": 100, "orders": 5},
+    {"price": 59649.0, "quantity": 200, "orders": 8}
+  ],
+  "sell": [
+    {"price": 59651.0, "quantity": 150, "orders": 6},
+    {"price": 59652.0, "quantity": 180, "orders": 7}
+  ],
+  "timestamp": "2026-01-08T12:00:00+05:30"
+}
+```
+
+---
+
+## 🔄 Mode Switching
+
+### From Live to Historical
+
+1. Stop live collectors (Ctrl+C or kill process)
+2. Start historical replay:
+   ```powershell
+   python start_local.py --provider historical --historical-source zerodha --historical-speed 10 --historical-from 2026-01-07
    ```
+3. API continues running (no restart needed)
 
-2. **CSV Data Source (No Credentials Required):**
-   ```python
-   # Works without Zerodha credentials
-   replay = build_historical_replay(
-       store=store,
-       data_source="path/to/data.csv"  # CSV file path
-   )
-   replay.start()
+### From Historical to Live
+
+1. Stop historical replay (Ctrl+C or kill process)
+2. Clear virtual time:
+   ```powershell
+   python -c "import redis; r=redis.Redis(); r.delete('system:virtual_time:enabled'); r.delete('system:virtual_time:current')"
    ```
-
-3. **Unit Testing (100% Offline):**
-   ```bash
-   # All unit tests work without credentials or Redis
-   pytest market_data/tests/ -m "not integration"
+3. Start live collectors:
+   ```powershell
+   python start_local.py --provider zerodha
    ```
+4. API continues running (no restart needed)
 
-4. **API Service (Graceful Error Handling):**
-   - Health endpoint always works
-   - Data endpoints return clear errors if data unavailable
-   - No crashes or silent failures
+---
 
-### What Requires Credentials
+## 📝 Command Line Arguments
 
-Only these specific features require Zerodha credentials:
+### start_local.py Arguments
 
-1. **Zerodha Historical Data:**
-   ```python
-   # Requires KITE_API_KEY and KITE_ACCESS_TOKEN
-   replay = build_historical_replay(
-       store=store,
-       data_source="zerodha",  # ← Requires credentials
-       kite=kite
-   )
-   ```
-   - **Alternative**: Use CSV files (no credentials needed)
+**Provider Selection:**
+- `--provider zerodha` - Live mode with Zerodha data
+- `--provider historical` - Historical replay mode
+- `--provider mock` - Mock/simulator mode
 
-2. **Live Data Collection:**
-   - Requires valid Zerodha credentials
-   - **Alternative**: Use historical replay with CSV
+**Historical Replay Options:**
+- `--historical-source zerodha` - Use Zerodha API (or `path/to/file.csv` for CSV)
+- `--historical-speed 10` - Replay speed multiplier
+  - `0.0` = Instant (all ticks immediately)
+  - `1.0` = Real-time speed
+  - `10` = 10x faster than real-time
+- `--historical-from 2026-01-07` - Start date (YYYY-MM-DD format)
+- `--historical-ticks` - Use tick-level replayer (instead of bar-level)
 
-3. **Options Chain from Zerodha:**
-   - Requires API access
-   - **Alternative**: Mock options chain for testing
+**Other Options:**
+- `--skip-validation` - Skip health checks during startup
 
-### Error Handling
+### Examples
 
-**The system will clearly indicate when credentials are required:**
-
-```python
-# If credentials missing, you'll see:
-# ❌ Zerodha data source requires valid credentials!
-# 💡 Please configure Zerodha credentials in Step 0
-# 💡 Or use CSV file: --historical-source path/to/data.csv
+**Instant historical replay (for testing):**
+```powershell
+python start_local.py --provider historical --historical-source zerodha --historical-speed 0 --historical-from 2026-01-07
 ```
 
-**The system will NOT:**
-- ❌ Fail silently
-- ❌ Crash unexpectedly
-- ❌ Use dummy/synthetic data
-- ❌ Hide credential requirements
-
-### Best Practices
-
-**For Development/Testing (No Credentials):**
-```python
-# Use CSV files
-store = build_store()  # In-memory
-replay = build_historical_replay(store, data_source="data.csv")
+**Real-time speed historical replay:**
+```powershell
+python start_local.py --provider historical --historical-source zerodha --historical-speed 1.0 --historical-from 2026-01-07
 ```
 
-**For Production (With Credentials):**
-```python
-# Use Zerodha API
-redis_client = redis.Redis(...)
-store = build_store(redis_client=redis_client)
-replay = build_historical_replay(store, data_source="zerodha", kite=kite)
+**Fast historical replay (10x speed):**
+```powershell
+python start_local.py --provider historical --historical-source zerodha --historical-speed 10 --historical-from 2026-01-07
 ```
 
-## 🔧 External Dependencies
-
-### Required Dependencies
-
-**Python Packages:**
-```bash
-pip install redis kiteconnect python-dotenv uvicorn fastapi
+**Historical from CSV (no credentials needed):**
+```powershell
+python start_local.py --provider historical --historical-source data/historical.csv --historical-speed 0
 ```
 
-**System Services:**
-- **Redis**: Required for production data storage
-  - Default: `localhost:6379`
-  - Can be started via `docker-compose -f docker-compose.data.yml up -d redis`
-- **MongoDB**: Optional (for prompt storage)
-  - Default: `localhost:27017`
+---
 
-### Zerodha Kite Connect
+## 🏗️ Architecture
 
-**Required for real data:**
-- `KITE_API_KEY`: From Zerodha app settings
-- `KITE_API_SECRET`: From Zerodha app settings
-- `KITE_ACCESS_TOKEN`: Generated via `kite_auth.py` (expires daily)
-
-**Setup:**
-1. Create app at https://kite.zerodha.com/apps/
-2. Get API Key and Secret
-3. Set redirect URI: `http://127.0.0.1:5000/login` (or available port)
-4. Run `python market_data/src/market_data/tools/kite_auth.py`
-
-## 🐳 Docker Compose Setup
-
-### Start Data Services
-
-```bash
-# Start Redis and MongoDB
-docker-compose -f docker-compose.data.yml up -d
-
-# Check status
-docker-compose -f docker-compose.data.yml ps
-
-# View logs
-docker-compose -f docker-compose.data.yml logs -f redis
-docker-compose -f docker-compose.data.yml logs -f mongodb
+```
+┌─────────────────────────────────────────────────────────┐
+│                  DATA SOURCE LAYER                       │
+├─────────────────────────────────────────────────────────┤
+│  Live Mode: Zerodha API → Collectors → Redis            │
+│  Historical Mode: Zerodha/CSV → Replayer → Redis        │
+└───────────────────────┬─────────────────────────────────┘
+                        │
+                        ▼
+┌─────────────────────────────────────────────────────────┐
+│                    REDIS STORAGE                         │
+│  (tick:*, price:*, ohlc:*, indicators:*)                 │
+└───────────────────────┬─────────────────────────────────┘
+                        │
+                        ▼
+┌─────────────────────────────────────────────────────────┐
+│              MARKET DATA API SERVICE                    │
+│  (Port 8004) - Mode-Agnostic                             │
+│  Reads from Redis, serves via REST API                  │
+└─────────────────────────────────────────────────────────┘
 ```
 
-### Stop Services
+**Key Points:**
+- Redis is the bridge between data sources and API
+- API service is mode-agnostic (same code for both modes)
+- Data collectors/replay populate Redis
+- API reads from Redis and serves via REST
 
-```bash
-# Stop services
-docker-compose -f docker-compose.data.yml down
+---
 
-# Stop and remove volumes (clears all data)
-docker-compose -f docker-compose.data.yml down -v
+## 🔧 Standalone API Service
+
+You can start **only the API service** without data collectors/replay:
+
+**From `market_data/` folder:**
+```powershell
+cd market_data
+$env:PYTHONPATH = './src'; python -c "from market_data.api_service import app; import uvicorn; uvicorn.run(app, host='0.0.0.0', port=8004)"
 ```
 
-### Service Details
+**Note:** The API will only serve data that's already in Redis. If Redis is empty, endpoints will return errors.
 
-**Redis (Port 6379):**
-- Stores market ticks, OHLC bars, prices
-- Data persists in `redis-data` volume
-- Health check: `redis-cli ping`
+**Environment Variables:**
+- `MARKET_DATA_API_PORT` (default: `8004`)
+- `MARKET_DATA_API_HOST` (default: `0.0.0.0`)
 
-**MongoDB (Port 27017):**
-- Optional storage for prompts/logs
-- Credentials: `admin/admin` (change in production)
-- Data persists in `mongo-data` volume
+---
 
-## 📊 Data Storage Format
+## ✅ Verification
 
-### Redis Keys
+### Verify Current Mode
 
-**Tick Data:**
-```
-tick:{instrument}:latest              → Latest tick JSON
-tick:{instrument}:{timestamp}         → Historical tick JSON
-price:{instrument}:latest              → Latest price (float)
-price:{instrument}:latest_ts          → Latest timestamp
-volume:{instrument}:latest             → Latest volume
+**From `market_data/` folder:**
+```powershell
+cd market_data
+python verify_modes.py
 ```
 
-**OHLC Data:**
-```
-ohlc:{instrument}:{timeframe}:{timestamp}  → OHLC bar JSON
-ohlc_sorted:{instrument}:{timeframe}       → Sorted set of bars
-```
+This script:
+- Detects current mode (Live or Historical)
+- Verifies API is running
+- Checks Redis data and timestamps
+- Tests all endpoints
+- Reports pass/fail results
 
-**Technical Indicators:**
-```
-indicators:{instrument}:{indicator_name}   → Cached indicator value
-```
+### Manual Verification
 
-## 🔄 Graceful Degradation (Missing Credentials)
+```powershell
+# Check health
+python -c "import requests; import json; r = requests.get('http://localhost:8004/health'); print(json.dumps(r.json(), indent=2))"
 
-**The system works seamlessly even without Zerodha credentials:**
-
-### ✅ What Works Without Credentials
-
-1. **In-Memory Storage:**
-   ```python
-   # Works without Redis or Zerodha
-   store = build_store()  # In-memory store
-   tick = store.get_latest_tick("BANKNIFTY")
-   ```
-
-2. **CSV Data Source:**
-   ```python
-   # Works without Zerodha credentials
-   replay = build_historical_replay(
-       store=store,
-       data_source="path/to/data.csv"  # CSV file
-   )
-   ```
-
-3. **Unit Testing:**
-   ```bash
-   # All unit tests work without credentials
-   pytest market_data/tests/ -m "not integration"
-   ```
-
-4. **API Service (Limited):**
-   - Health endpoint works
-   - Endpoints return appropriate errors if data unavailable
-   - No crashes or silent failures
-
-### ❌ What Requires Credentials
-
-1. **Zerodha Historical Data:**
-   - Requires `KITE_API_KEY` and `KITE_ACCESS_TOKEN`
-   - System will clearly indicate if credentials are missing
-   - Use CSV files as alternative
-
-2. **Live Data Collection:**
-   - Requires valid Zerodha credentials
-   - Options chain data requires API access
-
-### 🎯 Best Practice
-
-**For Development/Testing:**
-- Use CSV files for historical data
-- Use in-memory storage for testing
-- No credentials needed
-
-**For Production:**
-- Configure Zerodha credentials
-- Use Redis for persistence
-- Enable live data collection
-
-## 🧪 Testing
-
-### Unit Tests (No External Dependencies)
-
-```bash
-# Run all unit tests (works without credentials or Redis)
-pytest market_data/tests/ -m "not integration"
-
-# Test specific components
-pytest market_data/tests/test_store.py
-pytest market_data/tests/test_redis_store.py
+# Check latest tick
+python -c "import requests; import json; r = requests.get('http://localhost:8004/api/v1/market/tick/BANKNIFTY'); print(json.dumps(r.json(), indent=2))"
 ```
 
-### Integration Tests (Requires Docker)
+---
 
-```bash
-# Start services
-docker-compose -f docker-compose.data.yml up -d
+## 📚 Related Documentation
 
-# Run integration tests
-pytest market_data/tests/ -m integration
+- **API_CONTRACT.md** - Complete API endpoint documentation
+- **HISTORICAL_SIMULATION_README.md** - Detailed historical replay guide
+- **EXTERNAL_DEPENDENCIES.md** - Dependencies and setup details
+- **START_API.md** - API startup commands reference
 
-# Stop services
-docker-compose -f docker-compose.data.yml down
-```
-
-### Offline Testing
-
-The module supports 100% offline testing using in-memory storage:
-
-```python
-# In-memory store (no Redis needed)
-store = build_store()  # No redis_client = in-memory
-
-# Test with in-memory store
-tick = store.get_latest_tick("BANKNIFTY")
-```
-
-## 🔌 API Reference
-
-### Factory Functions
-
-```python
-from market_data.api import (
-    build_store,           # Market data storage
-    build_historical_replay,  # Historical data replay
-    build_options_client   # Options chain data
-)
-```
-
-### MarketStore Protocol
-
-```python
-class MarketStore(Protocol):
-    def store_tick(self, tick: MarketTick) -> None: ...
-    def get_latest_tick(self, instrument: str) -> Optional[MarketTick]: ...
-    def store_ohlc(self, bar: OHLCBar) -> None: ...
-    def get_ohlc(self, instrument: str, timeframe: str, limit: int = 100) -> Iterable[OHLCBar]: ...
-```
-
-### MarketIngestion Protocol
-
-```python
-class MarketIngestion(Protocol):
-    def bind_store(self, store: MarketStore) -> None: ...
-    def start(self) -> None: ...
-    def stop(self) -> None: ...
-```
-
-## 📡 Market Data API Service
-
-The module includes a FastAPI service for REST access:
-
-```bash
-# Start API service
-python -c "from market_data.api_service import app; import uvicorn; uvicorn.run(app, host='0.0.0.0', port=8004)"
-```
-
-**Endpoints:**
-- `GET /health` - Service health check
-- `GET /api/v1/market/tick/{instrument}` - Latest tick data
-- `GET /api/v1/market/ohlc/{instrument}` - OHLC bars
-- `GET /api/v1/market/price/{instrument}` - Latest price
-- `GET /api/v1/options/chain/{instrument}` - Options chain
-- `GET /api/v1/technical/indicators/{instrument}` - Technical indicators
-
-See `API_CONTRACT.md` for detailed API documentation.
+---
 
 ## 🎯 Key Design Principles
 
-1. **Real Data Only**: No synthetic/dummy data generation
-2. **Protocol-Based**: Clean interfaces, easy to extend
-3. **Production Ready**: Redis persistence, error handling, logging
-4. **Testable**: In-memory storage for offline testing
-5. **Docker Ready**: Standard docker-compose setup
+1. **Mode-Agnostic API**: Same API code works for both live and historical modes
+2. **Redis as Bridge**: All data flows through Redis for consistency
+3. **Real Data Only**: No synthetic data - uses Zerodha API or CSV files
+4. **Production Ready**: Error handling, logging, health checks
+5. **Easy Mode Switching**: Switch modes without restarting API
 
-## 📚 Documentation
+---
 
-- **API_CONTRACT.md**: Complete REST API documentation
-- **HISTORICAL_SIMULATION_README.md**: Historical replay guide
-- **EXTERNAL_DEPENDENCIES.md**: External dependencies details
-- **src/market_data/README.md**: Internal module documentation
+## 🐛 Troubleshooting
 
-## 🚀 Production Deployment
+**API not responding:**
+- Check if process is running: `netstat -ano | findstr :8004`
+- Check API logs for errors
+- Verify Redis is accessible: `redis-cli ping`
 
-### Environment Variables
+**No data in endpoints:**
+- Check if data source is running (collectors or replay)
+- Check Redis for data: `redis-cli keys "tick:*"`
+- Verify credentials (for Zerodha data)
 
-```bash
-# Required
-KITE_API_KEY="your_api_key"
-KITE_API_SECRET="your_api_secret"
-REDIS_HOST="redis-host"
-REDIS_PORT="6379"
+**Wrong mode detected:**
+- Check virtual time: `redis-cli get system:virtual_time:enabled`
+- Check timestamp age in Redis
+- Verify data source is running
 
-# Optional
-KITE_ACCESS_TOKEN="your_token"  # Auto-generated if not provided
-INSTRUMENT_SYMBOL="BANKNIFTY"
-```
-
-### Docker Compose for Production
-
-```yaml
-# Use docker-compose.data.yml as base
-# Add environment variables
-# Configure volumes for data persistence
-# Set up health checks
-```
+---
 
 ## ✅ Status
 
-- ✅ **Real Data Sources**: Zerodha API and CSV only
+- ✅ **Real Data Sources**: Zerodha API and CSV files
 - ✅ **Redis Storage**: Production-ready persistence
-- ✅ **Historical Replay**: Real data with configurable speed
-- ✅ **API Service**: FastAPI REST endpoints
-- ✅ **Testing**: Complete test coverage
-- ✅ **Documentation**: Comprehensive guides
+- ✅ **Historical Replay**: Configurable speed and date range
+- ✅ **Live Data Collection**: Real-time updates every 2-5 seconds
+- ✅ **REST API**: FastAPI with comprehensive endpoints
+- ✅ **Mode Switching**: Seamless switching between modes
+- ✅ **Verification Tools**: Automated mode detection and testing
 
 **The module is production-ready and uses only real market data sources.**

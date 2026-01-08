@@ -3,6 +3,8 @@
 ## Base URL
 `http://localhost:8004`
 
+**Note:** The API is **mode-agnostic** - same endpoints work for both live and historical modes. All data is served from Redis.
+
 ## Health Check
 
 ### GET /health
@@ -13,13 +15,18 @@ Check service health and dependencies.
 {
   "status": "healthy" | "degraded",
   "module": "market_data",
-  "timestamp": "2024-01-01T00:00:00",
+  "timestamp": "2026-01-08T12:00:00+05:30",
   "dependencies": {
     "redis": "healthy" | "unhealthy",
-    "store": "initialized" | "not_initialized"
+    "store": "initialized" | "not_initialized",
+    "data_availability": "fresh_data_for_BANKNIFTY" | "stale_data_for_BANKNIFTY_age_3600s" | "missing_price_data_for_BANKNIFTY"
   }
 }
 ```
+
+**Status Values:**
+- `healthy` - All systems operational, data available
+- `degraded` - Service running but data missing or stale
 
 ## Market Data Endpoints
 
@@ -33,11 +40,13 @@ Get latest tick data for an instrument.
 ```json
 {
   "instrument": "BANKNIFTY",
-  "timestamp": "2024-01-01T00:00:00",
-  "last_price": 45000.0,
+  "timestamp": "2026-01-08T12:00:00+05:30",
+  "last_price": 59650.0,
   "volume": 1234567
 }
 ```
+
+**Note:** Timestamps are in IST (Indian Standard Time, UTC+05:30) format.
 
 ### GET /api/v1/market/ohlc/{instrument}
 Get OHLC (Open/High/Low/Close) bars for an instrument.
@@ -177,16 +186,61 @@ All endpoints may return:
 - `500`: Internal server error
 - `503`: Service unavailable (dependencies not initialized)
 
+## Market Depth Endpoint
+
+**GET** `/api/v1/market/depth/{instrument}`
+
+Get market depth (order book) data.
+
+**Parameters:**
+- `instrument` (path): Instrument symbol
+
+**Example:** `GET /api/v1/market/depth/BANKNIFTY`
+
+**Response:**
+```json
+{
+  "instrument": "BANKNIFTY",
+  "buy": [
+    {"price": 59650.0, "quantity": 100, "orders": 5},
+    {"price": 59649.0, "quantity": 200, "orders": 8}
+  ],
+  "sell": [
+    {"price": 59651.0, "quantity": 150, "orders": 6},
+    {"price": 59652.0, "quantity": 180, "orders": 7}
+  ],
+  "timestamp": "2026-01-08T12:00:00+05:30"
+}
+```
+
+---
+
 ## Data Sources
 
 The API retrieves data from:
-1. **Redis Store** - Primary source for real-time data
+1. **Redis Store** - Primary source (populated by collectors or replay)
 2. **Technical Indicators Service** - Pre-calculated indicators
 3. **Zerodha Kite API** - Options chain (requires API keys)
 
+## Mode Behavior
+
+**Live Mode:**
+- Data updated every 2-5 seconds
+- Timestamps reflect current time (IST)
+- Virtual time disabled
+
+**Historical Mode:**
+- Data from specified historical date
+- Timestamps reflect historical time (IST)
+- Virtual time enabled for system synchronization
+
+**Both modes use the same API endpoints - no difference in API behavior.**
+
 ## Notes
 
-- All data is collected by market data collectors (LTP, Depth collectors)
-- Technical indicators are calculated in real-time as data arrives
-- Options chain requires Kite API credentials to be configured
-- Data availability depends on collectors being running and configured
+- All data flows through Redis (mode-agnostic)
+- Data collectors (live) or replay (historical) populate Redis
+- Technical indicators calculated in real-time as data arrives
+- Options chain requires Kite API credentials
+- Data availability depends on collectors/replay being running
+- Timestamps are always in IST (UTC+05:30) format

@@ -7,6 +7,11 @@ from datetime import datetime, timezone
 from typing import Any, Dict
 
 try:
+    import pytz
+except ImportError:
+    pytz = None
+
+try:
     import redis  # type: ignore
 except ImportError:
     redis = None
@@ -198,7 +203,11 @@ class LTPDataCollector:
             return {"last_price": self.price, "depth": {}}
 
     def collect_once(self) -> None:
-        ts = datetime.now(timezone.utc).replace(tzinfo=None)
+        if pytz:
+            ist = pytz.timezone('Asia/Kolkata')
+            ts = datetime.now(ist).replace(tzinfo=None)
+        else:
+            ts = datetime.now(timezone.utc).replace(tzinfo=None)
         quote = self.fetch_quote()
         qd = self._quote_to_dict(quote)
         price = float(qd.get("last_price") or qd.get("last") or self.price)
@@ -232,9 +241,12 @@ class LTPDataCollector:
                 "last_price": price,
                 "volume": volume if volume > 0 else None,
             }
-            self.r.setex(f"tick:{instrument_name}:latest", 86400, json.dumps(tick_data))  # 24h TTL
-            self.r.setex(f"price:{instrument_name}:latest", 86400, str(price))
-            self.r.setex(f"price:{instrument_name}:latest_ts", 86400, ts.isoformat())
+            try:
+                self.r.setex(f"tick:{instrument_name}:latest", 86400, json.dumps(tick_data))  # 24h TTL
+                self.r.set(f"price:{instrument_name}:latest", str(price))
+                self.r.set(f"price:{instrument_name}:latest_ts", ts.isoformat())
+            except Exception as e:
+                print(f"[ltp] Redis error: {e}")
 
         print(f"[ltp] {self.symbol} price={price:.2f} ts={ts.isoformat()}")
 
