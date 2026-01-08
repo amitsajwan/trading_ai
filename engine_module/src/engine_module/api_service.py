@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 import sys
 import logging
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, HTTPException, Body
 from pydantic import BaseModel
@@ -25,6 +25,9 @@ from .contracts import Orchestrator, AnalysisResult
 logger = logging.getLogger(__name__)
 # Ensure a basic logging configuration so messages appear and unicode is handled safely
 logging.basicConfig(level=logging.INFO)
+
+# IST timezone for Indian financial markets
+IST = timezone(timedelta(hours=5, minutes=30))
 
 
 def convert_numpy_types(obj: Any) -> Any:
