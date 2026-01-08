@@ -8,7 +8,6 @@ except ImportError:
     KiteConnect = None
 
 from .base import ProviderBase
-from schemas import Quote, Depth, PriceLevel
 
 
 class ZerodhaProvider(ProviderBase):
@@ -36,24 +35,21 @@ class ZerodhaProvider(ProviderBase):
             return None
 
     def quote(self, symbols: List[str]) -> Dict[str, Any]:
+        # Convert Kite quote response into Quote dataclass instances
         quotes = self.kite.quote(symbols)
-        # Convert to Quote objects
-        result = {}
+        from schemas import Quote, Depth, PriceLevel
+        out = {}
+        from datetime import datetime
         for symbol, data in quotes.items():
-            depth_data = data.get('depth', {})
-            depth = Depth(
-                buy=[PriceLevel(price=b['price'], quantity=b['quantity']) for b in depth_data.get('buy', [])],
-                sell=[PriceLevel(price=s['price'], quantity=s['quantity']) for s in depth_data.get('sell', [])],
-                timestamp=data.get('timestamp', '')
-            )
-            quote = Quote(
-                symbol=symbol,
-                last_price=data['last_price'],
-                timestamp=data.get('timestamp', ''),
-                depth=depth
-            )
-            result[symbol] = quote
-        return result
+            # Try to extract last_price and depth structure
+            last_price = data.get('last_price') or data.get('last') or data.get('ltp') or None
+            ts = datetime.now().isoformat()
+            depth_raw = data.get('depth', {}) or {}
+            buy = [PriceLevel(price=d.get('price'), quantity=d.get('quantity')) for d in depth_raw.get('buy', [])]
+            sell = [PriceLevel(price=d.get('price'), quantity=d.get('quantity')) for d in depth_raw.get('sell', [])]
+            depth = Depth(buy=buy, sell=sell, timestamp=ts)
+            out[symbol] = Quote(symbol=symbol, last_price=float(last_price) if last_price is not None else 0.0, timestamp=ts, depth=depth)
+        return out
 
     def profile(self) -> Dict[str, Any]:
         return self.kite.profile()

@@ -14,7 +14,7 @@ from datetime import datetime, date, timedelta
 sys.path.insert(0, './market_data/src')
 
 from market_data.api import build_store
-from providers.zerodha import ZerodhaProvider
+from market_data.providers.zerodha import ZerodhaProvider
 from market_data.adapters.historical_tick_replayer import HistoricalTickReplayer, IST
 from kiteconnect import KiteConnect
 import json

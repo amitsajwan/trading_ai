@@ -198,7 +198,7 @@ def get_current_live_price():
         import sys
         import os
         sys.path.insert(0, '.')
-        from providers.factory import get_provider
+        from market_data.providers.factory import get_provider
         
         provider = get_provider()
         if provider:

@@ -18,11 +18,11 @@ def redis_available(cfg):
 def test_collectors_write_keys_with_synthetic_fallback(monkeypatch):
     """Ensure LTP and Depth collectors work with synthetic fallback when no provider available."""
     # Mock ZerodhaProvider.from_credentials_file to return None (no credentials)
-    from providers.zerodha import ZerodhaProvider
+    from market_data.providers.zerodha import ZerodhaProvider
     monkeypatch.setattr(ZerodhaProvider, 'from_credentials_file', lambda: None)
 
     # Build provider via factory - should return None
-    from providers.factory import get_provider
+    from market_data.providers.factory import get_provider
     provider = get_provider()
     assert provider is None  # No provider available
 

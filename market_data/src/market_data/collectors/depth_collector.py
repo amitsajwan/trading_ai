@@ -311,7 +311,7 @@ class DepthCollector:
 def build_kite_client() -> Optional["ProviderBase"]:
     """Return a provider (Zerodha or Mock) based on configuration/environment."""
     try:
-        from providers.factory import get_provider
+        from market_data.providers.factory import get_provider
         provider = get_provider()
         return provider
     except Exception as e:

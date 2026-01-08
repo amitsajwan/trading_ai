@@ -1,5 +1,5 @@
 import pytest
-from providers.factory import get_provider
+from market_data.providers.factory import get_provider
 from schemas import Quote
 
 

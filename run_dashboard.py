@@ -3,9 +3,7 @@
 
 import sys
 
-# Add ui_shell to path
-sys.path.insert(0, './ui_shell/src')
-
+# ui_shell is available via top-level package shim (moved under dashboard/ui)
 from ui_shell.dashboard_server import app
 
 if __name__ == '__main__':

@@ -144,7 +144,7 @@ class CredentialsValidator:
                 if access_token:
                     print("   ✅ Found KITE_ACCESS_TOKEN in environment")
                     try:
-                        from providers.zerodha import ZerodhaProvider
+                        from market_data.providers.zerodha import ZerodhaProvider
                         provider = ZerodhaProvider(api_key, access_token)
                         kite = provider.kite
                         print("   ✅ Created ZerodhaProvider from environment variables")
@@ -176,7 +176,7 @@ class CredentialsValidator:
                                 # Check if token is valid using KiteAuthService
                                 if auth_service.is_token_valid(creds):
                                     print("   ✅ Found valid access token in credentials.json")
-                                    from providers.zerodha import ZerodhaProvider
+                                    from market_data.providers.zerodha import ZerodhaProvider
                                     provider = ZerodhaProvider(token_api_key, creds_access_token)
                                     print("   ✅ Using credentials from credentials.json (token validated)")
                                 else:
@@ -218,7 +218,7 @@ class CredentialsValidator:
                         if creds_api_key and creds_access_token:
                             if auth_service.is_token_valid(creds):
                                 print("   ✅ Found valid credentials in credentials.json")
-                                from providers.zerodha import ZerodhaProvider
+                                from market_data.providers.zerodha import ZerodhaProvider
                                 provider = ZerodhaProvider(creds_api_key, creds_access_token)
                             else:
                                 print("   ⚠️  Token in credentials.json is expired or invalid")
@@ -227,10 +227,10 @@ class CredentialsValidator:
                             print("   ⚠️  credentials.json missing api_key or access_token")
                             provider = None
                     else:
-                        from providers.factory import get_provider
+                        from market_data.providers.factory import get_provider
                         provider = get_provider('zerodha')
                 except ImportError:
-                    from providers.factory import get_provider
+                    from market_data.providers.factory import get_provider
                     provider = get_provider('zerodha')
                 except Exception as e:
                     print(f"   ⚠️  Error checking credentials: {e}")
@@ -246,7 +246,7 @@ class CredentialsValidator:
                         creds_api_key = creds.get('api_key') or creds.get('KITE_API_KEY')
                         creds_access_token = creds.get('access_token') or creds.get('data', {}).get('access_token')
                         if creds_api_key and creds_access_token:
-                            from providers.zerodha import ZerodhaProvider
+                            from market_data.providers.zerodha import ZerodhaProvider
                             provider = ZerodhaProvider(creds_api_key, creds_access_token)
                             print("   ⚠️  Using credentials.json (not validated - will test in next step)")
                         else:
@@ -935,7 +935,7 @@ async def main():
 
     # Print selected trading provider for clarity (use factory if available)
     try:
-        from providers.factory import get_provider
+        from market_data.providers.factory import get_provider
         provider = get_provider(provider_name if provider_name != 'auto' else None)
         if provider is None and provider_name_normalized == 'auto':
             provider_name_normalized = 'historical'  # Default to historical when no provider available

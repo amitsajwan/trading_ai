@@ -4,12 +4,12 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List
 
 from .base import ProviderBase
-from config import get_config
 from schemas import Quote, Depth, PriceLevel
 
 
 class MockProvider(ProviderBase):
     def __init__(self, seed_price: float = None):
+        from config import get_config
         cfg = get_config()
         self.symbol = cfg.instrument_symbol
         self.key = cfg.instrument_key

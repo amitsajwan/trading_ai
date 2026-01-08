@@ -6,7 +6,7 @@ from pathlib import Path
 sys.path.insert(0, os.getcwd())
 
 try:
-    from providers.factory import get_provider
+    from market_data.providers.factory import get_provider
     provider = get_provider()
 
     if provider is None:

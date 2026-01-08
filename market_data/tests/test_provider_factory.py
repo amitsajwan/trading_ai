@@ -1,6 +1,6 @@
 import os
 import pytest
-from providers.factory import get_provider
+from market_data.providers.factory import get_provider
 
 
 def test_get_provider_zerodha_env(monkeypatch):
@@ -20,7 +20,7 @@ def test_get_provider_explicit_zerodha():
 
 def test_get_provider_none_when_no_creds(monkeypatch):
     # Mock no credentials available
-    from providers.zerodha import ZerodhaProvider
+    from market_data.providers.zerodha import ZerodhaProvider
     monkeypatch.setattr(ZerodhaProvider, 'from_credentials_file', lambda: None)
     p = get_provider()
     assert p is None

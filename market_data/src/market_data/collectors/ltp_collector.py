@@ -86,7 +86,7 @@ def build_kite_client():
     Uses the provider factory which can return a Mock or Zerodha provider based on env.
     """
     try:
-        from providers.factory import get_provider
+        from market_data.providers.factory import get_provider
         provider = get_provider()
         return provider
     except Exception as e:
