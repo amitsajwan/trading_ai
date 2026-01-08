@@ -43,7 +43,7 @@ services:
       redis:
         condition: service_healthy
     env_file:
-      - .env.btc
+      - market_data/.env.btc
     environment:
       - MONGODB_URI=mongodb://mongodb:27017/zerodha_trading
       - REDIS_HOST=redis
@@ -74,7 +74,7 @@ services:
       redis:
         condition: service_healthy
     env_file:
-      - .env.banknifty
+      - market_data/.env.banknifty
     environment:
       - MONGODB_URI=mongodb://mongodb:27017/zerodha_trading
       - REDIS_HOST=redis
@@ -105,7 +105,7 @@ services:
       redis:
         condition: service_healthy
     env_file:
-      - .env.nifty
+      - market_data/.env.nifty
     environment:
       - MONGODB_URI=mongodb://mongodb:27017/zerodha_trading
       - REDIS_HOST=redis
@@ -174,7 +174,7 @@ services:
       depth-collector-banknifty:
         condition: service_healthy
     env_file:
-      - .env.banknifty
+      - market_data/.env.banknifty
     environment:
       - MONGODB_URI=mongodb://mongodb:27017/zerodha_trading
       - REDIS_HOST=redis
@@ -246,7 +246,7 @@ services:
       redis:
         condition: service_healthy
     env_file:
-      - .env.banknifty
+      - market_data/.env.banknifty
     environment:
       - MONGODB_URI=mongodb://mongodb:27017/zerodha_trading
       - REDIS_HOST=redis
@@ -274,7 +274,7 @@ services:
       redis:
         condition: service_healthy
     env_file:
-      - .env.banknifty
+      - market_data/.env.banknifty
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
@@ -364,7 +364,7 @@ services:
       depth-collector-banknifty:
         condition: service_healthy
     env_file:
-      - .env.banknifty
+      - market_data/.env.banknifty
     environment:
       - MONGODB_URI=mongodb://mongodb:27017/zerodha_trading
       - REDIS_HOST=redis
@@ -425,7 +425,7 @@ services:
       redis:
         condition: service_healthy
     env_file:
-      - .env.banknifty
+      - market_data/.env.banknifty
     environment:
       - MONGODB_URI=mongodb://mongodb:27017/zerodha_trading
       - REDIS_HOST=redis
@@ -454,7 +454,7 @@ services:
       redis:
         condition: service_healthy
     env_file:
-      - .env.banknifty
+      - market_data/.env.banknifty
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379

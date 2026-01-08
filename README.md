@@ -362,7 +362,7 @@ pip install -r requirements.txt
 docker-compose -f docker-compose.data.yml up -d
 
 # Configure environment
-cp .env.example .env
+Copy module-specific templates, e.g. `cp market_data/.env.example market_data/.env` and edit with your secrets (do NOT commit `.env` files).
 # Edit .env with your API keys
 
 # Run tests

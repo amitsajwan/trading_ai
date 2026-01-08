@@ -77,7 +77,7 @@ To fully utilize the system, you need to add the following API keys to your `.en
 
 Edit the `.env` files in the root directory:
 
-1. **`.env.banknifty`** - For BankNifty trading
+1. **`market_data/.env.banknifty`** - For BankNifty trading
 2. **`.env.nifty`** - For Nifty trading
 3. **`.env.btc`** - For BTC trading
 4. **`.env.news`** - For news collection

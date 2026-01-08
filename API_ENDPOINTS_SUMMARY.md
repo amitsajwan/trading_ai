@@ -58,7 +58,7 @@ Zerodha Kite API / Collectors
 
 ## 🔑 Configuration
 
-### Environment Variables (`.env.banknifty`)
+### Environment Variables (`market_data/.env.banknifty`)
 
 ```bash
 # Zerodha API

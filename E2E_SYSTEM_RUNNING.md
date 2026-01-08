@@ -65,7 +65,7 @@ Available via REST API
 
 ### 🔑 API Keys Configured
 
-✅ `.env.banknifty` contains:
+✅ `market_data/.env.banknifty` contains:
 - Kite API keys (working - collecting live data!)
 - Groq API keys (3 keys)
 - AI21 API keys (2 keys)

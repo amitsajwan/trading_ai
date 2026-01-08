@@ -44,21 +44,21 @@ Three trading bot instances for different instruments:
 
 #### **1. Trading Bot - BTC** (`trading-bot-btc`)
 - **Container**: `zerodha-trading-bot-btc`
-- **Env File**: `.env.btc`
+- **Env File**: `market_data/.env.btc`
 - **Dependencies**: MongoDB + Redis (healthy)
 - **Command**: Default (from Dockerfile)
 - **Purpose**: Bitcoin/Crypto trading automation
 
 #### **2. Trading Bot - BankNifty** (`trading-bot-banknifty`)
 - **Container**: `zerodha-trading-bot-banknifty`
-- **Env File**: `.env.banknifty`
+- **Env File**: `market_data/.env.banknifty`
 - **Dependencies**: MongoDB + Redis (healthy)
 - **Volumes**: Includes `credentials.json` (read-only)
 - **Purpose**: BankNifty options/futures trading
 
 #### **3. Trading Bot - Nifty** (`trading-bot-nifty`)
 - **Container**: `zerodha-trading-bot-nifty`
-- **Env File**: `.env.nifty`
+- **Env File**: `market_data/.env.nifty`
 - **Dependencies**: MongoDB + Redis (healthy)
 - **Volumes**: Includes `credentials.json` (read-only)
 - **Purpose**: Nifty 50 index trading
@@ -81,14 +81,14 @@ Three backend instances for different instruments:
 - **Container**: `zerodha-backend-btc`
 - **Port**: `8001:8000`
 - **Command**: `python -m uvicorn dashboard_pro:app --host 0.0.0.0 --port 8000`
-- **Env File**: `.env.btc`
+- **Env File**: `market_data/.env.btc`
 - **Purpose**: BTC trading API and dashboard
 
 #### **2. Backend - BankNifty** (`backend-banknifty`)
 - **Container**: `zerodha-backend-banknifty`
 - **Port**: `8002:8000`
 - **Command**: `python -m uvicorn dashboard_pro:app --host 0.0.0.0 --port 8000`
-- **Env File**: `.env.banknifty`
+- **Env File**: `market_data/.env.banknifty`
 - **Dependencies**: 
   - MongoDB + Redis (healthy)
   - LTP + Depth collectors (started)
@@ -295,9 +295,9 @@ python -m services.trading_service
 
 #### Instrument-Specific Services
 Each service uses an `.env` file:
-- `.env.btc` - Bitcoin configuration
-- `.env.banknifty` - BankNifty configuration
-- `.env.nifty` - Nifty 50 configuration
+- `market_data/.env.btc` - Bitcoin configuration
+- `market_data/.env.banknifty` - BankNifty configuration
+- `market_data/.env.nifty` - Nifty 50 configuration
 
 **Note**: These files are not in the repository (should be in `.gitignore`)
 

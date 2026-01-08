@@ -7,9 +7,9 @@ from pathlib import Path
 
 # Available instrument configurations
 AVAILABLE_CONFIGS = {
-    "btc": ".env.btc",
-    "banknifty": ".env.banknifty",
-    "nifty": ".env.nifty"
+    "btc": "market_data/.env.btc",
+    "banknifty": "market_data/.env.banknifty",
+    "nifty": "market_data/.env.nifty"
 }
 
 def switch_env(instrument: str):

@@ -40,7 +40,7 @@ curl http://localhost:8006/health   # Engine API
 
 To enable full functionality, add your API keys to the `.env` files:
 
-### 1. Edit `.env.banknifty` (or `.env.nifty`, `.env.btc`)
+### 1. Edit `market_data/.env.banknifty` (or `market_data/.env.nifty`, `market_data/.env.btc`)
 
 ```bash
 # Zerodha Kite API (for live market data)
@@ -61,7 +61,7 @@ docker compose restart
 
 ## 🚀 Next Steps
 
-1. **Add API Keys**: Edit `.env.banknifty`, `.env.nifty`, `.env.btc` with your keys
+1. **Add API Keys**: Edit `market_data/.env.banknifty`, `market_data/.env.nifty`, `market_data/.env.btc` with your keys
 2. **Verify Services**: Check `docker compose ps` to see all services
 3. **Test APIs**: Use the health endpoints to verify everything is working
 4. **Start Collectors**: Once API keys are added, data collectors will start working
