@@ -15,6 +15,7 @@ import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, HTTPException, Body
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import redis
 from pymongo import MongoClient
@@ -95,6 +96,15 @@ app = FastAPI(
     title="Engine API",
     description="REST API for trading orchestrator, signals, and agent analysis",
     version="1.0.0"
+)
+
+# Add CORS middleware to allow requests from dashboard
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins for development
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Global orchestrator instance

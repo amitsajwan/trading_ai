@@ -15,6 +15,7 @@ import sys
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, HTTPException, Depends
+from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -68,6 +69,14 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# Add CORS middleware to allow requests from dashboard
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins for development
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Pydantic models for API responses
 class PositionResponse(BaseModel):

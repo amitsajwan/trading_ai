@@ -411,6 +411,84 @@
         .options-table tbody tr:nth-child(even) {
             background: #f8f9fa;
         }
+
+        /* API Testing Styles */
+        .api-testing-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 15px;
+            margin-top: 15px;
+        }
+
+        .api-test-card {
+            background: #f8f9fa;
+            border-radius: 6px;
+            padding: 15px;
+            border-left: 3px solid #007bff;
+            transition: all 0.3s ease;
+        }
+
+        .api-test-card:hover {
+            box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+            transform: translateY(-1px);
+        }
+
+        .api-test-card h4 {
+            margin: 0 0 10px 0;
+            color: #007bff;
+            font-size: 0.9em;
+            font-weight: 600;
+        }
+
+        .api-test-card .btn {
+            width: 100%;
+            padding: 8px;
+            margin-bottom: 10px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.85em;
+            transition: background-color 0.3s ease;
+        }
+
+        .api-test-card .btn-primary {
+            background: #007bff;
+            color: white;
+        }
+
+        .api-test-card .btn-success {
+            background: #28a745;
+            color: white;
+        }
+
+        .api-test-card .btn-warning {
+            background: #ffc107;
+            color: black;
+        }
+
+        .api-test-card .btn:hover {
+            opacity: 0.9;
+        }
+
+        .api-response {
+            background: #2d3748;
+            color: #e2e8f0;
+            border-radius: 4px;
+            padding: 10px;
+            font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+            font-size: 0.75em;
+            line-height: 1.4;
+            max-height: 150px;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-break: break-all;
+            margin: 0;
+        }
+
+        .api-response.error {
+            background: #2d1b1b;
+            color: #fca5a5;
+        }
     </style>
 </head>
 <body>
@@ -457,6 +535,7 @@
             <button class="tab-button" onclick="showTab('agent')" title="Agent latest work and today's decisions history">🤖 Agent</button>
             <button class="tab-button" onclick="showTab('options')" title="Options chain data with IV, Delta, OI, and strategy recommendations">📊 Options Chain</button>
             <button class="tab-button" onclick="showTab('market-data')" title="Market data APIs - price, options, technical indicators from market_data module">📈 Market Data APIs</button>
+            <button class="tab-button" onclick="showTab('api-testing')" title="Test individual API endpoints from each microservice">🔧 API Testing</button>
             <button class="tab-button" onclick="showTab('dashboard')" title="Detailed, full dashboard view">Full Dashboard</button>
         </div>
 
@@ -1144,6 +1223,158 @@
                 <div id="options-strategy-content" style="min-height: 200px;">
                     <div style="text-align: center; padding: 40px; color: #666;">
                         <div style="font-size: 1.2em;">Loading strategy recommendation...</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- API Testing Tab -->
+        <div id="api-testing" class="tab-content">
+            <div class="status">
+                <div class="card success">
+                    <h3>
+                        <span class="status-indicator status-ok"></span>
+                        🔧 API Testing - Microservice Verification
+                        <button class="refresh-btn" onclick="testAllServices()" style="float: right; margin-top: -5px;">🔄 Test All Services</button>
+                    </h3>
+                    <div style="font-size: 0.9em; color: #666; margin-bottom: 15px;">
+                        Test individual API endpoints from each microservice. Click buttons to test specific endpoints.
+                    </div>
+                </div>
+            </div>
+
+            <!-- Market Data API Testing -->
+            <div class="card">
+                <h3>💰 Market Data API (Port 8004)
+                    <button onclick="testAllServiceEndpoints('market-data')" style="float: right; margin-top: -5px; padding: 4px 8px; background: #007bff; color: white; border: none; border-radius: 3px; cursor: pointer; font-size: 0.8em;">Test All</button>
+                </h3>
+                <div class="api-testing-grid">
+                    <div class="api-test-card">
+                        <h4>Health Check</h4>
+                        <button class="btn btn-primary" onclick="testEndpoint('market-data', 'health')">Test Health</button>
+                        <pre id="market-data-health-response" class="api-response">Click to test</pre>
+                    </div>
+                    <div class="api-test-card">
+                        <h4>Live Tick Data</h4>
+                        <button class="btn btn-primary" onclick="testEndpoint('market-data', 'tick')">Get Tick</button>
+                        <pre id="market-data-tick-response" class="api-response">Click to test</pre>
+                    </div>
+                    <div class="api-test-card">
+                        <h4>OHLC Candles</h4>
+                        <button class="btn btn-primary" onclick="testEndpoint('market-data', 'ohlc')">Get OHLC</button>
+                        <pre id="market-data-ohlc-response" class="api-response">Click to test</pre>
+                    </div>
+                    <div class="api-test-card">
+                        <h4>Options Chain</h4>
+                        <button class="btn btn-primary" onclick="testEndpoint('market-data', 'options')">Get Options</button>
+                        <pre id="market-data-options-response" class="api-response">Click to test</pre>
+                    </div>
+                    <div class="api-test-card">
+                        <h4>Technical Indicators</h4>
+                        <button class="btn btn-primary" onclick="testEndpoint('market-data', 'technical')">Get Technicals</button>
+                        <pre id="market-data-technical-response" class="api-response">Click to test</pre>
+                    </div>
+                </div>
+            </div>
+
+            <!-- News API Testing -->
+            <div class="card">
+                <h3>📰 News API (Port 8005)
+                    <button onclick="testAllServiceEndpoints('news')" style="float: right; margin-top: -5px; padding: 4px 8px; background: #007bff; color: white; border: none; border-radius: 3px; cursor: pointer; font-size: 0.8em;">Test All</button>
+                </h3>
+                <div class="api-testing-grid">
+                    <div class="api-test-card">
+                        <h4>Health Check</h4>
+                        <button class="btn btn-primary" onclick="testEndpoint('news', 'health')">Test Health</button>
+                        <pre id="news-health-response" class="api-response">Click to test</pre>
+                    </div>
+                    <div class="api-test-card">
+                        <h4>BANKNIFTY News</h4>
+                        <button class="btn btn-primary" onclick="testEndpoint('news', 'banknifty')">Get News</button>
+                        <pre id="news-banknifty-response" class="api-response">Click to test</pre>
+                    </div>
+                    <div class="api-test-card">
+                        <h4>All News</h4>
+                        <button class="btn btn-primary" onclick="testEndpoint('news', 'all')">Get All News</button>
+                        <pre id="news-all-response" class="api-response">Click to test</pre>
+                    </div>
+                    <div class="api-test-card">
+                        <h4>Sentiment Analysis</h4>
+                        <button class="btn btn-primary" onclick="testEndpoint('news', 'sentiment')">Get Sentiment</button>
+                        <pre id="news-sentiment-response" class="api-response">Click to test</pre>
+                    </div>
+                    <div class="api-test-card">
+                        <h4>Collect News</h4>
+                        <button class="btn btn-success" onclick="testEndpoint('news', 'collect')">Trigger Collection</button>
+                        <pre id="news-collect-response" class="api-response">Click to collect</pre>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Engine API Testing -->
+            <div class="card">
+                <h3>🤖 Engine API (Port 8006)
+                    <button onclick="testAllServiceEndpoints('engine')" style="float: right; margin-top: -5px; padding: 4px 8px; background: #007bff; color: white; border: none; border-radius: 3px; cursor: pointer; font-size: 0.8em;">Test All</button>
+                </h3>
+                <div class="api-testing-grid">
+                    <div class="api-test-card">
+                        <h4>Health Check</h4>
+                        <button class="btn btn-primary" onclick="testEndpoint('engine', 'health')">Test Health</button>
+                        <pre id="engine-health-response" class="api-response">Click to test</pre>
+                    </div>
+                    <div class="api-test-card">
+                        <h4>AI Analysis</h4>
+                        <button class="btn btn-success" onclick="testEndpoint('engine', 'analyze')">Run Analysis</button>
+                        <pre id="engine-analyze-response" class="api-response">Click to analyze</pre>
+                    </div>
+                    <div class="api-test-card">
+                        <h4>Trading Signals</h4>
+                        <button class="btn btn-primary" onclick="testEndpoint('engine', 'signals')">Get Signals</button>
+                        <pre id="engine-signals-response" class="api-response">Click to test</pre>
+                    </div>
+                    <div class="api-test-card">
+                        <h4>Initialize Orchestrator</h4>
+                        <button class="btn btn-warning" onclick="testEndpoint('engine', 'initialize')">Initialize</button>
+                        <pre id="engine-initialize-response" class="api-response">Click to initialize</pre>
+                    </div>
+                </div>
+            </div>
+
+            <!-- User API Testing -->
+            <div class="card">
+                <h3>👤 User API (Port 8007)
+                    <button onclick="testAllServiceEndpoints('user')" style="float: right; margin-top: -5px; padding: 4px 8px; background: #007bff; color: white; border: none; border-radius: 3px; cursor: pointer; font-size: 0.8em;">Test All</button>
+                </h3>
+                <div class="api-testing-grid">
+                    <div class="api-test-card">
+                        <h4>Health Check</h4>
+                        <button class="btn btn-primary" onclick="testEndpoint('user', 'health')">Test Health</button>
+                        <pre id="user-health-response" class="api-response">Click to test</pre>
+                    </div>
+                    <div class="api-test-card">
+                        <h4>Trading Positions</h4>
+                        <button class="btn btn-primary" onclick="testEndpoint('user', 'positions')">Get Positions</button>
+                        <pre id="user-positions-response" class="api-response">Click to test</pre>
+                    </div>
+                    <div class="api-test-card">
+                        <h4>Portfolio Summary</h4>
+                        <button class="btn btn-primary" onclick="testEndpoint('user', 'portfolio')">Get Portfolio</button>
+                        <pre id="user-portfolio-response" class="api-response">Click to test</pre>
+                    </div>
+                    <div class="api-test-card">
+                        <h4>Recent Trades</h4>
+                        <button class="btn btn-primary" onclick="testEndpoint('user', 'trades')">Get Trades</button>
+                        <pre id="user-trades-response" class="api-response">Click to test</pre>
+                    </div>
+                    <div class="api-test-card">
+                        <h4>Trading Statistics</h4>
+                        <button class="btn btn-primary" onclick="testEndpoint('user', 'stats')">Get Stats</button>
+                        <pre id="user-stats-response" class="api-response">Click to test</pre>
+                    </div>
+                    <div class="api-test-card">
+                        <h4>Agent Status</h4>
+                        <button class="btn btn-primary" onclick="testEndpoint('user', 'agents')">Get Agent Status</button>
+                        <pre id="user-agents-response" class="api-response">Click to test</pre>
                     </div>
                 </div>
             </div>
@@ -3364,5 +3595,6 @@
     </script>
     <script src="/static/js/agent-timestamps.js"></script>
     <script src="/static/js/dashboard.js"></script>
+    <script src="/static/js/api_testing.js"></script>
 </body>
 </html>

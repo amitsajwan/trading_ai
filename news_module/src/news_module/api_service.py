@@ -12,6 +12,7 @@ import os
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, HTTPException, Body
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from pymongo import MongoClient
 from pymongo.collection import Collection
@@ -108,6 +109,15 @@ app = FastAPI(
     description="REST API for news collection, retrieval, and sentiment analysis",
     version="1.0.0",
     lifespan=lifespan
+)
+
+# Add CORS middleware to allow requests from dashboard
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins for development
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 # Global service instance

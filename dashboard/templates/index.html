@@ -24,6 +24,13 @@
                 <div class="nav-item" onclick="scrollToSection('portfolio')">🎯 Portfolio</div>
             </nav>
             <nav class="nav-section">
+                <div class="nav-section-title">API Testing</div>
+                <div class="nav-item" onclick="scrollToSection('market-data-api')">💰 Market Data (8004)</div>
+                <div class="nav-item" onclick="scrollToSection('news-api')">📰 News (8005)</div>
+                <div class="nav-item" onclick="scrollToSection('engine-api')">🤖 Engine (8006)</div>
+                <div class="nav-item" onclick="scrollToSection('user-api')">👤 User (8007)</div>
+            </nav>
+            <nav class="nav-section">
                 <div class="nav-section-title">Tools</div>
                 <div class="nav-item" onclick="loadData()">🔄 Refresh</div>
             </nav>
@@ -368,6 +375,131 @@
                     </tbody>
                 </table>
             </div>
+
+            <!-- API Testing Sections -->
+            <div class="content-section" id="market-data-api">
+                <h2 class="section-title">💰 Market Data API (Port 8004)</h2>
+                <div class="api-testing-grid">
+                    <div class="api-card">
+                        <h3>Health Check</h3>
+                        <button class="btn btn-primary" onclick="testEndpoint('market-data', 'health')">Test Health</button>
+                        <pre id="market-data-health-response" class="api-response">Click to test</pre>
+                    </div>
+                    <div class="api-card">
+                        <h3>Live Tick Data</h3>
+                        <button class="btn btn-primary" onclick="testEndpoint('market-data', 'tick')">Get Tick</button>
+                        <pre id="market-data-tick-response" class="api-response">Click to test</pre>
+                    </div>
+                    <div class="api-card">
+                        <h3>OHLC Candles</h3>
+                        <button class="btn btn-primary" onclick="testEndpoint('market-data', 'ohlc')">Get OHLC</button>
+                        <pre id="market-data-ohlc-response" class="api-response">Click to test</pre>
+                    </div>
+                    <div class="api-card">
+                        <h3>Options Chain</h3>
+                        <button class="btn btn-primary" onclick="testEndpoint('market-data', 'options')">Get Options</button>
+                        <pre id="market-data-options-response" class="api-response">Click to test</pre>
+                    </div>
+                    <div class="api-card">
+                        <h3>Technical Indicators</h3>
+                        <button class="btn btn-primary" onclick="testEndpoint('market-data', 'technical')">Get Technicals</button>
+                        <pre id="market-data-technical-response" class="api-response">Click to test</pre>
+                    </div>
+                </div>
+            </div>
+
+            <div class="content-section" id="news-api">
+                <h2 class="section-title">📰 News API (Port 8005)</h2>
+                <div class="api-testing-grid">
+                    <div class="api-card">
+                        <h3>Health Check</h3>
+                        <button class="btn btn-primary" onclick="testEndpoint('news', 'health')">Test Health</button>
+                        <pre id="news-health-response" class="api-response">Click to test</pre>
+                    </div>
+                    <div class="api-card">
+                        <h3>BANKNIFTY News</h3>
+                        <button class="btn btn-primary" onclick="testEndpoint('news', 'banknifty')">Get News</button>
+                        <pre id="news-banknifty-response" class="api-response">Click to test</pre>
+                    </div>
+                    <div class="api-card">
+                        <h3>All News</h3>
+                        <button class="btn btn-primary" onclick="testEndpoint('news', 'all')">Get All News</button>
+                        <pre id="news-all-response" class="api-response">Click to test</pre>
+                    </div>
+                    <div class="api-card">
+                        <h3>Sentiment Analysis</h3>
+                        <button class="btn btn-primary" onclick="testEndpoint('news', 'sentiment')">Get Sentiment</button>
+                        <pre id="news-sentiment-response" class="api-response">Click to test</pre>
+                    </div>
+                    <div class="api-card">
+                        <h3>Collect News</h3>
+                        <button class="btn btn-success" onclick="testEndpoint('news', 'collect')">Trigger Collection</button>
+                        <pre id="news-collect-response" class="api-response">Click to collect</pre>
+                    </div>
+                </div>
+            </div>
+
+            <div class="content-section" id="engine-api">
+                <h2 class="section-title">🤖 Engine API (Port 8006)</h2>
+                <div class="api-testing-grid">
+                    <div class="api-card">
+                        <h3>Health Check</h3>
+                        <button class="btn btn-primary" onclick="testEndpoint('engine', 'health')">Test Health</button>
+                        <pre id="engine-health-response" class="api-response">Click to test</pre>
+                    </div>
+                    <div class="api-card">
+                        <h3>AI Analysis</h3>
+                        <button class="btn btn-success" onclick="testEndpoint('engine', 'analyze')">Run Analysis</button>
+                        <pre id="engine-analyze-response" class="api-response">Click to analyze</pre>
+                    </div>
+                    <div class="api-card">
+                        <h3>Trading Signals</h3>
+                        <button class="btn btn-primary" onclick="testEndpoint('engine', 'signals')">Get Signals</button>
+                        <pre id="engine-signals-response" class="api-response">Click to test</pre>
+                    </div>
+                    <div class="api-card">
+                        <h3>Initialize Orchestrator</h3>
+                        <button class="btn btn-warning" onclick="testEndpoint('engine', 'initialize')">Initialize</button>
+                        <pre id="engine-initialize-response" class="api-response">Click to initialize</pre>
+                    </div>
+                </div>
+            </div>
+
+            <div class="content-section" id="user-api">
+                <h2 class="section-title">👤 User API (Port 8007)</h2>
+                <div class="api-testing-grid">
+                    <div class="api-card">
+                        <h3>Health Check</h3>
+                        <button class="btn btn-primary" onclick="testEndpoint('user', 'health')">Test Health</button>
+                        <pre id="user-health-response" class="api-response">Click to test</pre>
+                    </div>
+                    <div class="api-card">
+                        <h3>Trading Positions</h3>
+                        <button class="btn btn-primary" onclick="testEndpoint('user', 'positions')">Get Positions</button>
+                        <pre id="user-positions-response" class="api-response">Click to test</pre>
+                    </div>
+                    <div class="api-card">
+                        <h3>Portfolio Summary</h3>
+                        <button class="btn btn-primary" onclick="testEndpoint('user', 'portfolio')">Get Portfolio</button>
+                        <pre id="user-portfolio-response" class="api-response">Click to test</pre>
+                    </div>
+                    <div class="api-card">
+                        <h3>Recent Trades</h3>
+                        <button class="btn btn-primary" onclick="testEndpoint('user', 'trades')">Get Trades</button>
+                        <pre id="user-trades-response" class="api-response">Click to test</pre>
+                    </div>
+                    <div class="api-card">
+                        <h3>Trading Statistics</h3>
+                        <button class="btn btn-primary" onclick="testEndpoint('user', 'stats')">Get Stats</button>
+                        <pre id="user-stats-response" class="api-response">Click to test</pre>
+                    </div>
+                    <div class="api-card">
+                        <h3>Agent Status</h3>
+                        <button class="btn btn-primary" onclick="testEndpoint('user', 'agents')">Get Agent Status</button>
+                        <pre id="user-agents-response" class="api-response">Click to test</pre>
+                    </div>
+                </div>
+            </div>
         </main>
     </div>
 
@@ -376,5 +508,6 @@
         window.INSTRUMENT_SYMBOL = '{{ INSTRUMENT }}';
     </script>
     <script src="/static/js/dashboard.js?v=2"></script>
+    <script src="/static/js/api_testing.js"></script>
 </body>
 </html>
