@@ -135,7 +135,7 @@ async def initialize_live_zerodha_data() -> bool:
 
         if not access_token:
             print("No valid access token found - please authenticate with Kite first")
-            print("Run: python market_data/src/market_data/tools/kite_auth.py")
+            print("Run: python -m market_data.tools.kite_auth")
             return False
 
         kite = KiteConnect(api_key=api_key)  # type: ignore[call-arg]

@@ -53,9 +53,9 @@ from pathlib import Path
 zerodha_configured = Path("credentials.json").exists()
 
 print("Data Feed:")
-print(f"  Zerodha: {'[OK] Configured' if zerodha_configured else '[FAIL] Not configured (run: python auto_login.py)'}")
+print(f"  Zerodha: {'[OK] Configured' if zerodha_configured else '[FAIL] Not configured (run: python -m market_data.tools.kite_auth)'}")
 if not zerodha_configured:
-    print("  [WARN] Zerodha credentials required! Run: python auto_login.py")
+    print("  [WARN] Zerodha credentials required! Run: python -m market_data.tools.kite_auth")
 print()
 
 # Check Dashboard

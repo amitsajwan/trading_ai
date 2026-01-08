@@ -19,7 +19,7 @@ def get_enctoken():
     cred_path = Path("credentials.json")
     if not cred_path.exists():
         print("[ERROR] credentials.json not found")
-        print("        Run: python auto_login.py")
+        print("        Run: python -m market_data.tools.kite_auth")
         return None
     
     with open(cred_path) as f:

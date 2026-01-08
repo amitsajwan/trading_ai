@@ -287,7 +287,7 @@ class ComponentVerifier:
                 if not cred_path.exists():
                     self.add_note("Data Feed (Zerodha)", "FAIL", 
                                 "credentials.json not found",
-                                "Run: python auto_login.py")
+                                "Run: python -m market_data.tools.kite_auth")
                     return False
                 
                 with open(cred_path) as f:
@@ -296,7 +296,7 @@ class ComponentVerifier:
                 if not creds.get("access_token"):
                     self.add_note("Data Feed (Zerodha)", "FAIL", 
                                 "Access token missing",
-                                "Run: python auto_login.py")
+                                "Run: python -m market_data.tools.kite_auth")
                     return False
                 
                 from kiteconnect import KiteConnect

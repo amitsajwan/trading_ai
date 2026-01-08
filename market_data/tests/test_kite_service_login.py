@@ -3,7 +3,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 import pytest
 
-from kite_auth_service import KiteAuthService
+from market_data.tools.kite_auth_service import KiteAuthService
 
 
 def test_trigger_interactive_login_calls_helper(monkeypatch, tmp_path):

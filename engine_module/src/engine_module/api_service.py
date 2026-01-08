@@ -216,7 +216,7 @@ async def health_check():
     return HealthResponse(
         status="healthy" if (redis_status == "healthy" and mongo_status == "healthy") else "degraded",
         module="engine",
-        timestamp=datetime.utcnow().isoformat(),
+        timestamp=datetime.now(IST).isoformat(),
         dependencies={
             "redis": redis_status,
             "mongodb": mongo_status,
@@ -253,7 +253,7 @@ async def analyze(request: AnalysisRequest):
             decision=str(result.decision) if result.decision else "HOLD",
             confidence=confidence,
             details=details,
-            timestamp=datetime.utcnow().isoformat()
+            timestamp=datetime.now(IST).isoformat()
         )
     except HTTPException:
         raise
@@ -292,7 +292,7 @@ async def get_signals(instrument: str, limit: int = 10):
                 action=signal.get("action", "HOLD"),
                 confidence=signal.get("confidence", 0.0),
                 reasoning=signal.get("reasoning", ""),
-                timestamp=signal.get("timestamp", datetime.utcnow().isoformat())
+                timestamp=signal.get("timestamp", datetime.now(IST).isoformat())
             )
             for signal in signals
         ]
@@ -315,7 +315,7 @@ async def initialize_orchestrator(config: Dict[str, Any] = Body(...)):
             "message": "Orchestrator initialization requires proper dependency injection. "
                       "Use the build_orchestrator function from engine_module.api with "
                       "LLM client, market store, and options data.",
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(IST).isoformat()
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

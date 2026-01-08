@@ -547,7 +547,7 @@ class SystemHealthChecker:
                         "configured": False,
                         "receiving_data": False,
                         "zerodha_configured": False,
-                        "message": "Zerodha not configured. Run: python auto_login.py"
+                        "message": "Zerodha not configured. Run: python -m market_data.tools.kite_auth"
                     }
                 
                 # Check if Zerodha is receiving data

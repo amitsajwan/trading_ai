@@ -144,7 +144,7 @@ pip install pandas numpy  # For technical indicators
    - Set in environment: `export KITE_API_SECRET="your_secret"`
 
 3. **KITE_ACCESS_TOKEN**
-   - Generated via: `python market_data/src/market_data/tools/kite_auth.py`
+   - Generated via: `python -m market_data.tools.kite_auth`
    - Expires: Daily (24 hours)
    - Auto-refresh: Via `kite_auth.py` script
 

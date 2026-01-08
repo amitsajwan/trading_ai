@@ -44,11 +44,11 @@ def check_credentials():
         return True
     elif example_path.exists():
         print("⚠️  credentials.json: Not found")
-        print("   A template `credentials.example.json` is present. Copy it to `credentials.json` and fill in your values, or run: python auto_login.py")
+        print("   A template `credentials.example.json` is present. Copy it to `credentials.json` and fill in your values, or run: python -m market_data.tools.kite_auth")
         return False
     else:
         print("⚠️  credentials.json: Not found")
-        print("   No credentials template found. Run: python auto_login.py or create credentials.json from your live account data")
+        print("   No credentials template found. Run: python -m market_data.tools.kite_auth or create credentials.json from your live account data")
         return False
 
 def setup_mongodb_schema():
@@ -95,7 +95,7 @@ def main():
         print("1. MongoDB: Already connected ✅")
         print("2. Redis: Install and start Redis (optional for testing)")
         print("3. .env: Copy .env.example to .env and add your API keys")
-        print("4. Credentials: Run 'python auto_login.py' to authenticate with Zerodha")
+        print("4. Credentials: Run 'python -m market_data.tools.kite_auth' to authenticate with Zerodha")
         print("5. Schema: MongoDB schema will be initialized automatically")
     
     print("=" * 60)

@@ -48,7 +48,7 @@ def update_credentials():
     print("=" * 60)
     print()
     print("Next steps:")
-    print("  1. Re-authenticate: python auto_login.py")
+    print("  1. Re-authenticate: python -m market_data.tools.kite_auth")
     print("  2. Test WebSocket: python scripts/test_websocket_direct.py")
     print("  3. Start data feed: python -m data.run_ingestion")
     print()

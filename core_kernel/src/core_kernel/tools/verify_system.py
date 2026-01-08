@@ -61,7 +61,7 @@ class SystemVerifier:
                     masked_value = value[:4] + "..." + value[-4:] if len(value) > 8 else "***"
                     self.check(f"Credential: {field}", True, f"Present ({masked_value})")
                 elif has_field:
-                    self.check(f"Credential: {field}", False, "Empty - run auto_login.py")
+                    self.check(f"Credential: {field}", False, "Empty - run python -m market_data.tools.kite_auth")
                 else:
                     self.check(f"Credential: {field}", False, "Missing field")
             
