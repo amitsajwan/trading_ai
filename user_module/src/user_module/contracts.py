@@ -80,6 +80,9 @@ class Trade:
     take_profit_price: Optional[Decimal] = None
     risk_amount: Optional[Decimal] = None
 
+    # Link back to originating signal (optional)
+    signal_id: Optional[str] = None
+
 
 @dataclass
 class RiskProfile:

@@ -36,6 +36,10 @@ except ImportError:
     # Fallback if technical indicators service is not available
     TechnicalIndicatorsService = None
 
+# Socket.IO removed - real-time updates now handled by Redis WebSocket Gateway
+# See redis_ws_gateway module for direct Redis pub/sub to WebSocket forwarding
+WEBSOCKET_AVAILABLE = False
+
 
 # Pydantic models for API requests/responses
 class HealthResponse(BaseModel):
@@ -72,6 +76,9 @@ class OptionsChainResponse(BaseModel):
     expiry: str
     strikes: List[Dict[str, Any]]
     timestamp: str
+    futures_price: Optional[float] = None
+    pcr: Optional[float] = None
+    max_pain: Optional[int] = None
 
 
 class TechnicalIndicatorsResponse(BaseModel):
@@ -103,6 +110,9 @@ async def lifespan(app: FastAPI):
         # Try to initialize options client (non-blocking)
         get_options_client()
         
+        # Socket.IO removed - real-time updates now handled by Redis WebSocket Gateway
+        # Market Data API now focuses on REST endpoints only
+        
         print("Market Data API: Services initialized successfully")
         yield
     except Exception as e:
@@ -112,14 +122,13 @@ async def lifespan(app: FastAPI):
         raise
     finally:
         print("Market Data API: Starting cleanup...")
-        # Cleanup if needed
-        pass
+        # Socket.IO removed - no cleanup needed
 
 
 # FastAPI app
 app = FastAPI(
     title="Market Data API",
-    description="REST API for market data, options chain, and technical indicators",
+    description="REST API for market data, options chain, and technical indicators (with WebSocket support)",
     version="1.0.0",
     lifespan=lifespan
 )
@@ -138,6 +147,8 @@ _store: Optional[MarketStore] = None
 _options_client: Optional[OptionsData] = None
 _redis_client: Optional[redis.Redis] = None
 _technical_service: Optional[TechnicalIndicatorsService] = None
+
+# Socket.IO removed - real-time updates now handled by Redis WebSocket Gateway
 
 
 def get_redis_client() -> redis.Redis:
@@ -215,11 +226,11 @@ def get_options_client() -> Optional[OptionsData]:
             if is_live_mode:
                 print(f"Market Data API: Using Zerodha Options Chain (LIVE mode - real-time quote() API) for {instrument}")
                 _options_client = MockOptionsChainAdapter(kite, instrument, use_live_quotes=True)
-                print(f"Market Data API: ✅ Zerodha options client initialized (LIVE - real-time quotes, no mock data)")
+                print(f"Market Data API: [OK] Zerodha options client initialized (LIVE - real-time quotes, no mock data)")
             else:
                 print(f"Market Data API: Using Zerodha Options Chain (historical mode - ltp() API) for {instrument}")
                 _options_client = MockOptionsChainAdapter(kite, instrument, use_live_quotes=False)
-                print(f"Market Data API: ✅ Zerodha options client initialized (historical - last traded price)")
+                print(f"Market Data API: [OK] Zerodha options client initialized (historical - last traded price)")
             return _options_client
         except Exception as e:
             print(f"Market Data API: Mock options client failed: {e}")
@@ -430,6 +441,69 @@ async def get_ohlc(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/v1/market/overview")
+async def get_market_overview(symbol: str = "BANKNIFTY"):
+    """Get market overview data for dashboard widget.
+    
+    Aggregates tick and OHLC data to provide a comprehensive market overview.
+    """
+    try:
+        instrument = symbol.upper()
+        store = get_store()
+        
+        # Get latest tick
+        tick = store.get_latest_tick(instrument)
+        if not tick:
+            raise HTTPException(status_code=404, detail=f"No tick data found for {instrument}")
+        
+        # Get OHLC data for 24h calculation
+        ohlc_bars = list(store.get_ohlc(instrument, "minute", limit=1440))  # ~24 hours of 1-min bars
+        
+        # Calculate 24h high, low, volume
+        high_24h = tick.last_price
+        low_24h = tick.last_price
+        volume_24h = tick.volume or 0
+        vwap_sum = 0.0
+        vwap_volume = 0
+        
+        if ohlc_bars:
+            for bar in ohlc_bars:
+                if bar.high > high_24h:
+                    high_24h = bar.high
+                if bar.low < low_24h:
+                    low_24h = bar.low
+                volume_24h += bar.volume or 0
+                # VWAP calculation (typical price * volume)
+                typical_price = (bar.high + bar.low + bar.close) / 3
+                vwap_sum += typical_price * (bar.volume or 0)
+                vwap_volume += bar.volume or 0
+        
+        # Calculate VWAP
+        vwap = vwap_sum / vwap_volume if vwap_volume > 0 else tick.last_price
+        
+        # Get previous day's close for change calculation (use first bar of the day or current price)
+        prev_close = ohlc_bars[0].open if ohlc_bars else tick.last_price
+        change_24h = tick.last_price - prev_close
+        change_percent_24h = (change_24h / prev_close * 100) if prev_close > 0 else 0
+        
+        return {
+            "instrument": instrument,
+            "current_price": tick.last_price,
+            "high_24h": high_24h,
+            "low_24h": low_24h,
+            "vwap": vwap,
+            "volume_24h": volume_24h,
+            "change_24h": change_24h,
+            "change_percent_24h": change_percent_24h,
+            "status": "active",  # Could check market hours here
+            "timestamp": tick.timestamp.isoformat() if hasattr(tick.timestamp, 'isoformat') else str(tick.timestamp)
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/v1/options/chain/{instrument}", response_model=OptionsChainResponse)
 async def get_options_chain(instrument: str):
     """Get options chain for an instrument."""
@@ -456,11 +530,118 @@ async def get_options_chain(instrument: str):
         if hasattr(expiry_str, 'isoformat'):
             expiry_str = expiry_str.isoformat()
 
+        # Normalize strikes structure: Convert nested CE/PE to flat ce_ltp/pe_ltp format
+        strikes_raw = chain.get("strikes", [])
+        normalized_strikes = []
+        
+        total_put_oi = 0
+        total_call_oi = 0
+        
+        for strike_data in strikes_raw:
+            ce_data = strike_data.get("CE")
+            pe_data = strike_data.get("PE")
+            
+            # Extract CE data
+            ce_ltp = ce_data.get("last_price") if ce_data else None
+            ce_oi = ce_data.get("oi", 0) if ce_data else 0
+            ce_volume = ce_data.get("volume", 0) if ce_data else 0
+            ce_iv = None  # IV not available from basic LTP/quote
+            
+            # Extract PE data
+            pe_ltp = pe_data.get("last_price") if pe_data else None
+            pe_oi = pe_data.get("oi", 0) if pe_data else 0
+            pe_volume = pe_data.get("volume", 0) if pe_data else 0
+            pe_iv = None  # IV not available from basic LTP/quote
+            
+            # Accumulate OI for PCR calculation
+            total_call_oi += ce_oi or 0
+            total_put_oi += pe_oi or 0
+            
+            normalized_strike = {
+                "strike": strike_data.get("strike"),
+                "ce_ltp": ce_ltp,
+                "ce_oi": ce_oi,
+                "ce_volume": ce_volume,
+                "ce_iv": ce_iv,
+                "pe_ltp": pe_ltp,
+                "pe_oi": pe_oi,
+                "pe_volume": pe_volume,
+                "pe_iv": pe_iv,
+            }
+            normalized_strikes.append(normalized_strike)
+        
+        # Calculate PCR (Put/Call Ratio)
+        pcr = (total_put_oi / total_call_oi) if total_call_oi > 0 else None
+        
+        # Calculate Max Pain (strike with minimum total value of open interest)
+        max_pain = None
+        min_pain_value = float('inf')
+        
+        for strike_data in strikes_raw:
+            strike_price = strike_data.get("strike")
+            
+            # Calculate pain value: sum of (strike - price) * OI for calls below strike
+            # and (price - strike) * OI for puts above strike
+            pain_value = 0
+            for s in strikes_raw:
+                s_price = s.get("strike")
+                s_ce_oi = s.get("CE", {}).get("oi", 0) or 0
+                s_pe_oi = s.get("PE", {}).get("oi", 0) or 0
+                
+                if s_price < strike_price:
+                    # Call options ITM
+                    pain_value += (strike_price - s_price) * s_ce_oi
+                elif s_price > strike_price:
+                    # Put options ITM
+                    pain_value += (s_price - strike_price) * s_pe_oi
+            
+            if pain_value < min_pain_value:
+                min_pain_value = pain_value
+                max_pain = strike_price
+        
+        # Fetch futures price
+        futures_price = None
+        try:
+            if hasattr(options_client, 'kite') and options_client.kite:
+                # Try to get futures price - futures symbol format: BANKNIFTY24JANFUT
+                # Get current month futures
+                month_names = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN',
+                              'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC']
+                now = datetime.now()
+                month_str = month_names[now.month - 1]
+                year_str = str(now.year)[-2:]
+                fut_symbol = f"{instrument.upper()}{year_str}{month_str}FUT"
+                
+                try:
+                    fut_quote = options_client.kite.quote([f"NFO:{fut_symbol}"])
+                    if fut_quote:
+                        fut_data = list(fut_quote.values())[0]
+                        if hasattr(fut_data, 'to_dict'):
+                            fut_data = fut_data.to_dict()
+                        futures_price = fut_data.get('last_price') or fut_data.get('ohlc', {}).get('close')
+                except Exception:
+                    # If futures not found, try getting underlying spot price
+                    try:
+                        underlying_quote = options_client.kite.quote([f"NSE:{instrument.upper()}"])
+                        if underlying_quote:
+                            underlying_data = list(underlying_quote.values())[0]
+                            if hasattr(underlying_data, 'to_dict'):
+                                underlying_data = underlying_data.to_dict()
+                            futures_price = underlying_data.get('last_price') or underlying_data.get('ohlc', {}).get('close')
+                    except Exception:
+                        pass
+        except Exception as e:
+            # Futures price is optional, log debug only
+            pass  # futures_price remains None
+
         return OptionsChainResponse(
             instrument=instrument.upper(),
             expiry=expiry_str,
-            strikes=chain.get("strikes", []),
-            timestamp=datetime.now(IST).isoformat()
+            strikes=normalized_strikes,
+            timestamp=datetime.now(IST).isoformat(),
+            futures_price=futures_price,
+            pcr=pcr,
+            max_pain=max_pain
         )
     except HTTPException:
         raise
@@ -787,6 +968,10 @@ async def get_market_depth(instrument: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# Socket.IO removed - real-time updates now handled by Redis WebSocket Gateway
+# Export the FastAPI app directly (no Socket.IO wrapping)
+main_app = app
+
 if __name__ == "__main__":
     import uvicorn
     
@@ -794,5 +979,6 @@ if __name__ == "__main__":
     host = os.getenv("MARKET_DATA_API_HOST", "0.0.0.0")
     
     print(f"Starting Market Data API on {host}:{port}")
+    # Socket.IO removed - using FastAPI app directly
     uvicorn.run(app, host=host, port=port)
 

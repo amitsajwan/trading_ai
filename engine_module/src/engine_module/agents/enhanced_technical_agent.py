@@ -11,6 +11,8 @@ The agent aggregates these perspectives into a single trading decision.
 """
 
 import logging
+import sys
+import os
 from typing import Dict, Any, Optional
 from engine_module.contracts import Agent, AnalysisResult
 
@@ -62,7 +64,14 @@ class EnhancedTechnicalAgent(Agent):
             # Try to get from technical service
             instrument = context.get("instrument", "BANKNIFTY")
             try:
-                from market_data.src.market_data.technical_indicators_service import get_technical_service
+                try:
+                    from market_data.technical_indicators_service import get_technical_service
+                except ImportError:
+                    # Fallback: ensure market_data/src is in path
+                    market_data_src = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..', '..', '..', 'market_data', 'src'))
+                    if os.path.exists(market_data_src) and market_data_src not in sys.path:
+                        sys.path.insert(0, market_data_src)
+                    from market_data.technical_indicators_service import get_technical_service
                 tech_service = get_technical_service()
                 indicators = tech_service.get_indicators_dict(instrument)
             except Exception as e:

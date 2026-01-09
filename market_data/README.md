@@ -108,6 +108,64 @@ python start_local.py --provider zerodha
 python start_local.py --provider historical --historical-source zerodha --historical-speed 10 --historical-from 2026-01-07
 ```
 
+**Runner (supervisor) usage:**
+You can also start market-data using the built-in supervisor runner which spawns the API, collectors and historical replayer as separate processes:
+
+```powershell
+# Live with collectors started by the runner
+python -m market_data.runner --mode live --start-collectors
+
+# Historical via runner
+python -m market_data.runner --mode historical --historical-source zerodha --historical-from 2026-01-07
+```
+
+**Credential check:**
+- When starting collectors in live mode (`--start-collectors`) the runner will validate Zerodha credentials before launching collectors.
+- If credentials are missing or invalid the runner will refuse to start collectors and print clear instructions:
+  - Set `KITE_API_KEY` and `KITE_ACCESS_TOKEN` in the environment, OR
+  - Run `python -m market_data.tools.kite_auth` to generate `credentials.json`, OR
+  - Set `USE_MOCK_KITE=1` to start collectors in mock mode for testing.
+
+---
+
+## Zerodha Historical Data Integration
+
+Detailed Zerodha historical integration and examples were consolidated here from `ZERODHA_HISTORICAL_INTEGRATION.md`.
+
+Summary:
+- Supports `data_source='zerodha'` (real historical data via Kite API), `path/to/file.csv`, or `synthetic`.
+- `HistoricalTickReplayer` and `UnifiedDataFlow` can fetch Zerodha OHLC candles, convert them into tick sequences, and replay into the Redis-backed store.
+- Usage example (simplified):
+
+```python
+from datetime import date, timedelta
+from kiteconnect import KiteConnect
+from market_data.adapters.unified_data_flow import UnifiedDataFlow
+from market_data.store import InMemoryMarketStore
+
+kite = KiteConnect(api_key="...")
+kite.set_access_token("...")
+
+flow = UnifiedDataFlow(
+    store=InMemoryMarketStore(),
+    data_source="zerodha",
+    kite=kite,
+    instrument_symbol="NIFTY BANK",
+    from_date=date.today() - timedelta(days=30),
+    to_date=date.today(),
+    interval="minute",
+)
+flow.start()
+```
+
+Notes:
+- Historical replay preserves timestamps and can rebase to a virtual time if needed.
+- ``HistoricalTickReplayer`` supports multiple intervals and converts candles to tick-level sequences for realistic replay.
+- For quick testing you can use synthetic mode: `data_source='synthetic'`.
+
+For more details on parameters and advanced options see the module docstrings in `market_data.adapters.historical_tick_replayer` and the `UnifiedDataFlow` implementation.
+
+
 ### Step 4: Verify It's Working
 
 ```powershell

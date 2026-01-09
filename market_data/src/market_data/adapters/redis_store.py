@@ -139,14 +139,24 @@ class RedisMarketStore(MarketStore):
             return
         payload = _serialize_tick(tick)
         ts_key = _iso(tick.timestamp)
+        payload_json = json.dumps(payload)
         try:
-            self.redis.setex(f"tick:{tick.instrument}:{ts_key}", self._tick_ttl, json.dumps(payload))
+            self.redis.setex(f"tick:{tick.instrument}:{ts_key}", self._tick_ttl, payload_json)
             # Also store latest tick blob and price for quick lookup
-            self.redis.setex(f"tick:{tick.instrument}:latest", self._tick_ttl, json.dumps(payload))
+            self.redis.setex(f"tick:{tick.instrument}:latest", self._tick_ttl, payload_json)
             self.redis.setex(f"price:{tick.instrument}:latest", self._price_ttl, str(tick.last_price))
             self.redis.setex(f"price:{tick.instrument}:latest_ts", self._price_ttl, ts_key)
             if tick.volume is not None:
                 self.redis.setex(f"volume:{tick.instrument}:latest", self._price_ttl, str(tick.volume))
+            
+            # Publish tick to Redis pub/sub for real-time subscribers (Socket.IO, signal monitoring, etc.)
+            try:
+                self.redis.publish(f"market:tick:{tick.instrument}", payload_json)
+                # Also publish to general tick channel
+                self.redis.publish("market:tick", payload_json)
+            except Exception as pub_exc:
+                # Don't fail if pub/sub fails (may not be enabled)
+                logger.debug(f"Failed to publish tick to pub/sub: {pub_exc}")
             
             # Automatically build OHLC candles from ticks (if enabled)
             if self._enable_candle_building:

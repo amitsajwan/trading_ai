@@ -13,6 +13,8 @@ Flow:
 
 import asyncio
 import logging
+import sys
+import os
 from typing import Dict, Any, Optional, Callable
 from datetime import datetime
 
@@ -41,7 +43,14 @@ class RealtimeSignalProcessor:
         """
         # Get services
         if technical_service is None:
-            from market_data.src.market_data.technical_indicators_service import get_technical_service
+            try:
+                from market_data.technical_indicators_service import get_technical_service
+            except ImportError:
+                # Fallback: ensure market_data/src is in path
+                market_data_src = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..', '..', 'market_data', 'src'))
+                if os.path.exists(market_data_src) and market_data_src not in sys.path:
+                    sys.path.insert(0, market_data_src)
+                from market_data.technical_indicators_service import get_technical_service
             technical_service = get_technical_service()
         
         if signal_monitor is None:
@@ -55,12 +64,36 @@ class RealtimeSignalProcessor:
         # Register trade executor callback with monitor
         if trade_executor:
             self.signal_monitor.set_execution_callback(trade_executor)
-        
+
+        # Start Redis pub/sub listener for indicator updates (loosely coupled)
+        self._pubsub_task = None
+        try:
+            # Prefer asyncio Redis client when available
+            try:
+                import redis.asyncio as aioredis
+                self._aioredis = aioredis
+            except Exception:
+                self._aioredis = None
+
+            # Start background listener depending on availability
+            if self._aioredis is not None:
+                # Asyncio-based listener
+                import asyncio
+                self._pubsub_task = asyncio.create_task(self._async_redis_listener())
+            else:
+                # Fallback to threaded listener using sync redis client
+                import threading
+                t = threading.Thread(target=self._threaded_redis_listener, daemon=True)
+                t.start()
+        except Exception as e:
+            logger.warning(f"Failed to start Redis indicator listener: {e}")
+
         # Statistics
         self.ticks_processed = 0
         self.signals_triggered = 0
         
         logger.info("RealtimeSignalProcessor initialized")
+
     
     async def on_tick(self, instrument: str, tick: Dict[str, Any]) -> Dict[str, Any]:
         """Process market tick: Update indicators → Check signals → Execute trades.
@@ -89,6 +122,7 @@ class RealtimeSignalProcessor:
                 f"at price {tick.get('last_price')}"
             )
         
+        # After processing, return a compact summary
         return {
             "instrument": instrument,
             "tick_price": tick.get("last_price"),
@@ -98,7 +132,82 @@ class RealtimeSignalProcessor:
             "signals_triggered": len(triggered_events),
             "triggered_events": triggered_events
         }
-    
+
+    async def _async_redis_listener(self):
+        """Async listener for Redis pub/sub indicator updates (uses redis.asyncio)."""
+        try:
+            aioredis = self._aioredis
+            redis_host = os.getenv("REDIS_HOST", "localhost")
+            redis_port = int(os.getenv("REDIS_PORT", "6379"))
+            client = aioredis.Redis(host=redis_host, port=redis_port, db=0, decode_responses=True)
+            pubsub = client.pubsub()
+            await pubsub.psubscribe("indicators:*")
+            logger.info("Subscribed to Redis channel pattern indicators:*")
+
+            async for message in pubsub.listen():
+                # Message types: pmessage (pattern), message
+                try:
+                    if message and message.get("type") in ("pmessage", "message"):
+                        channel = message.get("channel") or message.get("pattern")
+                        data = message.get("data")
+                        if not data:
+                            continue
+                        import json
+                        try:
+                            payload = json.loads(data)
+                        except Exception:
+                            payload = {}
+
+                        # Channel is like 'indicators:INSTRUMENT'
+                        ch = channel if isinstance(channel, str) else channel.decode("utf-8")
+                        if ch and ch.startswith("indicators:"):
+                            instr = ch.split(":", 1)[1]
+                            # Trigger signal checks for this instrument
+                            try:
+                                await self.signal_monitor.check_signals(instr)
+                            except Exception as e:
+                                logger.error(f"Error checking signals for {instr}: {e}")
+                except Exception as e:
+                    logger.debug(f"Ignored pubsub message error: {e}")
+        except Exception as e:
+            logger.warning(f"Async Redis listener stopped: {e}")
+
+    def _threaded_redis_listener(self):
+        """Threaded listener for sync redis client.
+        Uses blocking pubsub.get_message with timeout polling and schedules asyncio checks.
+        """
+        try:
+            from engine_module.api_service import get_redis_client
+            import time, json
+            redis_client = get_redis_client()
+            pubsub = redis_client.pubsub()
+            pubsub.psubscribe("indicators:*")
+            logger.info("Threaded Redis listener subscribed to indicators:*")
+
+            while True:
+                message = pubsub.get_message(timeout=1.0)
+                if message and message.get("type") in ("pmessage", "message"):
+                    channel = message.get("channel")
+                    data = message.get("data")
+                    try:
+                        payload = json.loads(data) if data else {}
+                    except Exception:
+                        payload = {}
+
+                    ch = channel if isinstance(channel, str) else channel.decode("utf-8")
+                    if ch.startswith("indicators:"):
+                        instr = ch.split(":", 1)[1]
+                        # Schedule check_signals in event loop
+                        try:
+                            import asyncio
+                            loop = asyncio.get_event_loop()
+                            asyncio.run_coroutine_threadsafe(self.signal_monitor.check_signals(instr), loop)
+                        except Exception as e:
+                            logger.error(f"Failed to schedule signal check for {instr}: {e}")
+
+                time.sleep(0.01)
+        except Exception as e:
+            logger.warning(f"Threaded Redis listener stopped: {e}")    
     async def on_candle(self, instrument: str, candle: Dict[str, Any]) -> Dict[str, Any]:
         """Process completed candle: Update indicators → Check signals.
         

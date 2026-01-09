@@ -331,6 +331,15 @@ print(f"Active signals: {len(active)}")
 ## Best Practices
 
 1. **Always warm up indicators** - Need 50+ candles for accurate RSI/MACD
+
+## Tests added for real-time signal integration
+- `tests/unit/test_signal_pubsub_and_cross.py` —
+  - Confirms `TechnicalIndicatorsService.update_candle()` publishes a JSON message on `indicators:{instrument}`
+  - Confirms `SignalMonitor` uses Redis persisted previous values (`indicators_prev:{instrument}:{indicator}`) for `CROSSES_*` detection
+
+## Recommended integration tests
+- Pub/Sub flow: Market Data publishes `indicators:{instrument}` → Realtime processor receives and calls `SignalMonitor.check_signals` → triggered signals call the executor → engine marks signal executed.
+- Add a durable test using a real Redis instance (docker compose) if you need to validate consumer robustness.
 2. **Use get_system_time()** - Never use datetime.now() in tests
 3. **Test with virtual time** - Verify historical replay compatibility
 4. **Check market hours** - Many operations blocked when market closed

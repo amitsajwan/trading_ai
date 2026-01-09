@@ -170,6 +170,7 @@ class LLMProviderManager:
             # Store multiple keys for load balancing
             self._groq_keys = groq_keys
             self._groq_key_index = 0
+            self._groq_invalid_keys = set()  # Track invalid keys (401 errors)
 
             self.providers["groq"] = ProviderConfig(
                 name="groq",
@@ -854,19 +855,29 @@ class LLMProviderManager:
 
                 model_name = model or self._select_model(provider)
                 call_start_time = time.time()
-                logger.info(f"🔄 Attempt {attempt + 1}/{max_retries}: Trying {provider} (model: {model_name})")
+                logger.info(f"[*] Attempt {attempt + 1}/{max_retries}: Trying {provider} (model: {model_name})")
 
                 if provider == "groq":
                     def _call_groq():
                         import httpx
 
-                        # Load balancing: rotate between multiple Groq API keys
+                        # Load balancing: rotate between multiple Groq API keys (skip invalid ones)
                         if hasattr(self, '_groq_keys') and len(self._groq_keys) > 1:
-                            # Round-robin key selection for load balancing
+                            # Get valid keys (exclude invalid ones)
+                            invalid_keys = getattr(self, '_groq_invalid_keys', set())
+                            valid_keys = [k for k in self._groq_keys if k not in invalid_keys]
+                            
+                            if not valid_keys:
+                                # All keys invalid, reset and try all again (maybe they recovered)
+                                logger.warning("All Groq keys marked invalid, resetting and trying all keys")
+                                self._groq_invalid_keys = set()
+                                valid_keys = self._groq_keys
+                            
+                            # Round-robin key selection from valid keys only
                             key_index = getattr(self, '_groq_key_index', 0)
-                            api_key = self._groq_keys[key_index % len(self._groq_keys)]
-                            self._groq_key_index = (key_index + 1) % len(self._groq_keys)
-                            logger.debug(f"Using Groq key #{(key_index % len(self._groq_keys)) + 1} for load balancing")
+                            api_key = valid_keys[key_index % len(valid_keys)]
+                            self._groq_key_index = (key_index + 1) % len(valid_keys)
+                            logger.debug(f"Using Groq key #{(key_index % len(valid_keys)) + 1} (from {len(valid_keys)} valid keys)")
                         else:
                             # Single key fallback
                             api_key = self.provider_clients.get(provider)
@@ -895,6 +906,14 @@ class LLMProviderManager:
                             json=data,
                             timeout=60.0
                         )
+                        
+                        # Check for 401 Unauthorized - mark key as invalid
+                        if response.status_code == 401:
+                            if hasattr(self, '_groq_invalid_keys'):
+                                self._groq_invalid_keys.add(api_key)
+                                logger.warning(f"⚠️ Groq API key returned 401 - marked as invalid (skipping in future rotations)")
+                            response.raise_for_status()
+                        
                         response.raise_for_status()
                         result = response.json()
                         return result
@@ -1034,27 +1053,9 @@ class LLMProviderManager:
 
         error_summary = "\n".join(error_details) if error_details else str(last_error)
         
-        # FINAL FALLBACK: Try our multi-provider API manager with Cohere, AI21, etc.
-        logger.warning("🔄 All existing providers failed. Trying multi-provider fallback...")
-        try:
-            from utils.request_router import RequestRouter
-            fallback_router = RequestRouter()
-            
-            # Combine system and user messages
-            combined_prompt = f"{system_prompt}\n\n{user_message}"
-            
-            fallback_result = fallback_router.make_llm_request(
-                prompt=combined_prompt,
-                max_tokens=max_tokens,
-                temperature=temperature
-            )
-            
-            logger.info(f"✅ Multi-provider fallback successful via {fallback_result['provider']}")
-            return fallback_result['response']['text']
-            
-        except Exception as fallback_error:
-            logger.error(f"❌ Multi-provider fallback also failed: {fallback_error}")
-            # Continue with original error
+        # Note: Multi-provider fallback removed - all providers have already been tried
+        # The system will return default HOLD decision when all LLM providers fail
+        logger.warning("[!] All LLM providers failed - system will use default decision")
         
         raise RuntimeError(f"All LLM providers failed. Last error: {last_error}\nProvider errors:\n{error_summary}")
     
@@ -1076,30 +1077,11 @@ class LLMProviderManager:
                 "is_current": name == self.current_provider
             }        
         # Add multi-provider fallback status
-        try:
-            from utils.request_router import RequestRouter
-            router = RequestRouter()
-            multi_stats = router.get_stats()
-            
-            status["multi_provider_fallback"] = {
-                "status": "available",
-                "providers": {
-                    name: {
-                        "usage": info["usage"],
-                        "limit": info["limit"],
-                        "usage_percent": info["usage_percent"],
-                        "has_key": info["has_key"],
-                        "model": info["model"]
-                    }
-                    for name, info in multi_stats.items()
-                },
-                "description": "Cohere, AI21, Groq, HuggingFace, OpenAI, Google fallback"
-            }
-        except Exception as e:
-            status["multi_provider_fallback"] = {
-                "status": "error",
-                "error": str(e)
-            }
+        status["multi_provider_fallback"] = {
+            "status": "available" if ("cohere" in self.providers or "ai21" in self.providers) else "unavailable",
+            "description": "Fallback uses available providers directly when primary fails",
+            "note": "All configured providers are automatically tried in order"
+        }
         
         return status
 
@@ -1118,10 +1100,18 @@ class LLMProviderManager:
                     import httpx
 
                     # Groq: direct HTTP call for health check
-                    # Use load balancing for health checks too
+                    # Use load balancing for health checks too (skip invalid keys)
                     if hasattr(self, '_groq_keys') and len(self._groq_keys) > 1:
-                        # Test all keys, succeed if any work
-                        for i, api_key in enumerate(self._groq_keys):
+                        # Get valid keys (exclude invalid ones)
+                        invalid_keys = getattr(self, '_groq_invalid_keys', set())
+                        valid_keys = [k for k in self._groq_keys if k not in invalid_keys]
+                        
+                        if not valid_keys:
+                            # All keys invalid, try all again for health check
+                            valid_keys = self._groq_keys
+                        
+                        # Test valid keys, succeed if any work
+                        for i, api_key in enumerate(valid_keys):
                             try:
                                 headers = {
                                     "Authorization": f"Bearer {api_key}",
@@ -1140,6 +1130,10 @@ class LLMProviderManager:
                                 )
                                 if response.status_code == 200:
                                     return True  # At least one key works
+                                elif response.status_code == 401:
+                                    # Mark this key as invalid
+                                    if hasattr(self, '_groq_invalid_keys'):
+                                        self._groq_invalid_keys.add(api_key)
                             except Exception:
                                 continue  # Try next key
                         return False  # All keys failed

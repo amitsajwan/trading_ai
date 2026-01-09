@@ -1,10 +1,10 @@
-# ENGINE_MODULE - Trading Intelligence & Analysis
+# engine_module — README consolidated
 
-**Status: ✅ PRODUCTION READY** - Multi-agent trading analysis with Redis direct access for maximum performance.
+**Docs consolidated:** 2026-01-09 — this file now points to a concise entry point and archived deep dives.
 
-A sophisticated trading intelligence module featuring 9 specialized agents, LLM-powered decision making, and comprehensive market analysis for options trading strategies. Now includes direct Redis access for market data and technical indicators, eliminating API call overhead.
+See `README_CONCISE.md` for a short, actionable overview and `docs/archived/` for preserved long-form design notes.
 
-## 🎯 Purpose & Architecture
+## Quick access
 
 The engine module orchestrates the complete trading decision process:
 
@@ -84,6 +84,22 @@ analysis = await execution_agent.analyze({
 - **ReviewAgent**: Analysis summaries and reporting
 - **FundamentalAgent**: Company/stock analysis
 - **LearningAgent**: Adaptive strategy optimization
+
+## 🎯 Orchestrator: The Brain
+
+### Real-time signals & Redis integration (added 2026-01-09)
+
+The engine now supports a loosely-coupled real-time signal integration using Redis pub/sub and a small Redis-backed state store for previous indicator values.
+
+Key points:
+- Technical indicators are published by the Market Data module to channel `indicators:{instrument}` as JSON messages. See `market_data/technical_indicators_service.py`.
+- For CROSSES detection we persist the previous indicator value in Redis using `indicators_prev:{instrument}:{indicator}` (TTL default: 4 hours). This makes `CROSSES_ABOVE` / `CROSSES_BELOW` robust across restarts and multiple workers.
+- New engine endpoints:
+  - `GET /api/v1/signals/by-id/{signal_id}` — fetch full signal document
+  - `POST /api/v1/signals/mark-executed` — mark a signal executed
+- `RealtimeSignalProcessor` subscribes to `indicators:*` messages and triggers `SignalMonitor.check_signals(instrument)` on updates.
+
+This design keeps producers (market data) and consumers (signal monitor/executor) loosely coupled and scalable.
 
 ## 🎯 Orchestrator: The Brain
 

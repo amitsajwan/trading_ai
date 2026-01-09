@@ -20,6 +20,8 @@ def build_orchestrator(
     news_service=None,
     technical_data_provider=None,
     redis_client=None,  # New parameter for direct Redis access
+    signal_monitor=None,  # SignalMonitor instance for conditional signals
+    mongo_db=None,  # MongoDB database instance for signal persistence
     **kwargs: Any
 ) -> Orchestrator:
     """Build TradingOrchestrator with injected dependencies.
@@ -76,6 +78,8 @@ def build_orchestrator(
         options_data_provider=options_provider,
         news_service=news_service,
         technical_data_provider=technical_provider,
+        signal_monitor=signal_monitor,
+        mongo_db=mongo_db,
         **kwargs
     )
 

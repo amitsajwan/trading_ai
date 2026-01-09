@@ -46,8 +46,9 @@ async def test_bear_bull_researchers():
     bull = BullResearcher()
     bres = await bear.analyze({"technical": {"trend_direction": "DOWN"}})
     b2 = await bull.analyze({"technical": {"trend_direction": "UP"}})
-    assert bres.decision == "SELL"
-    assert b2.decision == "BUY"
+    # Research agents may now return options strategy recommendations (e.g., BEAR_PUT_SPREAD / BULL_CALL_SPREAD)
+    assert bres.decision in ("SELL", "BEAR_PUT_SPREAD")
+    assert b2.decision in ("BUY", "BULL_CALL_SPREAD")
 
 
 @pytest.mark.asyncio

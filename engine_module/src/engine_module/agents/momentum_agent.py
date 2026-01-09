@@ -126,57 +126,26 @@ class MomentumAgent(Agent):
                         "Adding to existing short position"
                     ]
                 else:
-                    # No existing position - open new
-                    decision = "SELL"
-                    confidence = 0.75
-                    reasoning = [
-                        f"RSI {rsi:.1f} < {self.config['rsi_oversold']} (oversold momentum)",
-                        f"Price {current_price:.2f} < SMA20 {sma_20:.2f}",
-                        f"Volume spike: {volume_ratio:.1f}x average" if volume_ratio else "Volume spike detected",
-                        f"Price move: {price_change_pct:.1f}%" if price_change_pct else ""
-                    ]
-
-            else:
-                # Check if we should exit existing positions due to momentum reversal
-                if has_long_position and rsi and rsi < 50:
-                    # Long position losing momentum - consider exit
-                    decision = "SELL"
-                    confidence = 0.60
-                    reasoning = [
-                        f"Momentum weakening: RSI {rsi:.1f}",
-                        "Consider exiting long position"
-                    ]
-                elif has_short_position and rsi and rsi > 50:
-                    # Short position losing momentum - consider exit
-                    decision = "BUY"
-                    confidence = 0.60
-                    reasoning = [
-                        f"Momentum weakening: RSI {rsi:.1f}",
-                        "Consider exiting short position"
-                    ]
-                else:
-                    reasoning = ["No strong momentum signal identified"]
-                    confidence = 0.0
-                # Check if we should exit existing positions due to momentum reversal
-                if has_long_position and (rsi_last < 50 or price_last < ma_last):
-                    # Long position losing momentum - consider exit
-                    decision = "SELL"
-                    confidence = 0.60
-                    reasoning = [
-                        f"Momentum weakening: RSI {rsi_last:.1f}, Price below MA",
-                        "Consider exiting long position"
-                    ]
-                elif has_short_position and (rsi_last > 50 or price_last > ma_last):
-                    # Short position losing momentum - consider exit
-                    decision = "BUY"
-                    confidence = 0.60
-                    reasoning = [
-                        f"Momentum weakening: RSI {rsi_last:.1f}, Price above MA",
-                        "Consider exiting short position"
-                    ]
-                else:
-                    reasoning = ["No strong momentum signal identified"]
-                    confidence = 0.0
+                    # Check if we should exit existing positions due to momentum reversal
+                    if has_long_position and rsi and rsi < 50:
+                        # Long position losing momentum - consider exit
+                        decision = "SELL"
+                        confidence = 0.60
+                        reasoning = [
+                            f"Momentum weakening: RSI {rsi:.1f}",
+                            "Consider exiting long position"
+                        ]
+                    elif has_short_position and rsi and rsi > 50:
+                        # Short position losing momentum - consider exit
+                        decision = "BUY"
+                        confidence = 0.60
+                        reasoning = [
+                            f"Momentum weakening: RSI {rsi:.1f}",
+                            "Consider exiting short position"
+                        ]
+                    else:
+                        reasoning = ["No strong momentum signal identified"]
+                        confidence = 0.0
 
             # Prepare stop loss and target levels
             sl_distance = abs(current_price * 0.01)  # 1% stop loss

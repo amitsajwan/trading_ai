@@ -96,6 +96,8 @@ class TradingOrchestrator:
         news_service: Optional[NewsService] = None,
         technical_data_provider: Optional[TechnicalDataProvider] = None,
         position_manager: Optional[PositionManager] = None,
+        signal_monitor=None,  # SignalMonitor instance for real-time signal monitoring
+        mongo_db=None,  # MongoDB database instance for signal persistence
         **kwargs: Any,
     ) -> None:
         """Initialize orchestrator with injected dependencies.
@@ -108,6 +110,8 @@ class TradingOrchestrator:
             news_service: News service for sentiment analysis (optional)
             technical_data_provider: Provider for technical indicators (optional)
             position_manager: Position manager for live position tracking (optional)
+            signal_monitor: SignalMonitor instance for conditional signal monitoring (optional)
+            mongo_db: MongoDB database instance for signal persistence (optional)
             **kwargs: Additional config (e.g., instruments, lookback_days)
         """
         self.llm_client = llm_client
@@ -117,6 +121,8 @@ class TradingOrchestrator:
         self.news_service = news_service
         self.technical_data_provider = technical_data_provider
         self.position_manager = position_manager
+        self.signal_monitor = signal_monitor
+        self.mongo_db = mongo_db
         self.config = kwargs
 
     async def run_cycle(self, context: Dict[str, Any]) -> AnalysisResult:
@@ -135,7 +141,7 @@ class TradingOrchestrator:
         Returns:
             AnalysisResult with options trading decision and analysis
         """
-        instrument = context.get("instrument", "BANKNIFTY")
+        instrument = context.get("instrument", "BANKNIFTY")  # Default to BANKNIFTY Futures (nearest expiry)
         # Use virtual time if available, otherwise use provided timestamp or current time
         timestamp = context.get("timestamp", get_system_time())
         
@@ -192,7 +198,29 @@ class TradingOrchestrator:
                     },
                 )
             elif market_hours and self.llm_client:
-                final_decision = await self._generate_llm_decision(aggregated_analysis, context)
+                # Respect configurable override thresholds to avoid LLM overriding weak consensus
+                min_strength = float(self.config.get('llm_override_min_strength', 0.0))
+                min_confidence = float(self.config.get('llm_override_min_confidence', 0.0))
+                agg_strength = aggregated_analysis.get('signal_strength', 0.0)
+                agg_conf = aggregated_analysis.get('confidence_score', 0.0)
+
+                # Determine whether LLM override is allowed based on configured thresholds.
+                if min_strength > 0 and min_confidence > 0:
+                    allow_llm = (agg_strength >= min_strength) and (agg_conf >= min_confidence)
+                elif min_strength > 0:
+                    allow_llm = (agg_strength >= min_strength)
+                elif min_confidence > 0:
+                    allow_llm = (agg_conf >= min_confidence)
+                else:
+                    # No thresholds set, allow LLM by default
+                    allow_llm = True
+
+                if allow_llm:
+                    logger.info(f"LLM decision allowed (agg_strength={agg_strength:.2f}, agg_conf={agg_conf:.2f})")
+                    final_decision = await self._generate_llm_decision(aggregated_analysis, context)
+                else:
+                    logger.info(f"LLM decision skipped due to low aggregate strength/conf (agg_strength={agg_strength:.2f}, agg_conf={agg_conf:.2f})")
+                    final_decision = self._generate_fallback_decision(aggregated_analysis, market_hours)
             else:
                 final_decision = self._generate_fallback_decision(aggregated_analysis, market_hours)
 
@@ -213,8 +241,21 @@ class TradingOrchestrator:
             logger.info(f"Completed analysis cycle: {final_decision.decision} "
                        f"(confidence: {final_decision.confidence:.1%})")
 
-            # Step 6: Execute trading decision if position manager available
-            if self.position_manager and final_decision.decision != "HOLD":
+            # Step 6: Create conditional signals from decision (NEW)
+            if final_decision.decision != "HOLD" and final_decision.decision != "ERROR":
+                try:
+                    await self._create_signals_from_decision(
+                        final_decision,
+                        instrument,
+                        market_data.get("current_price"),
+                        technical_data.get("technical_indicators", {}) if technical_data else {}
+                    )
+                except Exception as signal_error:
+                    logger.error(f"Failed to create signals from decision: {signal_error}", exc_info=True)
+                    final_decision.details["signal_creation_error"] = str(signal_error)
+
+            # Step 7: Execute trading decision if position manager available (immediate execution option)
+            if self.position_manager and final_decision.decision != "HOLD" and self.config.get("auto_execute", False):
                 try:
                     execution_result = await self.position_manager.execute_trading_decision(
                         instrument=instrument,
@@ -518,14 +559,27 @@ class TradingOrchestrator:
         tasks = [agent.analyze(agent_context) for agent in self.agents]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Filter out exceptions and log errors
+        # Filter out exceptions and log errors; attach agent identity to results
         valid_results = []
         for i, result in enumerate(results):
+            agent_obj = self.agents[i]
+            agent_name = getattr(agent_obj, '_agent_name', agent_obj.__class__.__name__)
             if isinstance(result, Exception):
-                agent_name = getattr(self.agents[i], '__class__', {}).get('__name__', f'Agent_{i}')
                 logger.error(f"Agent {agent_name} failed: {result}")
             else:
-                valid_results.append(result)
+                # Attach agent name into AnalysisResult and details for persistence
+                try:
+                    result.agent = agent_name
+                    if result.details is None:
+                        result.details = {}
+                    # don't overwrite existing agent field in details
+                    result.details.setdefault('agent', agent_name)
+                    valid_results.append(result)
+                    logger.info(f"Agent {agent_name} succeeded: decision={result.decision} confidence={result.confidence}")
+                except Exception as e:
+                    logger.exception(f"Failed to attach agent metadata for {agent_name}: {e}")
+                    # still include the result to avoid losing data
+                    valid_results.append(result)
 
         logger.info(f"Successfully ran {len(valid_results)}/{len(self.agents)} agents")
         return valid_results
@@ -595,7 +649,7 @@ class TradingOrchestrator:
             total_confidence += confidence
             
             # Extract agent-specific insights
-            agent_name = getattr(result, '_agent_name', 'Unknown')
+            agent_name = result.agent if getattr(result, 'agent', None) else getattr(result, '_agent_name', 'Unknown')
             details = result.details or {}
             
             # Determine agent weight based on category
@@ -797,9 +851,21 @@ class TradingOrchestrator:
             # Import here to avoid circular dependencies
             from genai_module.contracts import LLMRequest
 
+            # Use environment variable if set, otherwise let provider use default model
+            model_override = os.getenv("LLM_DECISION_MODEL") or os.getenv("LLM_MODEL")
+            # Don't pass empty string or invalid model names
+            if model_override and model_override.strip():
+                # Validate model name (basic check)
+                if not any(invalid in model_override.lower() for invalid in ["gpt-5", "gpt-4o-mini-invalid"]):
+                    model = model_override
+                else:
+                    model = None  # Let provider use default
+            else:
+                model = None  # Let provider use default
+
             llm_request = LLMRequest(
                 prompt=prompt,
-                model=os.getenv("LLM_DECISION_MODEL", os.getenv("LLM_MODEL")),
+                model=model,
                 temperature=0.1,  # Low temperature for consistent decisions
                 max_tokens=1000
             )
@@ -816,7 +882,7 @@ class TradingOrchestrator:
 
     def _build_decision_prompt(self, aggregated: Dict[str, Any], context: Dict[str, Any]) -> str:
         """Build comprehensive LLM prompt for options trading decision with weighted voting context."""
-        instrument = context.get("instrument", "BANKNIFTY")
+        instrument = context.get("instrument", "BANKNIFTY")  # Default to BANKNIFTY Futures (nearest expiry)
         market_hours = context.get("market_hours", False)
         
         # Extract weighted voting details
@@ -930,6 +996,96 @@ Respond in this exact JSON format:
         except Exception as e:
             logger.warning(f"Failed to parse LLM response: {e}")
             return self._generate_fallback_decision(aggregated, True)
+
+    async def _create_signals_from_decision(
+        self,
+        decision: AnalysisResult,
+        instrument: str,
+        current_price: Optional[float] = None,
+        technical_indicators: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """Create TradingCondition signals from orchestrator decision.
+        
+        This method creates conditional signals that can be monitored in real-time
+        and executed when conditions are met.
+        
+        Args:
+            decision: AnalysisResult from orchestrator
+            instrument: Trading instrument
+            current_price: Current market price
+            technical_indicators: Current technical indicator values
+        """
+        try:
+            from .signal_creator import create_signals_from_decision, save_signal_to_mongodb
+            
+            # Create signals from decision
+            signals = create_signals_from_decision(
+                analysis_result=decision,
+                instrument=instrument,
+                technical_indicators=technical_indicators,
+                current_price=current_price,
+                strategy_config=self.config.get("strategy_config")
+            )
+            
+            if not signals:
+                logger.debug(f"No signals created from decision {decision.decision}")
+                return
+            
+            logger.info(f"Created {len(signals)} signal(s) from decision {decision.decision}")
+            
+            # Save signals to MongoDB if available
+            # PyMongo Database objects don't support truthiness testing in newer versions.
+            # We avoid any comparison operations and just try to use mongo_db directly.
+            mongo_db = getattr(self, 'mongo_db', None)
+            
+            # Try to use mongo_db without any None comparison to avoid NotImplementedError
+            # We'll catch any errors if mongo_db is None or invalid
+            try:
+                # Verify mongo_db is usable by attempting to access a safe attribute
+                # If this fails, mongo_db is likely None or invalid
+                _ = mongo_db.name  # Database objects have a 'name' attribute
+                # If we get here, mongo_db is valid - proceed with saving
+                for signal in signals:
+                    try:
+                        inserted_id = await save_signal_to_mongodb(signal, mongo_db)
+                        logger.info(f"Saved signal {signal.condition_id} to MongoDB with id {inserted_id}")
+
+                        # If decision included detailed options_strategy, attach it to the saved signal document
+                        try:
+                            if decision and getattr(decision, 'options_strategy', None):
+                                from bson import ObjectId
+                                collection = mongo_db['signals']
+                                options_summary = decision.details.get('options_strategy') if decision.details else None
+                                if options_summary:
+                                    collection.update_one({'_id': ObjectId(inserted_id)}, {'$set': {'metadata.options_strategy': options_summary}})
+                        except Exception as attach_err:
+                            logger.debug(f"Failed to attach options_strategy to signal doc: {attach_err}")
+
+                    except Exception as save_error:
+                        logger.error(f"Failed to save signal {signal.condition_id} to MongoDB: {save_error}")
+            except (NotImplementedError, AttributeError, TypeError):
+                # mongo_db is None, doesn't support comparison, or is invalid - skip save
+                pass
+            
+            # Add signals to SignalMonitor if available
+            if self.signal_monitor:
+                for signal in signals:
+                    try:
+                        self.signal_monitor.add_signal(signal)
+                        logger.info(f"Added signal {signal.condition_id} to SignalMonitor")
+                    except Exception as monitor_error:
+                        logger.error(f"Failed to add signal {signal.condition_id} to SignalMonitor: {monitor_error}")
+            
+            # Update decision details with created signals
+            if decision.details:
+                decision.details["signals_created"] = len(signals)
+                decision.details["signal_ids"] = [s.condition_id for s in signals]
+            
+        except ImportError as import_error:
+            logger.warning(f"Signal creator module not available: {import_error}")
+        except Exception as e:
+            logger.error(f"Error creating signals from decision: {e}", exc_info=True)
+            raise
 
     def _generate_fallback_decision(self, aggregated: Dict[str, Any], market_hours: bool) -> AnalysisResult:
         """Generate fallback decision when LLM is unavailable."""

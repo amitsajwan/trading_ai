@@ -48,6 +48,9 @@ redis-cli ping  # Should return PONG
 - Latest prices: `price:{instrument}:latest`
 - OHLC bars: `ohlc:{instrument}:{timeframe}:{timestamp}`
 - Technical indicators: `indicators:{instrument}:{name}`
+  - Published to Redis pub/sub channel: `indicators:{instrument}` (JSON payload)
+  - Previous value (for cross detection): `indicators_prev:{instrument}:{indicator}` (TTL default: 4 hours)
+
 
 **Fallback**: Module uses `InMemoryMarketStore` when Redis is unavailable (testing mode)
 

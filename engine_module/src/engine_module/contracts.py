@@ -1,13 +1,52 @@
-"""Orchestrator and agent contracts."""
+"""Orchestrator and agent contracts for options trading."""
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable, Any, Dict, List, Optional
+from enum import Enum
+
+
+class OptionsStrategy(Enum):
+    """Options trading strategies."""
+    CONDOR = "condor"
+    BULL_CALL_SPREAD = "bull_call_spread"
+    BEAR_PUT_SPREAD = "bear_put_spread"
+    IRON_CONDOR = "iron_condor"
+    BUTTERFLY = "butterfly"
+    CALENDAR_SPREAD = "calendar_spread"
+    HOLD = "hold"
+
+
+@dataclass
+class OptionsLeg:
+    """Individual options leg in a strategy."""
+    strike_price: float
+    option_type: str  # 'CE' for call, 'PE' for put
+    position: str  # 'BUY' or 'SELL'
+    quantity: int
+    premium: float = 0.0
+
+
+@dataclass
+class OptionsStrategyDetails:
+    """Complete options strategy specification."""
+    strategy_type: OptionsStrategy
+    underlying: str  # e.g., "BANKNIFTY24JANFUT"
+    expiry: str  # e.g., "2024-01-25"
+    legs: List[OptionsLeg]
+    max_profit: float = 0.0
+    max_loss: float = 0.0
+    breakeven_points: List[float] = None
+    risk_reward_ratio: float = 0.0
+    margin_required: float = 0.0
 
 
 @dataclass
 class AnalysisResult:
-    decision: str
+    decision: str  # Now can be strategy name or "HOLD"
     confidence: float
     details: dict[str, Any] | None = None
+    options_strategy: OptionsStrategyDetails | None = None
+    # Optional agent identifier (populated by orchestrator when agents run)
+    agent: str | None = None
 
 
 @dataclass

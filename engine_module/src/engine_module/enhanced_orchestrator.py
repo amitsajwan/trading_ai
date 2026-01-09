@@ -21,22 +21,23 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class TradingDecision:
-    """Enhanced trading decision with position management."""
-    action: str  # BUY, SELL, HOLD
+    """Enhanced trading decision with position management for options strategies."""
+    action: str  # Options strategy name (CONDOR, BULL_CALL_SPREAD, etc.) or HOLD
     confidence: float
     reasoning: str
-    entry_price: float
-    stop_loss: float
-    take_profit: float
-    quantity: int
-    risk_amount: float
     agent_signals: Dict[str, AnalysisResult]
     timestamp: datetime
-    position_action: str = "OPEN_NEW"  # OPEN_NEW, ADD_TO_LONG, ADD_TO_SHORT, CLOSE_LONG, CLOSE_SHORT
+    entry_price: float = 0.0  # Net premium for options
+    stop_loss: float = 0.0
+    take_profit: float = 0.0
+    quantity: int = 1  # Number of strategy lots
+    risk_amount: float = 0.0  # Max loss for the strategy
+    position_action: str = "OPEN_NEW"
+    options_strategy: Optional[Any] = None  # OptionsStrategyDetails if applicable
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for API responses."""
-        return {
+        result = {
             'action': self.action,
             'confidence': self.confidence,
             'reasoning': self.reasoning,
@@ -56,6 +57,31 @@ class TradingDecision:
             'timestamp': self.timestamp.isoformat(),
             'position_action': self.position_action
         }
+        
+        if self.options_strategy:
+            result['options_strategy'] = {
+                'strategy_type': self.options_strategy.strategy_type.value,
+                'underlying': self.options_strategy.underlying,
+                'expiry': self.options_strategy.expiry,
+                'legs': [
+                    {
+                        'strike_price': leg.strike_price,
+                        'option_type': leg.option_type,
+                        'position': leg.position,
+                        'quantity': leg.quantity,
+                        'premium': leg.premium
+                    }
+                    for leg in self.options_strategy.legs
+                ],
+                'max_profit': self.options_strategy.max_profit,
+                'max_loss': self.options_strategy.max_loss,
+                'breakeven_points': self.options_strategy.breakeven_points,
+                'risk_reward_ratio': self.options_strategy.risk_reward_ratio,
+                'margin_required': self.options_strategy.margin_required
+            }
+        
+        return result
+
 
 
 @runtime_checkable
@@ -118,16 +144,28 @@ class EnhancedTradingOrchestrator(Orchestrator):
         self.agents = self._initialize_agents()
 
         # Trading state
-        self.symbol = self.config.get('symbol', 'NIFTY50')
+        self.symbol = self.config.get('symbol', 'BANKNIFTY26JANFUT')
         self.last_cycle_time = None
         self.cycle_count = 0
+
+        # Execution settings
+        self.config.setdefault('auto_execute_signals', False)
+        self.config.setdefault('auto_execute_dry_run', True)
+
+        # Register signal execution callback if SignalMonitor provided
+        try:
+            if getattr(self, 'signal_monitor', None):
+                self.signal_monitor.set_execution_callback(self._on_signal_triggered)
+        except Exception:
+            # Will be set when orchestrator is wired later if needed
+            pass
 
         logger.info(f"Enhanced Trading Orchestrator initialized for {self.symbol}")
 
     def _get_default_config(self) -> Dict[str, Any]:
         """Get default configuration."""
         return {
-            'symbol': 'NIFTY50',
+            'symbol': 'BANKNIFTY26JANFUT',
             'cycle_interval_minutes': 15,
             'min_confidence_threshold': 0.6,
             'max_agents_per_cycle': 4,
@@ -332,18 +370,36 @@ class EnhancedTradingOrchestrator(Orchestrator):
                 position_action="OPEN_NEW"
             )
 
-        # Count signals by type
+        # Count signals by type - now including options strategies
         buy_signals = []
         sell_signals = []
         hold_signals = []
+        options_strategies = []
 
         for agent_name, signal in agent_signals.items():
-            if signal.decision == "BUY":
+            decision = signal.decision
+            if decision in ["BUY", "BULL_CALL_SPREAD"]:
                 buy_signals.append((agent_name, signal))
-            elif signal.decision == "SELL":
+            elif decision in ["SELL", "BEAR_PUT_SPREAD"]:
                 sell_signals.append((agent_name, signal))
+            elif decision in ["IRON_CONDOR", "CONDOR", "BUTTERFLY"]:
+                options_strategies.append((agent_name, signal))
             else:
                 hold_signals.append((agent_name, signal))
+
+        # Prioritize options strategies if available
+        if options_strategies:
+            # Use the options strategy with highest confidence
+            best_strategy = max(options_strategies, key=lambda x: x[1].confidence)
+            agent_name, signal = best_strategy
+            
+            if signal.confidence >= min_confidence:
+                return await self._create_options_trading_decision(
+                    signal.decision, signal.confidence, [best_strategy], agent_signals, 
+                    current_price, current_positions, signal.options_strategy
+                )
+
+        # Fallback to traditional buy/sell logic if no strong options signals
 
         # Determine consensus
         total_agents = len(agent_signals)
@@ -557,6 +613,56 @@ class EnhancedTradingOrchestrator(Orchestrator):
             position_action=position_action
         )
 
+    async def _create_options_trading_decision(self,
+                                             strategy_name: str,
+                                             confidence: float,
+                                             primary_signals: List,
+                                             all_signals: Dict[str, AnalysisResult],
+                                             current_price: float,
+                                             current_positions: List[Dict[str, Any]] = None,
+                                             options_strategy: Any = None) -> TradingDecision:
+        """Create a trading decision for options strategies."""
+        
+        # Combine reasoning from primary signals
+        reasoning_parts = []
+        for agent_name, signal in primary_signals:
+            if signal.details and 'plan' in signal.details:
+                reasoning_parts.append(f"{agent_name}: {signal.details['plan']}")
+            else:
+                reasoning_parts.append(f"{agent_name}: {signal.decision}")
+
+        reasoning = " | ".join(reasoning_parts[:2])  # Limit to top 2 reasons
+
+        # Use options strategy details if available
+        if options_strategy:
+            entry_price = 0.0  # Net premium (to be calculated)
+            stop_loss = options_strategy.max_loss
+            take_profit = options_strategy.max_profit
+            risk_amount = options_strategy.max_loss
+            quantity = 1  # Number of strategy lots
+        else:
+            # Fallback defaults
+            entry_price = 0.0
+            stop_loss = current_price * 0.05  # 5% stop loss
+            take_profit = current_price * 0.10  # 10% target
+            risk_amount = current_price * 0.02  # 2% risk
+            quantity = 1
+
+        return TradingDecision(
+            action=strategy_name,
+            confidence=confidence,
+            reasoning=reasoning,
+            entry_price=entry_price,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+            quantity=quantity,
+            risk_amount=risk_amount,
+            agent_signals=all_signals,
+            timestamp=datetime.now(),
+            position_action="OPEN_NEW",
+            options_strategy=options_strategy
+        )
+
     def get_cycle_stats(self) -> Dict[str, Any]:
         """Get statistics about completed cycles."""
         return {
@@ -567,6 +673,104 @@ class EnhancedTradingOrchestrator(Orchestrator):
             'config': self.config
         }
 
+    async def _on_signal_triggered(self, event: 'SignalTriggerEvent') -> None:
+        """Orchestrator-level handler for triggered signals.
+
+        If `auto_execute_signals` is enabled in config, this will attempt to execute the
+        signal (via `position_provider.execute_trading_decision` if available, otherwise
+        it will call the user trading API). The handler is idempotent (checks DB status
+        before executing).
+        """
+        try:
+            # Respect configuration
+            if not self.config.get('auto_execute_signals', False):
+                logger.debug("Auto execution disabled; skipping execution for %s", event.condition_id)
+                return
+
+            # Idempotency: check DB status
+            try:
+                mongo_client = getattr(self, 'mongo_db', None) or None
+                from .api_service import get_mongo_client
+                if mongo_client is None:
+                    mongo_client = get_mongo_client()
+                db_name = None
+                try:
+                    db_name = os.getenv('MONGODB_DATABASE', 'zerodha_trading')
+                    db = mongo_client[db_name]
+                except Exception:
+                    db = mongo_client
+
+                # Try to find the signal doc
+                sig_doc = None
+                try:
+                    from bson import ObjectId
+                    q = {'condition_id': event.condition_id}
+                    sig_doc = db['signals'].find_one(q)
+                except Exception:
+                    try:
+                        sig_doc = db['signals'].find_one({'condition_id': event.condition_id})
+                    except Exception:
+                        sig_doc = None
+
+                if sig_doc and sig_doc.get('status') == 'executed':
+                    logger.info("Signal %s already executed, skipping", event.condition_id)
+                    return
+            except Exception:
+                # If we can't check DB, continue but be conservative
+                logger.debug("Could not check DB for idempotency")
+
+            # Dry-run; log and mark triggered only
+            if self.config.get('auto_execute_dry_run', True):
+                logger.info("Dry-run: would execute signal %s: %s %s", event.condition_id, event.action, event.instrument)
+                try:
+                    from .signal_creator import mark_signal_status
+                    await mark_signal_status(event.condition_id, 'triggered', extra={'triggered_at': event.triggered_at})
+                except Exception:
+                    pass
+                return
+
+            # Prepare execution payload
+            payload = {
+                'user_id': 'auto_executor',
+                'instrument': event.instrument,
+                'side': event.action,
+                'quantity': int(event.position_size) if hasattr(event, 'position_size') else 1,
+                'order_type': 'MARKET',
+                'signal_id': event.condition_id
+            }
+
+            # Try position_provider first
+            executed = None
+            if self.position_provider and hasattr(self.position_provider, 'execute_trading_decision'):
+                try:
+                    executed = await self.position_provider.execute_trading_decision(event.instrument, event.action, event.confidence, {'signal_id': event.condition_id})
+                except Exception as e:
+                    logger.warning(f"Position provider execution failed: {e}")
+
+            # Fallback to calling user API
+            if executed is None:
+                try:
+                    import httpx
+                    async with httpx.AsyncClient(timeout=30.0) as client:
+                        resp = await client.post('http://localhost:8007/api/trading/execute', json=payload)
+                        if resp.status_code == 200:
+                            executed = resp.json()
+                        else:
+                            logger.warning("User API execution returned status %s", resp.status_code)
+                except Exception as e:
+                    logger.exception("Failed to call user execution API: %s", e)
+
+            # Mark executed in DB if we have evidence
+            if executed is not None:
+                try:
+                    from .signal_creator import mark_signal_status
+                    await mark_signal_status(event.condition_id, 'executed', extra={'executed_at': datetime.now().isoformat(), 'execution_info': executed})
+                except Exception:
+                    logger.debug("Failed to mark signal executed in DB")
+
+        except Exception as e:
+            logger.exception("Error in auto-execute handler: %s", e)
+
     def update_config(self, new_config: Dict[str, Any]):
         """Update orchestrator configuration."""
         self.config.update(new_config)
@@ -576,4 +780,47 @@ class EnhancedTradingOrchestrator(Orchestrator):
             self.agents = self._initialize_agents()
 
         logger.info(f"Orchestrator configuration updated: {list(new_config.keys())}")
+
+    async def reconcile_signals_with_positions(self, mongo_db: Any) -> int:
+        """Reconcile pending signals with current active positions.
+
+        Marks signals as 'executed' if corresponding positions exist (best-effort).
+        Returns number of signals reconciled.
+        """
+        reconciled = 0
+        try:
+            collection = mongo_db['signals']
+            pending = list(collection.find({'status': 'pending', 'is_active': True}))
+
+            # Fetch positions if provider available
+            positions = []
+            try:
+                if self.position_provider and hasattr(self.position_provider, 'get_positions'):
+                    positions = await self.position_provider.get_positions()
+            except Exception:
+                positions = []
+
+            for sig in pending:
+                try:
+                    cond_id = sig.get('condition_id')
+                    instr = sig.get('instrument')
+                    # Find matching positions: match by signal_id or instrument + action
+                    match = None
+                    for p in positions:
+                        if p.get('signal_id') == cond_id:
+                            match = p
+                            break
+                        if p.get('instrument') == instr and p.get('status') == 'active' and p.get('action') == sig.get('action'):
+                            match = p
+                            break
+
+                    if match:
+                        from .signal_creator import mark_signal_status
+                        await mark_signal_status(cond_id, 'executed', extra={'reconciled_at': datetime.now().isoformat(), 'position_id': match.get('position_id')})
+                        reconciled += 1
+                except Exception:
+                    continue
+        except Exception as e:
+            logger.warning(f"Reconciliation failed: {e}")
+        return reconciled
 

@@ -175,7 +175,35 @@ class TechnicalIndicatorsService:
         
         # Store latest
         self._latest_indicators[instrument] = indicators
-        
+
+        # Cache and publish to Redis if available
+        if self.redis_client:
+            try:
+                indicators_dict = asdict(indicators)
+                # Store each indicator as a key for quick lookup
+                for key, value in indicators_dict.items():
+                    if value is not None:
+                        self.redis_client.setex(f"indicators:{instrument}:{key}", 300, str(value))
+
+                # Publish a lightweight message with key indicators for real-time consumers
+                try:
+                    import json
+                    pub = {
+                        "instrument": instrument,
+                        "timestamp": indicators.timestamp,
+                        "current_price": indicators.current_price,
+                        # include important momentum/trend indicators used for signals
+                        "rsi_14": indicators.rsi_14,
+                        "macd_value": indicators.macd_value,
+                        "macd_signal": indicators.macd_signal,
+                        "adx_14": indicators.adx_14
+                    }
+                    self.redis_client.publish(f"indicators:{instrument}", json.dumps(pub))
+                except Exception as pub_err:
+                    logger.debug(f"Failed to publish indicators to Redis: {pub_err}")
+            except Exception as e:
+                logger.warning(f"Failed to cache indicators in Redis: {e}")
+
         return indicators
     
     def update_candle(self, instrument: str, candle: Dict[str, Any]) -> TechnicalIndicators:
@@ -214,13 +242,29 @@ class TechnicalIndicatorsService:
         # Store latest
         self._latest_indicators[instrument] = indicators
 
-        # Cache in Redis if available
+        # Cache and publish to Redis if available
         if self.redis_client:
             try:
                 indicators_dict = asdict(indicators)
                 for key, value in indicators_dict.items():
                     if value is not None:
                         self.redis_client.setex(f"indicators:{instrument}:{key}", 300, str(value))
+
+                # Publish a lightweight message for real-time consumers
+                try:
+                    import json
+                    pub = {
+                        "instrument": instrument,
+                        "timestamp": indicators.timestamp,
+                        "current_price": indicators.current_price,
+                        "rsi_14": indicators.rsi_14,
+                        "macd_value": indicators.macd_value,
+                        "macd_signal": indicators.macd_signal,
+                        "adx_14": indicators.adx_14
+                    }
+                    self.redis_client.publish(f"indicators:{instrument}", json.dumps(pub))
+                except Exception as pub_err:
+                    logger.debug(f"Failed to publish indicators to Redis: {pub_err}")
             except Exception as e:
                 logger.warning(f"Failed to cache indicators in Redis: {e}")
 

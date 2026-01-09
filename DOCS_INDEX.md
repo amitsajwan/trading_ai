@@ -42,7 +42,7 @@ This trading system has been simplified to 7 core documentation files (reduced f
 → [TRADING_COCKPIT.md](TRADING_COCKPIT.md#overview)
 
 **Learn About Features**
-- Real-time Signals → [FEATURES.md](FEATURES.md#real-time-signal-to-trade)
+- Real-time Signals → [FEATURES.md](FEATURES.md#real-time-signal-to-trade) • [Signal Lifecycle](docs/SIGNAL_LIFECYCLE.md) • [Signals API](docs/SIGNALS_API_USAGE.md)
 - Technical Indicators → [FEATURES.md](FEATURES.md#technical-indicators-integration)
 - Historical Replay → [FEATURES.md](FEATURES.md#historical-mode--replay)
 - Multi-Agent System → [FEATURES.md](FEATURES.md#multi-agent-system)

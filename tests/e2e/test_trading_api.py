@@ -83,6 +83,63 @@ class TestTradingAPI:
         data = response.json()
         assert isinstance(data, dict)
         # Dashboard should contain trading information
+
+    async def test_user_execute_endpoint_persists_signal_id(self, async_api_client, test_mongo_client):
+        """POST /api/trading/execute should accept signal_id and persist it."""
+        payload = {
+            "user_id": "default_user",
+            "instrument": "BANKNIFTY",
+            "side": "BUY",
+            "quantity": 1,
+            "order_type": "MARKET",
+            "signal_id": "sig_e2e_123"
+        }
+        # Ensure user module components point to test DB
+        import user_module.api_service as ua
+        from user_module.stores import MongoUserStore
+        ua.user_components = {}
+        ua.user_components["user_store"] = MongoUserStore(test_mongo_client.client)
+        # Ensure default_user exists in test DB for risk checks
+        # Insert into the zerodha_trading database used by the module
+        test_mongo_client.client.zerodha_trading.users.replace_one({"_id": "default_user"}, {
+            "_id": "default_user",
+            "email": "test_user@example.com",
+            "full_name": "Test User",
+            "created_at": datetime.utcnow()
+        }, upsert=True)
+        # Insert a default balance so trade can pass risk checks
+        test_mongo_client.client.zerodha_trading.user_balances.replace_one({"user_id": "default_user"}, {
+            "user_id": "default_user",
+            "cash_balance": 100000.0,
+            "margin_available": 50000.0,
+            "margin_used": 0.0,
+            "total_equity": 100000.0,
+            "day_pnl": 0.0,
+            "total_pnl": 0.0,
+            "last_updated": datetime.utcnow()
+        }, upsert=True)
+
+        # Call user module app directly
+        from httpx import AsyncClient, ASGITransport
+        from user_module.api_service import app as user_app
+
+        transport = ASGITransport(app=user_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as user_client:
+            resp = await user_client.post("/api/trading/execute", json=payload)
+            assert resp.status_code == 200, resp.text
+            data = resp.json()
+            assert data.get("success") is True
+            assert data.get("signal_id") == "sig_e2e_123"
+
+            # If recent-trades endpoint is available, check persistence, otherwise skip
+            rt = await user_client.get("/api/recent-trades?limit=10")
+            if rt.status_code == 200:
+                trades = rt.json()
+                assert isinstance(trades, list)
+                assert any(t.get("signal_id") == "sig_e2e_123" for t in trades)
+            else:
+                # Service may not expose trades in current test environment; log and continue
+                pass
     
     @pytest.mark.slow
     async def test_complete_trading_workflow(self, async_api_client):

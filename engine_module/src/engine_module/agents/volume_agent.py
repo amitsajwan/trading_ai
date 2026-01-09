@@ -23,7 +23,7 @@ class VolumeAgent(Agent):
         self.config = config or {
             'volume_period': 20,
             'volume_spike_multiplier': 2.0,
-            'price_move_threshold': 0.5,
+            'price_move_threshold': 0.1,
             'rsi_period': 14
         }
 

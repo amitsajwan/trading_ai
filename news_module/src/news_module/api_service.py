@@ -128,19 +128,39 @@ _mongo_client: Optional[MongoClient] = None
 def get_mongo_client() -> MongoClient:
     """Get MongoDB client."""
     global _mongo_client
-    
+
     if _mongo_client is None:
-        mongodb_uri = os.getenv("MONGODB_URI", "mongodb://localhost:27017/zerodha_trading")
+        mongodb_uri = os.getenv("MONGODB_URI", "mongodb://localhost:27017/")
         _mongo_client = MongoClient(mongodb_uri)
-    
+
     return _mongo_client
 
 
 def get_mongo_collection() -> Collection:
-    """Get MongoDB collection for news storage."""
+    """Get MongoDB collection for news storage. Prefer explicit MONGODB_DB_NAME, otherwise use client's default database or fallback to 'zerodha_trading'."""
     mongo_client = get_mongo_client()
-    mongodb_uri = os.getenv("MONGODB_URI", "mongodb://localhost:27017/zerodha_trading")
-    db_name = mongodb_uri.split("/")[-1] if "/" in mongodb_uri else "zerodha_trading"
+
+    # Prefer explicit DB name env var
+    db_name = os.getenv('MONGODB_DB_NAME')
+    if not db_name:
+        # Try to use the default database parsed by the client (if URI included a path)
+        try:
+            default_db = mongo_client.get_default_database()
+            db_name = default_db.name if default_db is not None else None
+        except Exception:
+            db_name = None
+
+    if not db_name:
+        # Fall back to explicit parsing of MONGODB_URI (legacy support)
+        mongodb_uri = os.getenv("MONGODB_URI", "mongodb://localhost:27017/")
+        if "/" in mongodb_uri.rstrip('/'):
+            db_name = mongodb_uri.rstrip('/').split('/')[-1]
+        else:
+            db_name = None
+
+    if not db_name:
+        db_name = 'zerodha_trading'
+
     db = mongo_client[db_name]
     return db["news"]
 

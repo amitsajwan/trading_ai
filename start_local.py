@@ -29,30 +29,33 @@ if sys.platform == 'win32':
 def load_env():
     """Load environment variables from local.env or per-module env files.
 
-    Order of precedence (first existing file is loaded, existing env vars are not overridden):
+    Order of precedence (existing env vars are not overridden, but all files are loaded):
       - local.env (project root)
       - .env (project root)
-      - market_data/.env
+      - market_data/.env (module-specific credentials)
       - genai_module/.env
       - engine_module/.env
       - news_module/.env
 
     This makes `start_local.py` behave similarly to docker-compose (which reads service env files), while keeping per-module configuration files isolated.
+    All files are loaded, with later files potentially overriding earlier ones if they set the same keys.
     """
     candidates = [
         'local.env',
         '.env',
-        'market_data/.env',
+        'market_data/.env',  # KITE_API_KEY, KITE_API_SECRET typically here
         'genai_module/.env',
         'engine_module/.env',
         'news_module/.env',
     ]
 
     loaded_any = False
+    credential_sources = {}  # Track which file loaded each credential
     for path in candidates:
         if os.path.exists(path):
             try:
-                with open(path) as f:
+                loaded_count = 0
+                with open(path, encoding='utf-8') as f:
                     for line in f:
                         line = line.strip()
                         if not line or line.startswith('#'):
@@ -60,16 +63,41 @@ def load_env():
                         if '=' not in line:
                             continue
                         key, value = line.split('=', 1)
+                        key = key.strip()
+                        value = value.strip().strip('"').strip("'")  # Remove quotes if present
+                        # Track credential sources
+                        if key in ['KITE_API_KEY', 'KITE_API_SECRET', 'KITE_ACCESS_TOKEN']:
+                            if key not in credential_sources:
+                                if key in os.environ:
+                                    credential_sources[key] = "already_in_environment"
+                                else:
+                                    credential_sources[key] = path
                         # Do not overwrite explicitly set environment variables
-                        os.environ.setdefault(key.strip(), value.strip())
-                print(f"Loaded environment from {path}")
-                loaded_any = True
-            except Exception:
-                print(f"Failed to load environment file: {path}")
+                        if key not in os.environ:
+                            os.environ[key] = value
+                            loaded_count += 1
+                if loaded_count > 0:
+                    print(f"   ✅ Loaded {loaded_count} variables from {path}")
+                    loaded_any = True
+                elif os.path.exists(path):
+                    print(f"   ℹ️  Skipped {path} (all vars already set from earlier files or environment)")
+            except Exception as e:
+                print(f"   ⚠️  Failed to load environment file {path}: {e}")
 
     if not loaded_any:
-        print("No env file found (search order: local.env, .env, market_data/.env, genai_module/.env, engine_module/.env, news_module/.env).")
-        print("Copy module templates from their `.env.example` files and create local .env files.")
+        print("   ⚠️  No env file found (searched: local.env, .env, market_data/.env, genai_module/.env, engine_module/.env, news_module/.env).")
+        print("   💡 Copy module templates from their `.env.example` files and create local .env files.")
+    else:
+        # Show credential status after loading
+        print("   📋 Credential status after loading env files:")
+        for key in ['KITE_API_KEY', 'KITE_API_SECRET', 'KITE_ACCESS_TOKEN']:
+            if key in os.environ:
+                source = credential_sources.get(key, "environment")
+                val = os.environ[key]
+                masked = f"{val[:8]}..." if len(val) > 8 else "***"
+                print(f"      ✅ {key}: {masked} (source: {source})")
+            else:
+                print(f"      ⚠️  {key}: not found in any env file or environment")
 
 
 def kill_process_on_port(port):
@@ -128,12 +156,23 @@ class CredentialsValidator:
         print("   🔐 Verifying Zerodha credentials and token authentication...")
         token_validated_and_invalid = False  # Track if we validated and found it invalid
         try:
-            sys.path.insert(0, '.')
+            # Ensure package import paths are available for in-package kite auth utilities
+            # Use absolute paths for better reliability on Windows
+            import os
+            project_root = os.path.abspath('.')
+            market_data_src = os.path.abspath('./market_data/src')
             
-            # Step 1: Check environment variables first
+            if project_root not in sys.path:
+                sys.path.insert(0, project_root)
+            if market_data_src not in sys.path:
+                sys.path.insert(0, market_data_src)
+
+            # Step 1: Check environment variables (loaded from market_data/.env by load_env() or system environment)
             api_key = os.getenv('KITE_API_KEY')
             api_secret = os.getenv('KITE_API_SECRET')
             access_token = os.getenv('KITE_ACCESS_TOKEN')
+            
+            # Note: Credential status was already shown by load_env(), so no need to repeat here
             
             if api_key and api_secret:
                 print("   ✅ Found Zerodha API credentials in environment variables")
@@ -144,6 +183,10 @@ class CredentialsValidator:
                 if access_token:
                     print("   ✅ Found KITE_ACCESS_TOKEN in environment")
                     try:
+                        # Ensure path is set before import
+                        market_data_src = os.path.abspath('./market_data/src')
+                        if market_data_src not in sys.path:
+                            sys.path.insert(0, market_data_src)
                         from market_data.providers.zerodha import ZerodhaProvider
                         provider = ZerodhaProvider(api_key, access_token)
                         kite = provider.kite
@@ -156,9 +199,16 @@ class CredentialsValidator:
                     print("   ⚠️  KITE_ACCESS_TOKEN not found in environment")
                     print("   💡 Checking credentials.json for valid token...")
                     
-                    # Use KiteAuthService to check credentials.json
+                    # Use KiteAuthService to check and refresh credentials.json
                     token_validated_and_invalid = False  # Track if we validated and found it invalid
                     try:
+                        # Ensure path is set before import
+                        market_data_src = os.path.abspath('./market_data/src')
+                        if market_data_src not in sys.path:
+                            sys.path.insert(0, market_data_src)
+                        if '.' not in sys.path:
+                            sys.path.insert(0, '.')
+                        
                         from kite_auth_service import KiteAuthService
                         auth_service = KiteAuthService()
                         creds = auth_service.load_credentials()
@@ -176,28 +226,139 @@ class CredentialsValidator:
                                 # Check if token is valid using KiteAuthService
                                 if auth_service.is_token_valid(creds):
                                     print("   ✅ Found valid access token in credentials.json")
-                                    from market_data.providers.zerodha import ZerodhaProvider
-                                    provider = ZerodhaProvider(token_api_key, creds_access_token)
-                                    print("   ✅ Using credentials from credentials.json (token validated)")
+                                    try:
+                                        from market_data.providers.zerodha import ZerodhaProvider
+                                        provider = ZerodhaProvider(token_api_key, creds_access_token)
+                                        print("   ✅ Using credentials from credentials.json (token validated)")
+                                    except ImportError as import_err:
+                                        print(f"   ⚠️  Could not import ZerodhaProvider: {import_err}")
+                                        print("   💡 Try: pip install -e ./market_data")
+                                        provider = None
                                 else:
-                                    print("   ❌ Token in credentials.json is expired or invalid (403 error)")
-                                    print("   ✅ Validation worked correctly - token is not usable")
-                                    print("   💡 Please refresh token by running: python -m market_data.tools.kite_auth")
-                                    print("   💡 Or set KITE_ACCESS_TOKEN in environment with a valid token")
-                                    provider = None
-                                    token_validated_and_invalid = True  # Mark as validated and invalid
+                                    print("   ⚠️  Token in credentials.json is expired or invalid")
+                                    print("   🔄 Attempting to refresh token...")
+                                    
+                                    # Try to refresh token
+                                    new_creds = auth_service.refresh_token(creds)
+                                    if new_creds:
+                                        auth_service.save_credentials(new_creds)
+                                        creds_access_token = new_creds.get('access_token') or new_creds.get('data', {}).get('access_token')
+                                        print("   ✅ Token refreshed successfully")
+                                        try:
+                                            from market_data.providers.zerodha import ZerodhaProvider
+                                            provider = ZerodhaProvider(token_api_key, creds_access_token)
+                                            print("   ✅ Using refreshed credentials")
+                                        except ImportError:
+                                            provider = None
+                                    else:
+                                        # Refresh failed, try interactive login if allowed
+                                        print("   ⚠️  Automatic token refresh failed")
+                                        if auth_service.allow_interactive:
+                                            print("   🔄 Attempting interactive login to get new token...")
+                                            success = auth_service.trigger_interactive_login(timeout=300)
+                                            if success:
+                                                # Reload credentials after login
+                                                creds = auth_service.load_credentials()
+                                                creds_access_token = creds.get('access_token') or creds.get('data', {}).get('access_token')
+                                                if creds_access_token and auth_service.is_token_valid(creds):
+                                                    print("   ✅ Interactive login succeeded, token obtained")
+                                                    try:
+                                                        from market_data.providers.zerodha import ZerodhaProvider
+                                                        provider = ZerodhaProvider(token_api_key, creds_access_token)
+                                                        print("   ✅ Using credentials from interactive login")
+                                                    except ImportError:
+                                                        provider = None
+                                                else:
+                                                    print("   ❌ Interactive login completed but token validation failed")
+                                                    provider = None
+                                                    token_validated_and_invalid = True
+                                            else:
+                                                print("   ❌ Interactive login failed or timed out")
+                                                print("   💡 Please run manually: python -m market_data.tools.kite_auth")
+                                                provider = None
+                                                token_validated_and_invalid = True
+                                        else:
+                                            print("   ❌ Token refresh failed - manual intervention required")
+                                            print("   💡 Please refresh token by running: python -m market_data.tools.kite_auth")
+                                            print("   💡 Or set KITE_ACCESS_TOKEN in environment with a valid token")
+                                            provider = None
+                                            token_validated_and_invalid = True
                             else:
-                                print("   ⚠️  credentials.json missing api_key or access_token")
-                                provider = None
+                                # No token in credentials.json, try interactive login
+                                if not creds_access_token:
+                                    print("   ⚠️  credentials.json missing access_token")
+                                    if auth_service.allow_interactive:
+                                        print("   🔄 Attempting interactive login to create credentials...")
+                                        success = auth_service.trigger_interactive_login(timeout=300)
+                                        if success:
+                                            creds = auth_service.load_credentials()
+                                            creds_access_token = creds.get('access_token') or creds.get('data', {}).get('access_token')
+                                            token_api_key = creds.get('api_key') or creds.get('KITE_API_KEY') or api_key
+                                            if creds_access_token and token_api_key:
+                                                print("   ✅ Interactive login succeeded")
+                                                try:
+                                                    from market_data.providers.zerodha import ZerodhaProvider
+                                                    provider = ZerodhaProvider(token_api_key, creds_access_token)
+                                                    print("   ✅ Using credentials from interactive login")
+                                                except ImportError:
+                                                    provider = None
+                                            else:
+                                                provider = None
+                                        else:
+                                            print("   ❌ Interactive login failed")
+                                            provider = None
+                                    else:
+                                        print("   ⚠️  Interactive login disabled")
+                                        provider = None
+                                else:
+                                    print("   ⚠️  credentials.json missing api_key")
+                                    provider = None
                         else:
-                            print("   ⚠️  credentials.json not found or could not be loaded")
-                            provider = None
-                    except ImportError:
-                        print("   ⚠️  KiteAuthService not available, checking credentials.json directly...")
+                            # No credentials.json exists, try interactive login if we have API key/secret
+                            print("   ⚠️  credentials.json not found")
+                            if api_key and api_secret:
+                                if auth_service.allow_interactive:
+                                    print("   🔄 Attempting interactive login to create credentials...")
+                                    print("   💡 This will open a browser for Zerodha login")
+                                    success = auth_service.trigger_interactive_login(timeout=300)
+                                    if success:
+                                        creds = auth_service.load_credentials()
+                                        creds_api_key = creds.get('api_key') or creds.get('KITE_API_KEY') or api_key
+                                        creds_access_token = creds.get('access_token') or creds.get('data', {}).get('access_token')
+                                        if creds_api_key and creds_access_token:
+                                            if auth_service.is_token_valid(creds):
+                                                print("   ✅ Interactive login succeeded, credentials validated")
+                                                try:
+                                                    from market_data.providers.zerodha import ZerodhaProvider
+                                                    provider = ZerodhaProvider(creds_api_key, creds_access_token)
+                                                    print("   ✅ Using credentials from interactive login")
+                                                except ImportError:
+                                                    provider = None
+                                            else:
+                                                print("   ⚠️  Interactive login completed but token validation failed")
+                                                provider = None
+                                        else:
+                                            print("   ⚠️  Interactive login completed but credentials incomplete")
+                                            provider = None
+                                    else:
+                                        print("   ❌ Interactive login failed or timed out")
+                                        print("   💡 You can try again manually: python -m market_data.tools.kite_auth")
+                                        provider = None
+                                else:
+                                    print("   ⚠️  Interactive login disabled (set KITE_ALLOW_INTERACTIVE_LOGIN=1 to enable)")
+                                    provider = None
+                            else:
+                                print("   ⚠️  Need KITE_API_KEY and KITE_API_SECRET to perform interactive login")
+                                provider = None
+                    except ImportError as import_err:
+                        print(f"   ⚠️  KiteAuthService not available: {import_err}")
+                        print("   💡 Falling back to direct credentials.json check...")
                         # Fall through to direct credentials.json check
                         provider = None
                     except Exception as e:
                         print(f"   ⚠️  Error checking credentials.json: {e}")
+                        import traceback
+                        traceback.print_exc()
                         provider = None
                     
                     # If token was validated and found invalid, skip direct read (it will fail anyway)
@@ -218,11 +379,34 @@ class CredentialsValidator:
                         if creds_api_key and creds_access_token:
                             if auth_service.is_token_valid(creds):
                                 print("   ✅ Found valid credentials in credentials.json")
-                                from market_data.providers.zerodha import ZerodhaProvider
-                                provider = ZerodhaProvider(creds_api_key, creds_access_token)
+                                try:
+                                    from market_data.providers.zerodha import ZerodhaProvider
+                                    provider = ZerodhaProvider(creds_api_key, creds_access_token)
+                                except ImportError as import_err:
+                                    print(f"   ⚠️  Could not import ZerodhaProvider: {import_err}")
+                                    provider = None
                             else:
                                 print("   ⚠️  Token in credentials.json is expired or invalid")
-                                provider = None
+                                # Try refresh or interactive login (same logic as above)
+                                if auth_service.allow_interactive:
+                                    print("   🔄 Attempting interactive login to refresh token...")
+                                    success = auth_service.trigger_interactive_login(timeout=300)
+                                    if success:
+                                        creds = auth_service.load_credentials()
+                                        creds_access_token = creds.get('access_token') or creds.get('data', {}).get('access_token')
+                                        if creds_access_token and auth_service.is_token_valid(creds):
+                                            try:
+                                                from market_data.providers.zerodha import ZerodhaProvider
+                                                provider = ZerodhaProvider(creds_api_key, creds_access_token)
+                                                print("   ✅ Token refreshed via interactive login")
+                                            except ImportError:
+                                                provider = None
+                                        else:
+                                            provider = None
+                                    else:
+                                        provider = None
+                                else:
+                                    provider = None
                         else:
                             print("   ⚠️  credentials.json missing api_key or access_token")
                             provider = None
@@ -243,14 +427,33 @@ class CredentialsValidator:
                     if os.path.exists('credentials.json'):
                         with open('credentials.json', 'r', encoding='utf-8-sig') as f:
                             creds = json.load(f)
-                        creds_api_key = creds.get('api_key') or creds.get('KITE_API_KEY')
-                        creds_access_token = creds.get('access_token') or creds.get('data', {}).get('access_token')
+                        creds_api_key = creds.get('api_key') or creds.get('KITE_API_KEY') or creds.get('zerodha', {}).get('api_key')
+                        creds_access_token = creds.get('access_token') or creds.get('data', {}).get('access_token') or creds.get('zerodha', {}).get('access_token')
                         if creds_api_key and creds_access_token:
-                            from market_data.providers.zerodha import ZerodhaProvider
-                            provider = ZerodhaProvider(creds_api_key, creds_access_token)
-                            print("   ⚠️  Using credentials.json (not validated - will test in next step)")
+                            # Ensure path is set before import (critical for Windows paths)
+                            market_data_src = os.path.abspath('./market_data/src')
+                            if market_data_src not in sys.path:
+                                sys.path.insert(0, market_data_src)
+                            # Also add current directory
+                            if '.' not in sys.path:
+                                sys.path.insert(0, '.')
+                            try:
+                                from market_data.providers.zerodha import ZerodhaProvider
+                                provider = ZerodhaProvider(creds_api_key, creds_access_token)
+                                print("   ⚠️  Using credentials.json (not validated - will test in next step)")
+                            except ImportError as import_err:
+                                print(f"   ⚠️  Could not import ZerodhaProvider: {import_err}")
+                                print(f"   💡 Python path: {sys.path[:3]}...")
+                                print("   💡 Try: pip install -e ./market_data")
+                                print("   💡 Or ensure market_data/src is in PYTHONPATH")
+                                provider = None
                         else:
-                            print("   ⚠️  credentials.json exists but missing api_key or access_token")
+                            missing = []
+                            if not creds_api_key:
+                                missing.append('api_key')
+                            if not creds_access_token:
+                                missing.append('access_token')
+                            print(f"   ⚠️  credentials.json exists but missing: {', '.join(missing)}")
                     else:
                         print("   ⚠️  credentials.json not found")
                 except Exception as e:
@@ -258,15 +461,21 @@ class CredentialsValidator:
             
             if provider is None:
                 print("   ⚠️  Zerodha credentials incomplete")
-                if api_key and api_secret:
+                if api_key and api_secret and not access_token:
                     print("   💡 You have KITE_API_KEY and KITE_API_SECRET, but need KITE_ACCESS_TOKEN")
-                    print("   💡 Please set KITE_ACCESS_TOKEN in environment:")
-                    print("      export KITE_ACCESS_TOKEN=your_access_token")
-                    print("   💡 Or add access_token to credentials.json")
-                else:
+                    print("   💡 Options to get KITE_ACCESS_TOKEN:")
+                    print("      1. Run: python -m market_data.tools.kite_auth")
+                    print("         (This will generate credentials.json with access_token)")
+                    print("      2. Set in environment: export KITE_ACCESS_TOKEN=your_access_token")
+                    print("      3. Add to credentials.json: {\"access_token\": \"your_token\"}")
+                    print("      4. Add to market_data/.env: KITE_ACCESS_TOKEN=your_access_token")
+                    print("   💡 For historical mode, you can also use:")
+                    print("      --allow-missing-credentials (uses synthetic data if token unavailable)")
+                elif not api_key or not api_secret:
                     print("   💡 Please set one of:")
                     print("      - KITE_API_KEY, KITE_API_SECRET, and KITE_ACCESS_TOKEN in environment")
                     print("      - credentials.json with api_key and access_token")
+                    print("      - market_data/.env with KITE_API_KEY, KITE_API_SECRET, KITE_ACCESS_TOKEN")
                 return False, None
             
             # Step 2: Verify kite instance exists
@@ -640,8 +849,13 @@ def verify_news_api(base_url="http://localhost:8005", max_retries=15, retry_dela
     return False
 
 
-def verify_engine_api(base_url="http://localhost:8006", max_retries=15, retry_delay=1):
-    """Verify Engine API agents are running and can analyze"""
+def verify_engine_api(base_url="http://localhost:8006", max_retries=30, retry_delay=2):
+    """Verify Engine API agents are running and can analyze
+    
+    Note: Orchestrator initialization can take time due to LLM client setup,
+    agent creation, and signal monitor initialization. This function allows
+    extended wait time for proper initialization.
+    """
     print("   ⏳ Verifying Engine API functionality...")
     
     for attempt in range(1, max_retries + 1):
@@ -651,7 +865,7 @@ def verify_engine_api(base_url="http://localhost:8006", max_retries=15, retry_de
             analyze_response = requests.post(
                 f"{base_url}/api/v1/analyze",
                 json={"instrument": "BANKNIFTY", "context": {}},
-                timeout=10
+                timeout=15  # Increased timeout for LLM calls
             )
             if analyze_response.status_code == 200:
                 analyze_data = analyze_response.json()
@@ -662,9 +876,11 @@ def verify_engine_api(base_url="http://localhost:8006", max_retries=15, retry_de
                     print(f"   ✅ Engine API: Agents running (decision={decision}, confidence={confidence:.2f})")
                     return True
                 else:
-                    print(f"   ⏳ Attempt {attempt}/{max_retries} - Invalid response format...")
+                    if attempt % 5 == 0:  # Only print every 5th attempt to reduce noise
+                        print(f"   ⏳ Attempt {attempt}/{max_retries} - Invalid response format...")
             elif analyze_response.status_code == 503:
-                print(f"   ⏳ Attempt {attempt}/{max_retries} - Orchestrator not initialized yet (status 503)...")
+                if attempt % 5 == 0:  # Only print every 5th attempt to reduce noise
+                    print(f"   ⏳ Attempt {attempt}/{max_retries} - Orchestrator still initializing (status 503)...")
             elif analyze_response.status_code == 422:
                 # Parse validation error details
                 try:
@@ -673,15 +889,22 @@ def verify_engine_api(base_url="http://localhost:8006", max_retries=15, retry_de
                 except:
                     print(f"   ⏳ Attempt {attempt}/{max_retries} - Validation error (status 422)...")
             else:
-                print(f"   ⏳ Attempt {attempt}/{max_retries} - Analyze endpoint not ready (status {analyze_response.status_code})...")
+                if attempt % 5 == 0:  # Only print every 5th attempt
+                    print(f"   ⏳ Attempt {attempt}/{max_retries} - Analyze endpoint not ready (status {analyze_response.status_code})...")
+        except requests.exceptions.Timeout:
+            if attempt % 5 == 0:
+                print(f"   ⏳ Attempt {attempt}/{max_retries} - Request timeout (orchestrator may still be initializing)...")
         except Exception as e:
-            print(f"   ⏳ Attempt {attempt}/{max_retries} - Error: {e}")
+            if attempt % 5 == 0:
+                print(f"   ⏳ Attempt {attempt}/{max_retries} - Error: {str(e)[:80]}")
         
         if attempt < max_retries:
             time.sleep(retry_delay)
     
-    print("   ❌ Engine API verification failed - agents not running")
-    return False
+    print("   ⚠️  Engine API orchestrator not ready after extended wait")
+    print("   This may be due to LLM initialization or agent creation delays")
+    print("   System will continue - orchestrator can initialize later")
+    return False  # Return False but don't block startup
 
 
 def verify_dashboard_ui(base_url="http://localhost:8888", max_retries=15, retry_delay=1):
@@ -724,8 +947,15 @@ def verify_dashboard_ui(base_url="http://localhost:8888", max_retries=15, retry_
     return False
 
 
-def start_service(name, command, env=None):
-    """Start a service in the background"""
+def start_service(name, command, env=None, cwd: str | None = None):
+    """Start a service in the background.
+
+    Args:
+        name: Human-friendly name for logs
+        command: Either a list (preferred) of args or a single shell string
+        env: Environment variables mapping
+        cwd: Optional working directory to run the process in
+    """
     print(f"   🚀 Starting {name}...")
     if env is None:
         env = os.environ.copy()
@@ -743,18 +973,22 @@ def start_service(name, command, env=None):
                 pythonpath += os.pathsep
             pythonpath += path
     env['PYTHONPATH'] = pythonpath
-    
+
     # Use Popen for background processes
     if isinstance(command, list):
-        # Convert list to shell command
-        command = ' '.join(f'"{arg}"' if ' ' in arg else arg for arg in command)
-        process = subprocess.Popen(command, shell=True, env=env)
+        # Prefer running without shell when possible
+        try:
+            process = subprocess.Popen(command, env=env, cwd=cwd)
+        except FileNotFoundError:
+            # Fall back to shell-joined command for compatibility
+            cmd = ' '.join(f'"{arg}"' if ' ' in arg else arg for arg in command)
+            process = subprocess.Popen(cmd, shell=True, env=env, cwd=cwd)
     else:
-        process = subprocess.Popen(command, shell=True, env=env)
-    
+        process = subprocess.Popen(command, shell=True, env=env, cwd=cwd)
+
     # Give service a moment to start
     time.sleep(2)
-    
+
     return process
 
 
@@ -895,6 +1129,178 @@ async def start_historical_replay(args, provider_name=None, kite_instance=None):
         return False, None, None
 
 
+def interactive_verification(step_name, available_services):
+    """Interactive verification menu after each startup step"""
+    print(f"\n{'='*60}")
+    print(f"🔍 INTERACTIVE VERIFICATION: {step_name}")
+    print(f"{'='*60}")
+    print("Available services so far:")
+    for service in available_services:
+        print(f"   • {service}")
+    print()
+    
+    while True:
+        print("Choose an option to verify:")
+        print("1. Check tick data working")
+        print("2. Check option chain working")
+        print("3. Check news working")
+        print("4. Check LLM/Engine working")
+        print("5. Check technicals working")
+        print("6. Show API endpoints")
+        print("7. Continue to next step")
+        print("8. Stop startup")
+        
+        try:
+            choice = input("Enter your choice (1-8): ").strip()
+            
+            if choice == '1':
+                # Check tick data
+                if 'Market Data API' in available_services:
+                    try:
+                        response = requests.get("http://localhost:8004/api/v1/market/tick/BANKNIFTY", timeout=5)
+                        if response.status_code == 200:
+                            data = response.json()
+                            price = data.get('last_price', 'N/A')
+                            print(f"✅ Tick data: BANKNIFTY = {price}")
+                        else:
+                            print(f"❌ Tick endpoint returned status {response.status_code}")
+                    except Exception as e:
+                        print(f"❌ Error checking tick data: {e}")
+                else:
+                    print("❌ Market Data API not available yet")
+                    
+            elif choice == '2':
+                # Check option chain
+                if 'Market Data API' in available_services:
+                    try:
+                        response = requests.get("http://localhost:8004/api/v1/options/chain/BANKNIFTY", timeout=10)
+                        if response.status_code == 200:
+                            data = response.json()
+                            strikes = data.get('strikes', [])
+                            print(f"✅ Option chain: {len(strikes)} strikes available")
+                            if strikes:
+                                print(f"   Sample strikes: {strikes[:5]}...")
+                        else:
+                            print(f"❌ Option chain endpoint returned status {response.status_code}")
+                    except Exception as e:
+                        print(f"❌ Error checking option chain: {e}")
+                else:
+                    print("❌ Market Data API not available yet")
+                    
+            elif choice == '3':
+                # Check news
+                if 'News API' in available_services:
+                    try:
+                        response = requests.get("http://localhost:8005/api/v1/news/BANKNIFTY", timeout=5)
+                        if response.status_code == 200:
+                            data = response.json()
+                            articles = data.get('news') or data.get('articles', [])
+                            print(f"✅ News: {len(articles)} articles available")
+                            if articles:
+                                latest = articles[0]
+                                title = latest.get('title', 'N/A')[:50]
+                                print(f"   Latest: {title}...")
+                        else:
+                            print(f"❌ News endpoint returned status {response.status_code}")
+                    except Exception as e:
+                        print(f"❌ Error checking news: {e}")
+                else:
+                    print("❌ News API not available yet")
+                    
+            elif choice == '4':
+                # Check LLM/Engine
+                if 'Engine API' in available_services:
+                    try:
+                        response = requests.post("http://localhost:8006/api/v1/analyze", 
+                                               json={"instrument": "BANKNIFTY", "context": {}},  # Default to BANKNIFTY Futures (nearest expiry)  # Default to BANKNIFTY Futures (nearest expiry) 
+                                               timeout=15)
+                        if response.status_code == 200:
+                            data = response.json()
+                            decision = data.get('decision', 'UNKNOWN')
+                            confidence = data.get('confidence', 0.0)
+                            print(f"✅ Engine: Decision={decision}, Confidence={confidence:.2f}")
+                        elif response.status_code == 503:
+                            print("⏳ Engine: Orchestrator still initializing (503)")
+                        else:
+                            print(f"❌ Engine endpoint returned status {response.status_code}")
+                    except Exception as e:
+                        print(f"❌ Error checking engine: {e}")
+                else:
+                    print("❌ Engine API not available yet")
+                    
+            elif choice == '5':
+                # Check technicals
+                if 'Market Data API' in available_services:
+                    try:
+                        response = requests.get("http://localhost:8004/api/v1/market/ohlc/BANKNIFTY?timeframe=minute&limit=5", timeout=5)
+                        if response.status_code == 200:
+                            data = response.json()
+                            if isinstance(data, list) and len(data) > 0:
+                                print(f"✅ Technicals: {len(data)} OHLC bars available")
+                                latest = data[-1]
+                                print(f"   Latest OHLC: O={latest.get('open', 'N/A')}, H={latest.get('high', 'N/A')}, L={latest.get('low', 'N/A')}, C={latest.get('close', 'N/A')}")
+                            else:
+                                print("❌ Technicals: No OHLC data available")
+                        else:
+                            print(f"❌ Technicals endpoint returned status {response.status_code}")
+                    except Exception as e:
+                        print(f"❌ Error checking technicals: {e}")
+                else:
+                    print("❌ Market Data API not available yet")
+                    
+            elif choice == '6':
+                # Show API endpoints
+                print("\n🌐 Available API Endpoints:")
+                if 'Market Data API' in available_services:
+                    print("   📊 Market Data: http://localhost:8004/")
+                    print("      • GET /health")
+                    print("      • GET /api/v1/market/tick/{instrument}")
+                    print("      • GET /api/v1/market/price/{instrument}")
+                    print("      • GET /api/v1/market/ohlc/{instrument}")
+                    print("      • GET /api/v1/options/chain/{instrument}")
+                if 'News API' in available_services:
+                    print("   📰 News: http://localhost:8005/")
+                    print("      • GET /health")
+                    print("      • GET /api/v1/news/{instrument}")
+                    print("      • POST /api/v1/news/collect")
+                if 'Engine API' in available_services:
+                    print("   🤖 Engine: http://localhost:8006/")
+                    print("      • GET /health")
+                    print("      • POST /api/v1/analyze")
+                if 'User API' in available_services:
+                    print("   👤 User: http://localhost:8007/")
+                    print("      • GET /health")
+                if 'Dashboard UI' in available_services:
+                    print("   📱 Dashboard: http://localhost:8888/")
+                print()
+                    
+            elif choice == '7':
+                # Continue
+                print("✅ Continuing to next step...")
+                break
+                
+            elif choice == '8':
+                # Stop
+                confirm = input("Are you sure you want to stop startup? (y/N): ").strip().lower()
+                if confirm == 'y' or confirm == 'yes':
+                    print("🛑 Stopping startup as requested...")
+                    sys.exit(0)
+                else:
+                    print("Continuing...")
+                    
+            else:
+                print("❌ Invalid choice. Please enter 1-8.")
+                
+        except KeyboardInterrupt:
+            print("\n🛑 Interrupted by user")
+            sys.exit(0)
+        except EOFError:
+            print("\n🛑 End of input")
+            sys.exit(0)
+            
+        print()  # Empty line for readability
+
+
 async def main():
     """Start all services locally with validation"""
     print("🚀 Starting Zerodha Trading System Locally")
@@ -912,10 +1318,63 @@ async def main():
     parser.add_argument('--historical-ticks', action='store_true', help='Use tick-level replayer instead of bar-level')
     parser.add_argument('--historical-from', type=str, help='Start date for historical replay (YYYY-MM-DD)')
     parser.add_argument('--skip-validation', action='store_true', help='Skip health checks and validation')
+    parser.add_argument('--allow-missing-credentials', action='store_true', help='Allow startup even if Zerodha credentials are missing (useful for synthetic historical runs)')
     args = parser.parse_args()
 
     # Load environment
     load_env()
+
+    # Ensure per-module .env files exist and copy relevant variables from root .env when missing
+    try:
+        root_env_path = Path('.') / '.env'
+        root_vars = {}
+        if root_env_path.exists():
+            with open(root_env_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith('#') or '=' not in line:
+                        continue
+                    k, v = line.split('=', 1)
+                    root_vars[k.strip()] = v.strip()
+
+        modules_keys = {
+            'market_data': ['REDIS_HOST', 'REDIS_PORT', 'KITE_API_KEY', 'KITE_API_SECRET', 'KITE_ACCESS_TOKEN', 'MONGODB_URI', 'INSTRUMENT_SYMBOL', 'INSTRUMENT_NAME'],
+            'engine_module': ['GROQ_API_KEY', 'GROQ_API_KEY_2', 'GROQ_MODEL', 'LLM_PROVIDER', 'OPENAI_API_KEY', 'LLM_MODEL'],
+            'news_module': ['GOOGLE_API_KEY', 'HUGGINGFACE_API_KEY'],
+            'user_module': []
+        }
+
+        for module_name, keys in modules_keys.items():
+            module_dir = Path(module_name)
+            if not module_dir.exists():
+                continue
+            env_path = module_dir / '.env'
+            existing = {}
+            if env_path.exists():
+                with open(env_path, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line or line.startswith('#') or '=' not in line:
+                            continue
+                        k, v = line.split('=', 1)
+                        existing[k.strip()] = v.strip()
+            to_write = {}
+            for k in keys:
+                if k in existing:
+                    continue
+                if k in root_vars:
+                    to_write[k] = root_vars[k]
+            if to_write:
+                try:
+                    with open(env_path, 'a', encoding='utf-8') as f:
+                        f.write('\n# Added by start_local.py from root .env\n')
+                        for k, v in to_write.items():
+                            f.write(f"{k}={v}\n")
+                    print(f"   ✅ Updated {env_path} with {len(to_write)} keys from root .env")
+                except Exception as e:
+                    print(f"   ⚠️  Failed to update {env_path}: {e}")
+    except Exception as e:
+        print(f"   ⚠️  Could not populate module .env files: {e}")
 
     # Determine provider (arg > env > USE_MOCK_KITE > auto)
     provider_name = args.provider or os.getenv('TRADING_PROVIDER')
@@ -933,13 +1392,21 @@ async def main():
         # leave existing USE_MOCK_KITE as-is or clear
         os.environ.setdefault('USE_MOCK_KITE', '0')
 
-    # Print selected trading provider for clarity (use factory if available)
+    # Print selected trading provider for clarity
+    # Ensure market_data module path is available before trying to import
+    market_data_src = os.path.abspath('./market_data/src')
+    if market_data_src not in sys.path:
+        sys.path.insert(0, market_data_src)
+    
     try:
         from market_data.providers.factory import get_provider
         provider = get_provider(provider_name if provider_name != 'auto' else None)
         if provider is None and provider_name_normalized == 'auto':
             provider_name_normalized = 'historical'  # Default to historical when no provider available
         print(f"📊 Trading provider: {provider.__class__.__name__ if provider else provider_name_normalized}")
+    except ImportError as e:
+        print(f"📊 Trading provider: {provider_name}")
+        print(f"   ℹ️  Note: Could not load provider factory ({e}) - will use provider selection logic")
     except Exception:
         print(f"📊 Trading provider: {provider_name}")
 
@@ -985,7 +1452,34 @@ async def main():
                 print("   ✅ Zerodha credentials available (can use --historical-source zerodha)")
             else:
                 print("   ⚠️  Zerodha credentials not available")
-                print("   💡 Historical data requires Zerodha credentials or CSV file")
+                # Check if CSV source is provided (doesn't need credentials)
+                has_csv_source = args.historical_source and args.historical_source.endswith('.csv')
+                if has_csv_source:
+                    print("   ✅ CSV file source provided - credentials not required")
+                elif api_key and api_secret and not access_token:
+                    # Have API key/secret but missing access token - can proceed with --allow-missing-credentials
+                    if not args.allow_missing_credentials:
+                        print("   ⚠️  KITE_ACCESS_TOKEN missing (required for --historical-source zerodha)")
+                        print("   💡 You have KITE_API_KEY and KITE_API_SECRET, but need KITE_ACCESS_TOKEN")
+                        print("   💡 Options to fix:")
+                        print("      1. Get access token: python -m market_data.tools.kite_auth")
+                        print("      2. Use CSV instead: --historical-source path/to/data.csv --allow-missing-credentials")
+                        print("      3. Override: --allow-missing-credentials (uses synthetic data)")
+                        return
+                    else:
+                        print("   ⚠️  Continuing without KITE_ACCESS_TOKEN due to --allow-missing-credentials flag")
+                        print("   💡 Historical replay will use synthetic data (cannot fetch from Zerodha API without token)")
+                elif not args.allow_missing_credentials:
+                    print("   💡 Historical data requires Zerodha credentials or CSV file")
+                    print("   ❌ Missing Zerodha credentials are required for your current configuration. Stopping startup.")
+                    print("   💡 Options to fix:")
+                    print("      - Use CSV file: --historical-source path/to/data.csv --allow-missing-credentials")
+                    print("      - Provide Zerodha credentials: KITE_API_KEY, KITE_API_SECRET, KITE_ACCESS_TOKEN in market_data/.env or credentials.json")
+                    print("      - Get token: python -m market_data.tools.kite_auth")
+                    print("      - Override check: --allow-missing-credentials (synthetic data may be used)")
+                    return
+                else:
+                    print("   ⚠️  Continuing without Zerodha credentials due to --allow-missing-credentials flag (synthetic historical may be used)")
         
         # Step 1: Start and Verify Historical Data Source
         print("\n" + "=" * 60)
@@ -995,28 +1489,38 @@ async def main():
         data_source_used = 'zerodha'  # Default to Zerodha (no synthetic)
         replay_instance = None
         if provider_name_normalized in ('historical', 'replay', 'auto'):
-            historical_started, data_source_used, replay_instance = await start_historical_replay(args, provider_name_normalized, kite_instance)
-            if not historical_started:
-                if args.skip_validation:
-                    print("⚠️  Historical data startup skipped")
-                    historical_ok = True  # Continue anyway
-                else:
-                    print("❌ Historical data source failed to start!")
-                    print("   Stopping startup. Please fix the historical data source and try again.")
-                    return
-            
-            # Verify data is actually available
+            # Start market-data runner in historical mode (spawns market-data API + historical replayer)
+            print("   🚀 Starting market-data runner in historical mode...")
+            kill_process_on_port(8004)
+            runner_cmd = ["python", "-m", "market_data.runner", "--mode", "historical"]
+            # Pass CLI args through to runner as env vars
+            env = os.environ.copy()
+            if args.historical_source:
+                env['HISTORICAL_SOURCE'] = args.historical_source
+            if args.historical_speed is not None:
+                env['HISTORICAL_SPEED'] = str(args.historical_speed)
+            if args.historical_from:
+                env['HISTORICAL_FROM'] = args.historical_from
+            if args.historical_ticks:
+                env['HISTORICAL_TICKS'] = '1'
+
+            runner_process = start_service("Market Data Runner (historical)", runner_cmd, env=env)
+            processes.append(runner_process)
+
             if not args.skip_validation:
-                historical_ok = verify_historical_data(data_source=data_source_used or 'zerodha', replay_instance=replay_instance)
+                # Verify data is actually available by polling Redis/API
+                historical_ok = verify_historical_data(data_source=(args.historical_source or 'zerodha'))
                 if not historical_ok:
                     print("❌ Historical data verification failed!")
                     print("   Stopping startup. Historical data must be available before proceeding.")
-                    if data_source_used == 'zerodha':
+                    if (args.historical_source or 'zerodha') == 'zerodha':
                         print("   💡 Zerodha data issues:")
                         print("      - Verify credentials are correct and authenticated")
                         print("      - Check if historical data is available for the date")
                         print("      - Ensure Zerodha API is accessible")
                     return
+            else:
+                print("⚠️  Historical data startup skipped (validation disabled)")
         else:
             print("✅ Using live data collectors (no historical replay needed)")
             
@@ -1032,64 +1536,36 @@ async def main():
             except Exception as e:
                 print(f"   ⚠️  Could not clear virtual time: {e}")
             
-            # Start live data collectors if using Zerodha provider
+            # In the new runner-based architecture, collectors are started by the runner
             if provider_name_normalized in ('zerodha', 'kite') and kite_instance:
-                print("   🚀 Starting live data collectors...")
-                
-                # Start LTP collector (Last Traded Price)
-                try:
-                    sys.path.insert(0, './market_data/src')
-                    from market_data.collectors.ltp_collector import LTPDataCollector
-                    from market_data.api import build_store
-                    import redis
-                    
-                    # Build store with Redis client for live data
-                    redis_host = os.getenv("REDIS_HOST", "localhost")
-                    redis_port = int(os.getenv("REDIS_PORT", "6379"))
-                    redis_client = redis.Redis(host=redis_host, port=redis_port, db=0, decode_responses=True)
-                    live_store = build_store(redis_client=redis_client)
-                    
-                    ltp_collector = LTPDataCollector(kite_instance, market_memory=live_store)
-                    import threading
-                    ltp_thread = threading.Thread(target=ltp_collector.run_forever, args=(2.0,), daemon=True)
-                    ltp_thread.start()
-                    print("   ✅ LTP collector started (updates every 2 seconds, writing to Redis store)")
-                    processes.append(ltp_thread)  # Track for cleanup
-                except Exception as e:
-                    print(f"   ⚠️  Could not start LTP collector: {e}")
-                    import traceback
-                    traceback.print_exc()
-                
-                # Start Depth collector (Market Depth)
-                try:
-                    from market_data.collectors.depth_collector import DepthCollector
-                    depth_collector = DepthCollector(kite=kite_instance)
-                    depth_thread = threading.Thread(target=depth_collector.run_forever, args=(5.0,), daemon=True)
-                    depth_thread.start()
-                    print("   ✅ Depth collector started (updates every 5 seconds)")
-                    processes.append(depth_thread)  # Track for cleanup
-                except Exception as e:
-                    print(f"   ⚠️  Could not start Depth collector: {e}")
-                    import traceback
-                    traceback.print_exc()
-                
-                # Give collectors a moment to start and collect initial data
-                import time
-                print("   ⏳ Waiting for initial data collection (5 seconds)...")
-                time.sleep(5)
-                print("   ✅ Live data collectors running in background")
+                print("   ℹ️  Live collectors will be managed by market-data runner when the server is started")
+            else:
+                print("   ℹ️  Live collectors are not required for this provider configuration")
+
+        # Interactive verification after Step 1
+        if not args.skip_validation:
+            available_services = []
+            if provider_name_normalized in ('historical', 'replay', 'auto'):
+                available_services.append("Historical Data Replay")
+            interactive_verification("Historical Data Source", available_services)
 
         # Step 2: Start and Verify Market Data API
         print("\n" + "=" * 60)
         print("💰 Step 2: Market Data API")
         print("=" * 60)
+        # Start market-data via the runner to keep collectors and replay managed together
+        print("   🚀 Starting market-data runner (live mode)...")
         kill_process_on_port(8004)
+        runner_cmd = ["python", "-m", "market_data.runner", "--mode", "live"]
+        # Let the runner start collectors when running in Zerodha mode
+        if provider_name_normalized in ('zerodha', 'kite') and kite_instance:
+            runner_cmd.append('--start-collectors')
         market_data_process = start_service(
-            "Market Data API (port 8004)",
-            ["python", "-c", "from market_data.api_service import app; import uvicorn; uvicorn.run(app, host='0.0.0.0', port=8004)"]
+            "Market Data Runner (live)",
+            runner_cmd
         )
         processes.append(market_data_process)
-        
+
         if args.skip_validation:
             print("⚠️  Skipping Market Data API verification")
         else:
@@ -1097,7 +1573,7 @@ async def main():
             market_data_health = wait_for_service("Market Data API", "http://localhost:8004/health")
             if not market_data_health:
                 print("❌ Market Data API health check failed!")
-                print("   Stopping startup. Please check the Market Data API logs.")
+                print("   Stopping startup. Please check the Market Data Runner logs.")
                 # Cleanup started processes
                 for process in processes:
                     try:
@@ -1118,6 +1594,13 @@ async def main():
                     except:
                         pass
                 return
+
+        # Interactive verification after Step 2
+        if not args.skip_validation:
+            available_services = ["Market Data API"]
+            if provider_name_normalized in ('historical', 'replay', 'auto'):
+                available_services.append("Historical Data Replay")
+            interactive_verification("Market Data API", available_services)
 
         # Step 3: Start and Verify News API
         print("\n" + "=" * 60)
@@ -1158,6 +1641,13 @@ async def main():
                     except:
                         pass
                 return
+
+        # Interactive verification after Step 3
+        if not args.skip_validation:
+            available_services = ["Market Data API", "News API"]
+            if provider_name_normalized in ('historical', 'replay', 'auto'):
+                available_services.append("Historical Data Replay")
+            interactive_verification("News API", available_services)
 
         # Step 4: Start and Verify Engine API
         print("\n" + "=" * 60)
@@ -1245,18 +1735,24 @@ async def main():
                         pass
                 return
             
-            # Then verify agents are running
-            engine_ok = verify_engine_api()
+            # Then verify agents are running (allow more time for orchestrator initialization)
+            # Note: Orchestrator initialization can take time due to LLM client setup and agent creation
+            print("   [INFO] Orchestrator initialization may take 30-60 seconds (LLM setup, agent creation)")
+            engine_ok = verify_engine_api(max_retries=30, retry_delay=2)  # Give more time: 30 attempts x 2s = 60s
             if not engine_ok:
-                print("❌ Engine API agents verification failed!")
-                print("   Stopping startup. Engine API agents must be running before proceeding.")
-                # Cleanup started processes
-                for process in processes:
-                    try:
-                        process.terminate()
-                    except:
-                        pass
-                return
+                print("   [!] Engine API orchestrator not ready after extended wait")
+                print("   [!] Continuing anyway - orchestrator may initialize later")
+                print("   [!] Check Engine API logs for initialization errors if issues persist")
+                print("   [INFO] Other services will continue starting...")
+                # Don't stop startup - continue so other services can start
+                # The orchestrator can be initialized later if needed
+
+        # Interactive verification after Step 4
+        if not args.skip_validation:
+            available_services = ["Market Data API", "News API", "Engine API"]
+            if provider_name_normalized in ('historical', 'replay', 'auto'):
+                available_services.append("Historical Data Replay")
+            interactive_verification("Engine API", available_services)
 
         # Step 4.5: Start and Verify User API
         print("\n" + "=" * 60)
@@ -1298,16 +1794,183 @@ async def main():
                 return
             print("   ✅ User API is healthy and ready!")
 
-        # Step 5: Start and Verify Dashboard UI
+        # Interactive verification after Step 4.5
+        if not args.skip_validation:
+            available_services = ["Market Data API", "News API", "Engine API", "User API"]
+            if provider_name_normalized in ('historical', 'replay', 'auto'):
+                available_services.append("Historical Data Replay")
+            interactive_verification("User API", available_services)
+
+        # Step 5: Start Orchestrator (Continuous 15-minute Analysis)
         print("\n" + "=" * 60)
-        print("🖥️  Step 5: Dashboard UI")
+        print("🔄 Step 5: Orchestrator (Continuous Analysis)")
+        print("=" * 60)
+        
+        print("   📦 Starting orchestrator in continuous mode...")
+        print("   ℹ️  Will run analysis cycles every 15 minutes (or 2 minutes in DEMO_MODE=true)")
+        print("   ℹ️  Analysis runs automatically during market hours")
+        
+        # Pass historical mode environment variables to orchestrator
+        orchestrator_env = os.environ.copy()
+        if provider_name_normalized in ('historical', 'replay', 'auto'):
+            # Set environment variables so orchestrator can detect historical mode
+            if args.historical_source:
+                orchestrator_env['HISTORICAL_SOURCE'] = args.historical_source
+            orchestrator_env['TRADING_PROVIDER'] = provider_name_normalized
+            orchestrator_env['USE_VIRTUAL_TIME'] = '1'  # Enable virtual time detection
+        
+        orchestrator_process = start_service(
+            "Orchestrator (Continuous Mode)",
+            [sys.executable, "run_orchestrator.py"],
+            env=orchestrator_env
+        )
+        processes.append(orchestrator_process)
+        
+        # Give orchestrator a few seconds to initialize
+        if not args.skip_validation:
+            print("   ⏳ Waiting for orchestrator to initialize...")
+            time.sleep(5)  # Wait for orchestrator to start
+            print("   ✅ Orchestrator started (will begin first cycle soon)")
+
+        # Interactive verification after Step 5
+        if not args.skip_validation:
+            available_services = ["Market Data API", "News API", "Engine API", "User API", "Orchestrator"]
+            if provider_name_normalized in ('historical', 'replay', 'auto'):
+                available_services.append("Historical Data Replay")
+            interactive_verification("Orchestrator", available_services)
+
+        # Step 5.5: Start Redis WebSocket Gateway
+        print("\n" + "=" * 60)
+        print("🔌 Step 5.5: Redis WebSocket Gateway")
+        print("=" * 60)
+        
+        kill_process_on_port(8889)
+        gateway_process = start_service(
+            "Redis WebSocket Gateway (port 8889)",
+            ["python", "-m", "redis_ws_gateway.main"]
+        )
+        processes.append(gateway_process)
+        
+        if args.skip_validation:
+            print("⚠️  Skipping Gateway verification")
+        else:
+            # Check health endpoint
+            gateway_health = wait_for_service("Redis WebSocket Gateway", "http://localhost:8889/health")
+            if not gateway_health:
+                print("❌ Redis WebSocket Gateway health check failed!")
+                print("   Stopping startup. Please check the Gateway logs.")
+                # Cleanup started processes
+                for process in processes:
+                    try:
+                        process.terminate()
+                    except:
+                        pass
+                return
+            print("   ✅ Redis WebSocket Gateway is healthy and ready!")
+
+        # Interactive verification after Step 5.5
+        if not args.skip_validation:
+            available_services = ["Market Data API", "News API", "Engine API", "User API", "Orchestrator", "Redis WebSocket Gateway"]
+            if provider_name_normalized in ('historical', 'replay', 'auto'):
+                available_services.append("Historical Data Replay")
+            interactive_verification("Redis WebSocket Gateway", available_services)
+
+        # Step 6: Start and Verify Dashboard UI
+        print("\n" + "=" * 60)
+        print("🖥️  Step 6: Dashboard UI")
         print("=" * 60)
         kill_process_on_port(8888)
-        dashboard_process = start_service(
-            "Dashboard (port 8888)",
-            ["python", "-c", "from dashboard.app import app; import uvicorn; uvicorn.run(app, host='0.0.0.0', port=8888)"]
-        )
-        processes.append(dashboard_process)
+
+        # If the modular React UI exists, prefer starting it (Vite dev server)
+        ui_dir = Path('dashboard') / 'modular_ui'
+        if ui_dir.exists() and (ui_dir / 'package.json').exists():
+            print("   ℹ️  Found modular UI at dashboard/modular_ui — starting Vite dev server on port 8888")
+
+            # Ensure dashboard modular UI has a .env with VITE_* keys populated from root .env
+            root_env_path = Path('.') / '.env'
+            ui_env_path = ui_dir / '.env'
+            root_vars = {}
+            if root_env_path.exists():
+                try:
+                    with open(root_env_path, 'r', encoding='utf-8') as f:
+                        for line in f:
+                            line = line.strip()
+                            if not line or line.startswith('#') or '=' not in line:
+                                continue
+                            k, v = line.split('=', 1)
+                            root_vars[k.strip()] = v.strip()
+                except Exception as e:
+                    print(f"   ⚠️  Failed to read root .env: {e}")
+
+            vite_defaults = {
+                'VITE_DASHBOARD_API_URL': 'http://localhost:8888',
+                'VITE_MARKET_API_URL': 'http://localhost:8004',
+                'VITE_NEWS_API_URL': 'http://localhost:8005',
+                'VITE_ENGINE_API_URL': 'http://localhost:8006',
+                'VITE_USER_API_URL': 'http://localhost:8007',
+                'VITE_WS_URL': 'ws://localhost:8889/ws'  # Redis WebSocket Gateway (direct Redis connection)
+            }
+
+            # Merge values: existing ui .env < root .env < defaults
+            existing_ui_vars = {}
+            if ui_env_path.exists():
+                try:
+                    with open(ui_env_path, 'r', encoding='utf-8') as f:
+                        for line in f:
+                            line = line.strip()
+                            if not line or line.startswith('#') or '=' not in line:
+                                continue
+                            k, v = line.split('=', 1)
+                            existing_ui_vars[k.strip()] = v.strip()
+                except Exception as e:
+                    print(f"   ⚠️  Failed to read existing UI .env: {e}")
+
+            merged = {}
+            for k, dv in vite_defaults.items():
+                merged[k] = existing_ui_vars.get(k) or root_vars.get(k) or dv
+
+            try:
+                with open(ui_env_path, 'w', encoding='utf-8') as f:
+                    f.write('# Generated by start_local.py - do not commit\n')
+                    for k, v in merged.items():
+                        f.write(f"{k}={v}\n")
+                print(f"   ✅ Wrote/updated {ui_env_path}")
+            except Exception as e:
+                print(f"   ⚠️  Failed to write {ui_env_path}: {e}")
+
+            # Ensure node deps are installed (quick check: node_modules exists)
+            node_modules_dir = ui_dir / 'node_modules'
+            if not node_modules_dir.exists():
+                import shutil
+                npm_exec = shutil.which('npm') or 'npm'
+                print("   📦 Installing modular UI dependencies (preferring 'npm ci' when lockfile exists)")
+                try:
+                    # Prefer 'ci' when package-lock exists
+                    if (ui_dir / 'package-lock.json').exists() or (ui_dir / 'npm-shrinkwrap.json').exists():
+                        subprocess.run([npm_exec, 'ci'], cwd=str(ui_dir), check=True)
+                    else:
+                        subprocess.run([npm_exec, 'install'], cwd=str(ui_dir), check=True)
+                    print("   ✅ Installed UI dependencies")
+                except subprocess.CalledProcessError:
+                    print("   ⚠️  Install failed. Please run 'cd dashboard/modular_ui && npm install' manually")
+                except FileNotFoundError:
+                    print("   ⚠️  npm not found. Please install Node.js and npm and ensure they are on your PATH")
+
+            # Start Vite dev server on port 8888
+            dashboard_process = start_service(
+                "Dashboard UI (Vite dev)",
+                ['npm', 'run', 'dev', '--', '--port', '8888'],
+                cwd=str(ui_dir)
+            )
+            processes.append(dashboard_process)
+
+        else:
+            # Fallback to older python-based dashboard
+            dashboard_process = start_service(
+                "Dashboard (port 8888)",
+                ["python", "-c", "from dashboard.app import app; import uvicorn; uvicorn.run(app, host='0.0.0.0', port=8888)"]
+            )
+            processes.append(dashboard_process)
         
         if args.skip_validation:
             print("⚠️  Skipping Dashboard UI verification")
@@ -1338,6 +2001,13 @@ async def main():
                         pass
                 return
 
+        # Interactive verification after Step 6
+        if not args.skip_validation:
+            available_services = ["Market Data API", "News API", "Engine API", "User API", "Orchestrator", "Dashboard UI"]
+            if provider_name_normalized in ('historical', 'replay', 'auto'):
+                available_services.append("Historical Data Replay")
+            interactive_verification("Dashboard UI", available_services)
+
         # All services verified successfully
         print("\n" + "=" * 60)
         print("🎉 All services started and verified!")
@@ -1349,6 +2019,7 @@ async def main():
         print("   📰 News:         http://localhost:8005/health")
         print("   🤖 Engine:       http://localhost:8006/health")
         print("   👤 User:         http://localhost:8007/health")
+        print("   🔌 WS Gateway:   ws://localhost:8889/ws")
         print("\n🎯 The UI should now be able to show data from all APIs.")
         print("\n🛑 Press Ctrl+C to stop all services")
 

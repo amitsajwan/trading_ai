@@ -1,20 +1,12 @@
-# Test Updates Summary - Position Awareness
+# Archived: Test Updates Summary
 
-## Overview
-Updated and created comprehensive tests for the position-aware agent system. All tests are passing.
+This test summary has been archived and moved to `engine_module/docs/archived/TEST_UPDATES_SUMMARY.md` during a documentation consolidation on 2026-01-09.
 
-## Test Files Created/Updated
+For up-to-date tests and results, consult `engine_module/tests/` and `engine_module/README.md`.
 
-### 1. `test_enhanced_orchestrator.py` (NEW)
-Comprehensive tests for the enhanced orchestrator with position awareness:
-- **10 test cases** covering:
-  - Orchestrator initialization with/without position provider
-  - Running cycles with no positions
-  - Running cycles with existing positions
-  - Position limit enforcement
-  - Position context passed to agents
-  - Trading decision with position actions
-  - Position-aware decision logic
+---
+
+*Archived on 2026-01-09 — kept for historical reference.*
 
 **Key Tests:**
 - `test_orchestrator_initialization_without_position_provider` - Backward compatibility

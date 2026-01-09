@@ -4,9 +4,8 @@
 import asyncio
 import sys
 
-# Add ui_shell to path
-sys.path.insert(0, './ui_shell/src')
-
+# ui_shell package is now part of `dashboard/ui` and re-exported at top-level for compatibility
+# No longer need to modify sys.path here
 from ui_shell.market_data_verifier import MarketDataVerifier
 
 

@@ -1,11 +1,12 @@
-# Options Strategy Engine (Preview)
+# Archived: Options Strategy Engine
 
-This module provides a configurable scaffold for Options Buy/Sell strategies that can later translate into trades.
+This document has been archived and moved to `engine_module/docs/archived/STRATEGY_README.md` as part of documentation consolidation on 2026-01-09.
 
-## Data Inputs
-- Options chain: strike, CE/PE LTP, CE/PE OI, expiry (via `/api/options-chain`).
-- Order flow: depth ladder, total depth bid/ask, imbalance (via `/api/order-flow`).
-- Latest signal: BUY/SELL/HOLD consensus (via `agent_decisions` collection).
+For current strategy integration details and execution examples, see `automatic_trading_service.py` and `engine_module/README.md`.
+
+---
+
+*Archived on 2026-01-09 — kept for historical reference.*
 
 ## Rule Parameters
 Defined in `options_strategy_engine.RuleConfig`:

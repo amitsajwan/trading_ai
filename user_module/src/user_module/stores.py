@@ -3,6 +3,7 @@
 import logging
 from datetime import datetime
 from typing import Dict, List, Optional, Any
+import asyncio
 from decimal import Decimal
 
 from .contracts import (
@@ -57,9 +58,14 @@ class MongoUserStore(UserStore):
             return False
 
     async def get_user(self, user_id: str) -> Optional[UserAccount]:
-        """Get user account by ID."""
+        """Get user account by ID. Supports sync/async drivers."""
         try:
-            user_doc = await self.users_collection.find_one({"_id": user_id})
+            result = self.users_collection.find_one({"_id": user_id})
+            if asyncio.iscoroutine(result) or asyncio.isfuture(result):
+                user_doc = await result
+            else:
+                user_doc = result
+
             if not user_doc:
                 return None
 
@@ -101,9 +107,14 @@ class MongoUserStore(UserStore):
             return False
 
     async def get_user_balance(self, user_id: str) -> Optional[AccountBalance]:
-        """Get user account balance."""
+        """Get user account balance. Supports sync/async drivers."""
         try:
-            balance_doc = await self.balances_collection.find_one({"user_id": user_id})
+            result = self.balances_collection.find_one({"user_id": user_id})
+            if asyncio.iscoroutine(result) or asyncio.isfuture(result):
+                balance_doc = await result
+            else:
+                balance_doc = result
+
             if not balance_doc:
                 return None
 
@@ -337,11 +348,14 @@ class MongoTradeStore(TradeStore):
                 "option_type": trade.option_type,
                 "stop_loss_price": float(trade.stop_loss_price) if trade.stop_loss_price else None,
                 "take_profit_price": float(trade.take_profit_price) if trade.take_profit_price else None,
-                "risk_amount": float(trade.risk_amount) if trade.risk_amount else None
+                "risk_amount": float(trade.risk_amount) if trade.risk_amount else None,
+                "signal_id": getattr(trade, "signal_id", None)
             }
 
-            result = await self.trades_collection.insert_one(trade_dict)
-            return result.acknowledged
+            result = self.trades_collection.insert_one(trade_dict)
+            if asyncio.iscoroutine(result) or asyncio.isfuture(result):
+                result = await result
+            return getattr(result, 'acknowledged', True)
         except Exception as e:
             logger.error(f"Failed to record trade {trade.trade_id}: {e}")
             return False
@@ -349,9 +363,24 @@ class MongoTradeStore(TradeStore):
     async def get_trade(self, trade_id: str) -> Optional[Trade]:
         """Get trade by ID."""
         try:
-            trade_doc = await self.trades_collection.find_one({"_id": trade_id})
+            result = self.trades_collection.find_one({"_id": trade_id})
+            if asyncio.iscoroutine(result) or asyncio.isfuture(result):
+                trade_doc = await result
+            else:
+                trade_doc = result
+
             if not trade_doc:
                 return None
+
+            # Normalize timestamp (ISO string or datetime)
+            ts = trade_doc.get("timestamp")
+            if isinstance(ts, str):
+                try:
+                    ts_parsed = datetime.fromisoformat(ts)
+                except Exception:
+                    ts_parsed = ts
+            else:
+                ts_parsed = ts
 
             return Trade(
                 user_id=trade_doc["user_id"],
@@ -362,7 +391,7 @@ class MongoTradeStore(TradeStore):
                 quantity=trade_doc["quantity"],
                 price=Decimal(str(trade_doc["price"])),
                 order_type=trade_doc["order_type"],
-                timestamp=trade_doc["timestamp"],
+                timestamp=ts_parsed,
                 status=trade_doc["status"],
                 broker_fees=Decimal(str(trade_doc["broker_fees"])),
                 exchange_fees=Decimal(str(trade_doc["exchange_fees"])),
@@ -371,7 +400,8 @@ class MongoTradeStore(TradeStore):
                 option_type=trade_doc.get("option_type"),
                 stop_loss_price=Decimal(str(trade_doc["stop_loss_price"])) if trade_doc.get("stop_loss_price") else None,
                 take_profit_price=Decimal(str(trade_doc["take_profit_price"])) if trade_doc.get("take_profit_price") else None,
-                risk_amount=Decimal(str(trade_doc["risk_amount"])) if trade_doc.get("risk_amount") else None
+                risk_amount=Decimal(str(trade_doc["risk_amount"])) if trade_doc.get("risk_amount") else None,
+                signal_id=trade_doc.get("signal_id")
             )
         except Exception as e:
             logger.error(f"Failed to get trade {trade_id}: {e}")
@@ -381,31 +411,55 @@ class MongoTradeStore(TradeStore):
         """Get recent trades for user."""
         try:
             trades = []
-            async for trade_doc in self.trades_collection.find(
-                {"user_id": user_id}
-            ).sort("timestamp", -1).limit(limit):
-
-                trade = Trade(
-                    user_id=trade_doc["user_id"],
-                    trade_id=trade_doc["_id"],
-                    order_id=trade_doc["order_id"],
-                    instrument=trade_doc["instrument"],
-                    side=trade_doc["side"],
-                    quantity=trade_doc["quantity"],
-                    price=Decimal(str(trade_doc["price"])),
-                    order_type=trade_doc["order_type"],
-                    timestamp=trade_doc["timestamp"],
-                    status=trade_doc["status"],
-                    broker_fees=Decimal(str(trade_doc["broker_fees"])),
-                    exchange_fees=Decimal(str(trade_doc["exchange_fees"])),
-                    strike_price=Decimal(str(trade_doc["strike_price"])) if trade_doc.get("strike_price") else None,
-                    expiry_date=trade_doc.get("expiry_date"),
-                    option_type=trade_doc.get("option_type"),
-                    stop_loss_price=Decimal(str(trade_doc["stop_loss_price"])) if trade_doc.get("stop_loss_price") else None,
-                    take_profit_price=Decimal(str(trade_doc["take_profit_price"])) if trade_doc.get("take_profit_price") else None,
-                    risk_amount=Decimal(str(trade_doc["risk_amount"])) if trade_doc.get("risk_amount") else None
-                )
-                trades.append(trade)
+            cursor = self.trades_collection.find({"user_id": user_id}).sort("timestamp", -1).limit(limit)
+            if hasattr(cursor, "__aiter__"):
+                async for trade_doc in cursor:
+                    trade = Trade(
+                        user_id=trade_doc["user_id"],
+                        trade_id=trade_doc["_id"],
+                        order_id=trade_doc["order_id"],
+                        instrument=trade_doc["instrument"],
+                        side=trade_doc["side"],
+                        quantity=trade_doc["quantity"],
+                        price=Decimal(str(trade_doc["price"])),
+                        order_type=trade_doc["order_type"],
+                        timestamp=trade_doc["timestamp"],
+                        status=trade_doc["status"],
+                        broker_fees=Decimal(str(trade_doc["broker_fees"])),
+                        exchange_fees=Decimal(str(trade_doc["exchange_fees"])),
+                        strike_price=Decimal(str(trade_doc["strike_price"])) if trade_doc.get("strike_price") else None,
+                        expiry_date=trade_doc.get("expiry_date"),
+                        option_type=trade_doc.get("option_type"),
+                        stop_loss_price=Decimal(str(trade_doc["stop_loss_price"])) if trade_doc.get("stop_loss_price") else None,
+                        take_profit_price=Decimal(str(trade_doc["take_profit_price"])) if trade_doc.get("take_profit_price") else None,
+                        risk_amount=Decimal(str(trade_doc["risk_amount"])) if trade_doc.get("risk_amount") else None,
+                        signal_id=trade_doc.get("signal_id")
+                    )
+                    trades.append(trade)
+            else:
+                for trade_doc in cursor:
+                    trade = Trade(
+                        user_id=trade_doc["user_id"],
+                        trade_id=trade_doc["_id"],
+                        order_id=trade_doc["order_id"],
+                        instrument=trade_doc["instrument"],
+                        side=trade_doc["side"],
+                        quantity=trade_doc["quantity"],
+                        price=Decimal(str(trade_doc["price"])),
+                        order_type=trade_doc["order_type"],
+                        timestamp=trade_doc["timestamp"],
+                        status=trade_doc["status"],
+                        broker_fees=Decimal(str(trade_doc["broker_fees"])),
+                        exchange_fees=Decimal(str(trade_doc["exchange_fees"])),
+                        strike_price=Decimal(str(trade_doc["strike_price"])) if trade_doc.get("strike_price") else None,
+                        expiry_date=trade_doc.get("expiry_date"),
+                        option_type=trade_doc.get("option_type"),
+                        stop_loss_price=Decimal(str(trade_doc["stop_loss_price"])) if trade_doc.get("stop_loss_price") else None,
+                        take_profit_price=Decimal(str(trade_doc["take_profit_price"])) if trade_doc.get("take_profit_price") else None,
+                        risk_amount=Decimal(str(trade_doc["risk_amount"])) if trade_doc.get("risk_amount") else None,
+                        signal_id=trade_doc.get("signal_id")
+                    )
+                    trades.append(trade)
 
             return trades
         except Exception as e:
@@ -467,13 +521,6 @@ class MongoTradeStore(TradeStore):
             option_type=trade_doc.get("option_type"),
             stop_loss_price=Decimal(str(trade_doc["stop_loss_price"])) if trade_doc.get("stop_loss_price") else None,
             take_profit_price=Decimal(str(trade_doc["take_profit_price"])) if trade_doc.get("take_profit_price") else None,
-            risk_amount=Decimal(str(trade_doc["risk_amount"])) if trade_doc.get("risk_amount") else None
+            risk_amount=Decimal(str(trade_doc["risk_amount"])) if trade_doc.get("risk_amount") else None,
+            signal_id=trade_doc.get("signal_id")
         )
-
-
-__all__ = [
-    "MongoUserStore",
-    "MongoPortfolioStore",
-    "MongoTradeStore",
-]
-

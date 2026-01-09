@@ -226,19 +226,30 @@ async def execute_user_trade(mongo_client, user_id: str,
                            instrument: str, side: str, quantity: int,
                            order_type: str = "MARKET", price: Optional[float] = None,
                            stop_loss: Optional[float] = None,
-                           take_profit: Optional[float] = None) -> TradeExecutionResult:
+                           take_profit: Optional[float] = None,
+                           # Options-specific fields
+                           strike_price: Optional[float] = None,
+                           expiry_date: Optional[datetime] = None,
+                           option_type: Optional[str] = None,
+                           # Optional originating signal id
+                           signal_id: Optional[str] = None) -> TradeExecutionResult:
     """Execute a trade for a user with risk management.
+    
+    Supports Spot, Futures, and Options trading.
 
     Args:
         mongo_client: MongoDB client
         user_id: User ID
         instrument: Trading instrument (e.g., "BANKNIFTY")
         side: "BUY" or "SELL"
-        quantity: Number of shares/contracts
+        quantity: Number of shares/contracts/lots
         order_type: "MARKET" or "LIMIT"
         price: Price for LIMIT orders
         stop_loss: Stop loss price
         take_profit: Take profit price
+        strike_price: Strike price for Options (required for Options)
+        expiry_date: Expiry date for Options/Futures (required for Options)
+        option_type: "CE" or "PE" for Options (required for Options)
 
     Returns:
         TradeExecutionResult with execution details
@@ -249,7 +260,7 @@ async def execute_user_trade(mongo_client, user_id: str,
         risk_manager = components["portfolio_risk_manager"]
         trade_executor = components["trade_executor"]
 
-        # Create trade request
+        # Create trade request with Options support
         trade_request = TradeExecutionRequest(
             user_id=user_id,
             instrument=instrument,
@@ -258,7 +269,11 @@ async def execute_user_trade(mongo_client, user_id: str,
             order_type=order_type,
             price=Decimal(str(price)) if price else None,
             stop_loss_price=Decimal(str(stop_loss)) if stop_loss else None,
-            take_profit_price=Decimal(str(take_profit)) if take_profit else None
+            take_profit_price=Decimal(str(take_profit)) if take_profit else None,
+            # Options fields
+            strike_price=Decimal(str(strike_price)) if strike_price else None,
+            expiry_date=expiry_date,
+            option_type=option_type
         )
 
         # Validate risk
@@ -287,7 +302,8 @@ async def execute_user_trade(mongo_client, user_id: str,
                 timestamp=datetime.utcnow(),
                 status="EXECUTED",
                 broker_fees=Decimal("0"),  # Would calculate based on broker
-                exchange_fees=Decimal("0")  # Would calculate based on exchange
+                exchange_fees=Decimal("0"),  # Would calculate based on exchange
+                signal_id=signal_id
             )
 
             trade_store = components["trade_store"]

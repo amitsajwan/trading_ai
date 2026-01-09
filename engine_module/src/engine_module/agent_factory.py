@@ -171,6 +171,24 @@ class AgentFactory:
         except ImportError as e:
             logger.warning(f"Could not import BearResearcher: {e}")
         
+        try:
+            from engine_module.agents.research_manager import ResearchManager
+            agent = ResearchManager()
+            agent._agent_name = "ResearchManager"
+            agents.append(agent)
+            logger.debug("Added ResearchManager")
+        except ImportError as e:
+            logger.warning(f"Could not import ResearchManager: {e}")
+        
+        try:
+            from engine_module.agents.options_strategy_agent import OptionsStrategyAgent
+            agent = OptionsStrategyAgent()
+            agent._agent_name = "OptionsStrategyAgent"
+            agents.append(agent)
+            logger.debug("Added OptionsStrategyAgent")
+        except ImportError as e:
+            logger.warning(f"Could not import OptionsStrategyAgent: {e}")
+        
         return agents
     
     def _build_validators(self, **kwargs: Any) -> List[Any]:
@@ -202,6 +220,15 @@ class AgentFactory:
             logger.debug(f"Added {agent._agent_name}")
         except ImportError as e:
             logger.warning(f"Could not import RiskAgent: {e}")
+        
+        try:
+            from engine_module.agents.risk_manager import RiskManager
+            agent = RiskManager()
+            agent._agent_name = "RiskManager"
+            agents.append(agent)
+            logger.debug("Added RiskManager")
+        except ImportError as e:
+            logger.warning(f"Could not import RiskManager: {e}")
         
         try:
             from engine_module.agents.execution_agent import ExecutionAgent

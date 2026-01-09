@@ -4,7 +4,7 @@ import logging
 import sys
 import os
 import random
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any, Dict
 
@@ -15,11 +15,13 @@ except ImportError:  # pragma: no cover - optional dependency
 
 # Import time service for virtual/historical time support
 try:
-    from core_kernel.src.core_kernel.time_service import now as get_system_time
+    from core_kernel.src.core_kernel.time_service import now as get_system_time, is_virtual_time
 except ImportError:
     # Fallback if time service not available
     def get_system_time() -> datetime:
         return datetime.now()
+    def is_virtual_time() -> bool:
+        return False
 
 # Import market hours checker
 try:
@@ -197,10 +199,10 @@ async def run_continuous_orchestrator():
         
         # Use async-friendly stubs for market/options data when real pipelines aren't configured
         market_store = StubMarketStore()
-        print("✅ Using stub market store (synthetic OHLC/ticks)")
+        print("[OK] Using stub market store (synthetic OHLC/ticks)")
 
         options_client = StubOptionsClient()
-        print("✅ Using stub options chain client")
+        print("[OK] Using stub options chain client")
         
         # Initialize news service (optional - will work without it)
         news_service = None
@@ -212,42 +214,39 @@ async def run_continuous_orchestrator():
             db = get_db_connection()
             news_collection = db["news"]
             news_service = build_news_service(news_collection)
-            print("✅ News service initialized with MongoDB storage")
+            print("[OK] News service initialized with MongoDB storage")
         except Exception as e:
-            print(f"⚠️  News service not available: {e}")
+            print(f"[!] News service not available: {e}")
             print("   Orchestrator will run without news sentiment analysis")
         
         # Create LLM client with real provider manager
         llm_manager = LLMProviderManager()
         llm_client = build_llm_client(llm_manager)
-        print(f"✅ LLM client initialized with {len(llm_manager.providers)} providers")
+        print(f"[OK] LLM client initialized with {len(llm_manager.providers)} providers")
         
         # Create all agents
         agents = create_default_agents(profile='balanced')
-        print(f"✅ Created {len(agents)} agents")
+        print(f"[OK] Created {len(agents)} agents")
         
         # Initialize technical indicators service
         technical_data_provider = None
         try:
             from engine_module.services.technical_indicators_service import TechnicalIndicatorsService
             technical_data_provider = TechnicalIndicatorsService(market_store)
-            print("✅ Technical indicators service initialized")
+            print("[OK] Technical indicators service initialized")
         except Exception as e:
-            print(f"⚠️  Technical indicators service not available: {e}")
+            print(f"[!] Technical indicators service not available: {e}")
             print("   Agents will calculate indicators individually")
         
-        # Build orchestrator
-        orchestrator = build_orchestrator(
-            llm_client=llm_client,
-            market_store=market_store,
-            options_data=options_client,
-            news_service=news_service,
-            technical_data_provider=technical_data_provider,
-            agents=agents,
-            instrument="BANKNIFTY"
-        )
-        print("✅ Orchestrator built successfully")
-        print()
+        # Initialize SignalMonitor for conditional signal monitoring
+        signal_monitor = None
+        try:
+            from engine_module.signal_monitor import get_signal_monitor
+            signal_monitor = get_signal_monitor()
+            print("[OK] SignalMonitor initialized for real-time signal monitoring")
+        except Exception as e:
+            print(f"[!] SignalMonitor not available: {e}")
+            print("   Conditional signal monitoring will not be available")
         
         # Get current mode and use appropriate database for persistence
         from core_kernel.src.core_kernel.mode_manager import get_mode_manager
@@ -256,7 +255,22 @@ async def run_continuous_orchestrator():
         mode_manager = get_mode_manager()
         current_mode = mode_manager.get_current_mode()
         db = get_db_connection(mode=current_mode)
-        print(f"✅ Using database: {get_db_connection(mode=current_mode).name} (mode: {current_mode})")
+        print(f"[OK] Using database: {db.name} (mode: {current_mode})")
+        
+        # Build orchestrator with signal monitoring support
+        orchestrator = build_orchestrator(
+            llm_client=llm_client,
+            market_store=market_store,
+            options_data=options_client,
+            news_service=news_service,
+            technical_data_provider=technical_data_provider,
+            agents=agents,
+            signal_monitor=signal_monitor,
+            mongo_db=db,
+            instrument="BANKNIFTY"
+        )
+        print("[OK] Orchestrator built successfully with signal monitoring support")
+        print()
         
         # Run cycles
         cycle_count = 0
@@ -266,9 +280,9 @@ async def run_continuous_orchestrator():
         demo_mode = os.getenv("DEMO_MODE", "true").lower() == "true"
         if demo_mode:
             cycle_interval_seconds = 120  # 2 minutes
-            print("🚀 Running in DEMO mode - 2 minute cycles")
+            print("[*] Running in DEMO mode - 2 minute cycles")
         else:
-            print(f"🚀 Running in PRODUCTION mode - {cycle_interval_seconds/60} minute cycles")
+            print(f"[*] Running in PRODUCTION mode - {cycle_interval_seconds/60} minute cycles")
         
         print()
         print("Starting continuous analysis cycles... (Press Ctrl+C to stop)")
@@ -278,21 +292,64 @@ async def run_continuous_orchestrator():
             cycle_count += 1
             cycle_start = get_system_time()  # Use virtual time if available
             
-            # Check if market is open (skip when explicitly forced)
+            # Step 1: Delete old pending signals before new cycle (SIGNAL LIFECYCLE MANAGEMENT)
+            try:
+                from engine_module.signal_creator import delete_pending_signals
+                deleted_count = await delete_pending_signals(db, instrument="BANKNIFTY")
+                if deleted_count > 0:
+                    print(f"   [X] Deleted {deleted_count} pending signals from previous cycle")
+                
+                # Clear SignalMonitor active signals
+                if signal_monitor:
+                    active_signals = signal_monitor.get_active_signals("BANKNIFTY")
+                    for signal in active_signals:
+                        signal_monitor.remove_signal(signal.condition_id)
+                    if active_signals:
+                        print(f"   [X] Cleared {len(active_signals)} signals from SignalMonitor")
+            except Exception as e:
+                logger.warning(f"Failed to clean up old signals: {e}")
+            
+            # Check if market is open (skip when explicitly forced or in replay/historical mode)
             force_market_open = os.environ.get('FORCE_MARKET_OPEN', 'false').lower() == 'true'
             simulation_mode = os.environ.get('SIMULATION_MODE', 'false').lower() == 'true'
-            market_open = force_market_open or simulation_mode or is_market_open(cycle_start)
+            # Check for historical/replay mode via multiple methods:
+            # 1. Virtual time is active (set by historical replayer)
+            # 2. Environment variables indicating historical mode
+            # 3. Historical source is set (indicates historical mode is intended)
+            in_replay_mode = (
+                is_virtual_time() or
+                os.environ.get('HISTORICAL_SOURCE') is not None or
+                os.environ.get('USE_VIRTUAL_TIME', '0').lower() in ('1', 'true', 'yes') or
+                os.environ.get('TRADING_PROVIDER', '').lower() in ('historical', 'replay')
+            )
+            market_open = force_market_open or simulation_mode or in_replay_mode or is_market_open(cycle_start)
             
             if not market_open:
-                print(f"\n[{cycle_start.strftime('%H:%M:%S')}] 🛑 Market is CLOSED - Skipping cycle #{cycle_count}")
+                # Convert to IST for display (IST is UTC+5:30)
+                ist = timezone(timedelta(hours=5, minutes=30))
+                if cycle_start.tzinfo is None:
+                    # If naive datetime, assume it's UTC and convert to IST
+                    cycle_start_ist = cycle_start.replace(tzinfo=timezone.utc).astimezone(ist)
+                else:
+                    cycle_start_ist = cycle_start.astimezone(ist)
+                
+                print(f"\n[{cycle_start_ist.strftime('%H:%M:%S')} IST] [!] Market is CLOSED - Skipping cycle #{cycle_count}")
                 print(f"   Market hours: Monday-Friday, 9:15 AM - 3:30 PM IST")
-                print(f"   Current day: {cycle_start.strftime('%A')}, Time: {cycle_start.strftime('%H:%M:%S')}")
+                print(f"   Current day: {cycle_start_ist.strftime('%A')}, Time: {cycle_start_ist.strftime('%H:%M:%S %Z')}")
                 print(f"   Agents and LLM calls paused until market opens...")
                 # Wait and check again
                 await asyncio.sleep(60)  # Check every minute
                 continue
             
-            print(f"\n[{cycle_start.strftime('%H:%M:%S')}] 🔄 Cycle #{cycle_count} starting...")
+            # Convert to IST for display
+            ist = timezone(timedelta(hours=5, minutes=30))
+            if cycle_start.tzinfo is None:
+                cycle_start_ist = cycle_start.replace(tzinfo=timezone.utc).astimezone(ist)
+            else:
+                cycle_start_ist = cycle_start.astimezone(ist)
+            
+            replay_indicator = " [REPLAY]" if in_replay_mode else ""
+            print(f"\n[{cycle_start_ist.strftime('%H:%M:%S')} IST]{replay_indicator} [*] Cycle #{cycle_count} starting...")
             
             try:
                 context = {
@@ -348,8 +405,33 @@ async def run_continuous_orchestrator():
                     db.agent_discussions.insert_one(discussion_doc)
                 
                 elapsed = (get_system_time() - cycle_start).total_seconds()
-                print(f"✅ Cycle #{cycle_count} complete in {elapsed:.1f}s - Decision: {result.decision} ({result.confidence:.0%})")
+                print(f"[OK] Cycle #{cycle_count} complete in {elapsed:.1f}s - Decision: {result.decision} ({result.confidence:.0%})")
+
+                # Step 3: Sync newly created signals to SignalMonitor (if signals were created)
+                if signal_monitor and result.details:
+                    try:
+                        from engine_module.signal_creator import sync_signals_to_monitor
+                        synced_count = await sync_signals_to_monitor(db, signal_monitor, instrument="BANKNIFTY")
+                        if synced_count > 0:
+                            print(f'   [OK] Synced {synced_count} new signal(s) to SignalMonitor for real-time monitoring')
+                    except Exception as e:
+                        logger.warning(f"Failed to sync signals to SignalMonitor: {e}")
                 
+                # Update orchestrator health in MongoDB
+                try:
+                    health_doc = {
+                        'last_cycle': cycle_count,
+                        'timestamp': cycle_start.isoformat(),
+                        'decision': result.decision,
+                        'confidence': float(result.confidence),
+                        'agents_run': len(agent_signal_entries),
+                        'signals_created': result.details.get('signals_created', 0) if result.details else 0
+                    }
+                    db.orchestrator_health.update_one({'_id': 'current'}, {'$set': health_doc}, upsert=True)
+                    print('   Orchestrator health updated in MongoDB')
+                except Exception as e:
+                    print(f'   Failed to update orchestrator health: {e}')
+
                 # Wait for next cycle
                 wait_time = max(1, cycle_interval_seconds - elapsed)
                 print(f"   Waiting {wait_time:.0f}s until next cycle...")
@@ -357,21 +439,21 @@ async def run_continuous_orchestrator():
                 
             except Exception as e:
                 logger.error(f"Error in cycle #{cycle_count}: {e}", exc_info=True)
-                print(f"❌ Cycle #{cycle_count} failed: {e}")
+                print(f"[ERROR] Cycle #{cycle_count} failed: {e}")
                 print("   Waiting 30s before retry...")
                 await asyncio.sleep(30)
                 
     except KeyboardInterrupt:
-        print("\n\n⏹️  Orchestrator stopped by user")
+        print("\n\n[STOPPED] Orchestrator stopped by user")
         print(f"Total cycles completed: {cycle_count}")
     except Exception as e:
         logger.error(f"Fatal error: {e}", exc_info=True)
-        print(f"\n❌ Fatal error: {e}")
+        print(f"\n[ERROR] Fatal error: {e}")
         sys.exit(1)
 
 
 if __name__ == "__main__":
-    print("\n🤖 Multi-Agent Trading Orchestrator")
+    print("\n[ORCHESTRATOR] Multi-Agent Trading Orchestrator")
     print("   Generates real agent discussions and trading decisions")
     print("   Data saved to MongoDB for dashboard display\n")
     

@@ -2,6 +2,8 @@
 
 A fully autonomous multi-agent LLM trading system with **sophisticated conditional execution** capabilities. Features intelligent position-aware agents, real-time technical condition monitoring, and risk-managed automated trading. Supports live market data integration and advanced paper trading simulation.
 
+> Module-specific documentation is kept inside each module directory. For market data, see `market_data/README.md` for the canonical usage and quick start guide.
+
 ## 🚀 Key Features
 
 ### ✅ Advanced Conditional Execution
@@ -109,6 +111,19 @@ The system employs **4 specialized AI agents** working in concert:
 - **Real-Time Monitoring**: Live condition checking every 15 seconds
 - **Consensus System**: Multiple agent agreement required for high-confidence signals
 
+## Real-time Redis & Signal Integration (Summary)
+- **Redis WebSocket Gateway**: Direct Redis pub/sub to WebSocket forwarding (port 8889)
+  - UI connects to `ws://localhost:8889/ws` for real-time updates
+  - Gateway subscribes to Redis channels and forwards to WebSocket clients
+  - Supports: `market:tick:*`, `engine:signal:*`, `engine:decision:*`, `indicators:*`
+  - See `redis_ws_gateway/README.md` for details
+- Indicators are cached in Redis keys: `indicators:{INSTRUMENT}:{INDICATOR}` and published on pub/sub channel `indicators:{INSTRUMENT}`.
+- Previous indicator values are persisted to `indicators_prev:{INSTRUMENT}:{INDICATOR}` (TTL default: 4 hours) to support reliable cross-detection.
+- Signals saved by the engine are in MongoDB `signals` collection (status: `pending` / `executed` / `cancelled`).
+- New engine API endpoints for signal management: `GET /api/v1/signals/by-id/{signal_id}`, `POST /api/v1/signals/mark-executed`.
+- Dashboard execution endpoints now wire to the engine/user_module executor and mark signals executed on success.
+- For durable, ordered processing consider Redis Streams if you need message replay or exactly-once semantics.
+
 ### Trading Cockpit Interface
 - **Signal Management**: Execute, modify, or reject signals with full context
 - **Live Conditions**: Real-time display of technical indicator status
@@ -183,49 +198,51 @@ python dashboard_pro.py
 
 ### Running locally with provider selection (mock or Zerodha)
 
-You can switch between **mock/simulator** and **Zerodha** providers without changing code. The `providers` factory picks the provider based on CLI or env vars.
+**Quick Start:**
 
-- CLI (preferred for single-run):
-  - python start_local.py --provider mock
-  - python start_local.py --provider zerodha
+- **Real/Live Mode** (Zerodha):
+  ```bash
+  python start_local.py --provider zerodha
+  ```
 
-- Env (session or CI):
-  - USE_MOCK_KITE=1 (forces mock)
-  - TRADING_PROVIDER=mock|zerodha
+- **Historical Mode** (Zerodha):
+  ```bash
+  python start_local.py --provider historical --historical-source zerodha --historical-from 2026-01-09
+  ```
 
-- Start collectors in mock mode (exercise collector code paths, not generator):
-  - PowerShell:
-    - $env:USE_MOCK_KITE = '1'
-    - python -m market_data.collectors.ltp_collector
-    - python -m market_data.collectors.depth_collector
-  - Bash:
-    - USE_MOCK_KITE=1 python -m market_data.collectors.ltp_collector & USE_MOCK_KITE=1 python -m market_data.collectors.depth_collector &
+- **Historical Mode** (CSV):
+  ```bash
+  python start_local.py --provider historical --historical-source ./data/historical.csv --historical-from 2026-01-09 --allow-missing-credentials
+  ```
 
-- Docker Compose mock override (starts services in mock mode):
-  - docker compose -f docker-compose.yml -f docker-compose.mock.yml up -d
-
-- Quick smoke tools and verification:
-  - Emit a single tick: python scripts/emit_mock_tick.py
-  - Run verification: python verify_market_data.py
-  - Start a full mock runbook (Windows): .\scripts\start_mock.ps1
-### Historical replay mode (time-travel simulation)
+**Complete Guide:** See [START_LOCAL_GUIDE.md](START_LOCAL_GUIDE.md) for detailed usage.
+### Historical Replay Mode (Time-Travel Simulation)
 
 You can run the system using historical market data and replay it as if it were "now". The replayer sets a system virtual time so the rest of the system (strategies, dashboard, health checks) sees historical ticks as live events.
 
-- Start local with historical replay (bar-level):
-  - python start_local.py --provider historical --historical-source synthetic --historical-speed 1.0
+**Quick Start:**
+```bash
+# Basic historical replay with date
+python start_local.py --provider historical --historical-from 2026-01-08
 
-- Start tick-level replay (more realistic, preserves per-tick timestamps):
-  - python start_local.py --provider historical --historical-source /path/to/data.csv --historical-ticks --historical-from 2024-01-15 --historical-speed 1.0
+# With Zerodha historical data (requires credentials)
+python start_local.py --provider historical --historical-source zerodha --historical-from 2026-01-08
 
-Notes:
-- `--historical-source` accepts `synthetic`, a path to a JSON/CSV file, or `zerodha` (when you have archived API access).
-- `--historical-from` (YYYY-MM-DD) limits the start of the replay (tick-level replayer supports `from_date`).
-- `--historical-speed` (float) controls playback speed: `1.0` = real-time, `2.0` = 2x.
-- Replayer will set `system:virtual_time:enabled` and `system:virtual_time:current` keys in Redis during replay.
-Notes:
-- Precedence: `--provider` CLI > `TRADING_PROVIDER` env var > `USE_MOCK_KITE=1` > auto (try Zerodha creds, fallback to mock).
-- `USE_MOCK_KITE=1` **overrides** credentials to prevent accidental live calls during testing.
+# With CSV file
+python start_local.py --provider historical --historical-source /path/to/data.csv --historical-from 2024-01-15 --historical-ticks
+```
+
+**Command Options:**
+- `--provider historical` or `--provider replay` - Enables historical mode
+- `--historical-from YYYY-MM-DD` - Start date for historical replay
+- `--historical-source zerodha|path/to/file.csv` - Data source (zerodha requires credentials, CSV doesn't)
+- `--historical-speed FLOAT` - Playback speed (`1.0` = real-time, `2.0` = 2x speed)
+- `--historical-ticks` - Use tick-level replayer (more realistic, preserves per-tick timestamps)
+- `--allow-missing-credentials` - Allow startup without Zerodha credentials (for CSV-based historical runs)
+
+**Full Documentation:** See [HISTORICAL_MODE_USAGE.md](HISTORICAL_MODE_USAGE.md) for complete usage guide.
+
+**Provider Precedence:** `--provider` CLI > `TRADING_PROVIDER` env var > `USE_MOCK_KITE=1` > auto (try Zerodha creds, fallback to mock).
 
 #### **Mode 2: Live Bank Nifty + Paper Trading** (Recommended for Live Testing)
 ```bash
@@ -237,7 +254,7 @@ echo "KITE_API_KEY=anbel41tccg186z0" > .env
 echo "KITE_API_SECRET=hvfug2sn5h1xe1ky3qbuj1gsntd9kk86" >> .env
 
 # Authenticate with Kite (opens browser for login)
-python data_niftybank/src/data_niftybank/tools/kite_auth.py
+python -m market_data.tools.kite_auth
 
 # Start with live data integration
 python dashboard_pro.py
@@ -334,7 +351,7 @@ The system features **9 specialized agents** working in parallel:
 pytest
 
 # Run specific module tests
-pytest data_niftybank/tests/ -v
+pytest market_data/tests/ -v
 pytest engine_module/tests/ -v
 
 # Run integration tests
@@ -460,21 +477,23 @@ docker-compose -f docker-compose.data.yml ps
 
 **Quick Access**: See **[DOCS_INDEX.md](DOCS_INDEX.md)** for complete documentation guide.
 
-### Core Documentation (7 files, 82KB total)
+### Core Documentation
 
-| Document | Purpose | Size |
-|----------|---------|------|
-| **[README.md](README.md)** (this file) | System overview, installation, quick start | 21KB |
-| **[ARCHITECTURE.md](ARCHITECTURE.md)** | System design, modules, data flow | 15KB |
-| **[FEATURES.md](FEATURES.md)** | Signal-to-trade, indicators, multi-agent, virtual time | 12KB |
-| **[TESTING.md](TESTING.md)** | Test suite, virtual time testing, troubleshooting | 9KB |
-| **[TRADING_COCKPIT.md](TRADING_COCKPIT.md)** | Dashboard UI guide, controls, API endpoints | 10KB |
-| **[ZERODHA_DATA_STRUCTURES.md](ZERODHA_DATA_STRUCTURES.md)** | Kite API data formats | 11KB |
-| **[ZERODHA_HISTORICAL_INTEGRATION.md](ZERODHA_HISTORICAL_INTEGRATION.md)** | Historical data integration | 4KB |
+| Document | Purpose |
+|----------|---------|
+| **[README.md](README.md)** (this file) | System overview, installation, quick start |
+| **[ARCHITECTURE.md](ARCHITECTURE.md)** | System design, modules, data flow |
+| **[FEATURES.md](FEATURES.md)** | Signal-to-trade, indicators, multi-agent, virtual time |
+| **[TESTING.md](TESTING.md)** | Test suite, virtual time testing, troubleshooting |
+| **[TRADING_COCKPIT.md](TRADING_COCKPIT.md)** | Dashboard UI guide, controls, API endpoints |
+| **[HISTORICAL_MODE_USAGE.md](HISTORICAL_MODE_USAGE.md)** | Historical replay mode usage guide |
+| **[CREDENTIALS_TROUBLESHOOTING.md](CREDENTIALS_TROUBLESHOOTING.md)** | Troubleshooting credential issues |
+| **[ZERODHA_DATA_STRUCTURES.md](ZERODHA_DATA_STRUCTURES.md)** | Kite API data formats |
+| **[ZERODHA_HISTORICAL_INTEGRATION.md](ZERODHA_HISTORICAL_INTEGRATION.md)** | Historical data integration |
 
 ### Module-Specific Docs
-- **[data_niftybank/README.md](data_niftybank/README.md)** - Market data module
-- **[engine_module/README.md](engine_module/README.md)** - Trading intelligence
+- **[market_data/README.md](market_data/README.md)** - Market data module
+- **[engine_module/README.md](engine_module/README.md)** - Trading intelligence (concise; detailed docs archived in `engine_module/docs/archived/`)
 - **[user_module/README.md](user_module/README.md)** - User management
 - **[ui_shell/README.md](ui_shell/README.md)** - Dashboard interface
 - **[genai_module/README.md](genai_module/README.md)** - LLM integration
@@ -483,7 +502,7 @@ docker-compose -f docker-compose.data.yml ps
 ### Feature Guides
 - **Real-time Signals**: [FEATURES.md#real-time-signal-to-trade](FEATURES.md#real-time-signal-to-trade)
 - **Technical Indicators**: [FEATURES.md#technical-indicators-integration](FEATURES.md#technical-indicators-integration)
-- **Historical Replay**: [FEATURES.md#historical-mode--replay](FEATURES.md#historical-mode--replay)
+- **Historical Replay**: [HISTORICAL_MODE_USAGE.md](HISTORICAL_MODE_USAGE.md) - Complete guide for historical mode
 - **Multi-Agent System**: [FEATURES.md#multi-agent-system](FEATURES.md#multi-agent-system)
 - **Virtual Time**: [FEATURES.md#virtual-time-synchronization](FEATURES.md#virtual-time-synchronization)
 
@@ -534,6 +553,25 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 🔧 Troubleshooting
 
+### Credential Issues
+**Common Errors:**
+- `KITE_ACCESS_TOKEN missing` - Token required for Zerodha API
+- `No module named 'market_data.providers'` - Import path issues
+
+**Solutions:**
+```bash
+# Generate access token interactively
+python -m market_data.tools.kite_auth
+
+# Or set in environment
+export KITE_ACCESS_TOKEN=your_token
+
+# For historical mode with CSV (no credentials needed)
+python start_local.py --provider historical --historical-source /path/to/data.csv --allow-missing-credentials
+```
+
+**Full Guide:** See [CREDENTIALS_TROUBLESHOOTING.md](CREDENTIALS_TROUBLESHOOTING.md) for detailed troubleshooting steps.
+
 ### Dashboard Shows "HOLD" with Low Confidence
 **Cause:** System is using mock analysis data (no recent real analysis)
 **Solution:**
@@ -543,21 +581,14 @@ python insert_realistic_analysis.py
 # Then refresh dashboard
 ```
 
-### Only 2 LLM Providers Shown in Dashboard
-**Cause:** Dashboard uses mock LLM metrics (hardcoded to show Groq + Cohere + AI21)
-**Real Behavior:** Would show all configured providers with actual usage stats
-**Check Config:**
-```bash
-python scripts/test_api_keys.py  # Shows all configured providers
-```
-
 ### Cannot Connect to Real Market Data
 **Cause:** Missing Zerodha API credentials
 **Solution:**
 ```bash
-# Add to .env:
-ZERODHA_API_KEY=your_key
-ZERODHA_API_SECRET=your_secret
+# Add to local.env or market_data/.env:
+KITE_API_KEY=your_key
+KITE_API_SECRET=your_secret
+KITE_ACCESS_TOKEN=your_token
 ```
 
 ### Import Errors When Running Scripts
@@ -565,7 +596,7 @@ ZERODHA_API_SECRET=your_secret
 **Solution:** Scripts automatically add paths, but for manual imports:
 ```python
 import sys
-sys.path.insert(0, 'data_niftybank/src')
+sys.path.insert(0, 'market_data/src')
 sys.path.insert(0, 'engine_module/src')
 # ... etc
 ```
@@ -599,14 +630,14 @@ pytest tests/
 
 ## 🎯 **Current Status: Live Zerodha Integration Complete**
 
-**✅ INTEGRATED**: The system now uses the `data_niftybank` module for live Zerodha data
+**✅ INTEGRATED**: The system now uses the `market_data` module for live Zerodha data
 **✅ AUTHENTICATION**: Set up with provided Kite API credentials
 **✅ LIVE DATA**: BANKNIFTY prices updating from Zerodha LTP API every 30 seconds
 **✅ LIVE UI**: Dashboard displays real-time prices, not hardcoded values
 **✅ FALLBACK**: Automatically uses simulated data when live connection unavailable
 **✅ PRODUCTION READY**: Full paper trading with conditional execution
 
-**To enable live data:** Run `python data_niftybank/src/data_niftybank/tools/kite_auth.py` and authenticate via browser.
+**To enable live data:** Run `python -m market_data.tools.kite_auth` and authenticate via browser.
 
 ## Requirements
 

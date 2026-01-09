@@ -1,16 +1,12 @@
-# Agent Position Awareness - Implementation Summary
+# Archived: Agent Position Awareness
 
-## Overview
-This document describes the changes made to make agents position-aware, ensuring they consider current user positions when making buy/sell decisions.
+This document has been archived and moved to `engine_module/docs/archived/AGENT_POSITION_AWARENESS.md` as part of the documentation consolidation on 2026-01-09.
 
-## Problem Statement
-Previously, agents were making trading decisions without knowledge of:
-- Current positions the user is holding
-- Whether to add to existing positions or open new ones
-- When to close existing positions
-- Position limits and risk management
+For current implementation details and usage examples, consult `engine_module/README.md` and the `engine_module/src/` code.
 
-## Changes Made
+---
+
+*Archived on 2026-01-09 — kept for historical reference.*
 
 ### 1. Enhanced Orchestrator (`enhanced_orchestrator.py`)
 

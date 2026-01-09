@@ -18,6 +18,19 @@
 
 #### Technical Indicators
 - `GET /api/v1/technical/indicators/{instrument}` - **ENHANCED** - All technical indicators
+
+#### Engine Signals (Real-time)
+- `GET /api/v1/signals/{instrument}` - Recent signals for an instrument
+- `GET /api/v1/signals/by-id/{signal_id}` - Fetch a full signal document by id
+- `POST /api/v1/signals/mark-executed` - Mark a saved signal as executed in MongoDB
+
+#### Dashboard Trading Endpoints
+- `POST /api/trading/cycle` - Run orchestrator analysis cycle
+- `GET /api/trading/signals` - Fetch signals (UI-friendly wrapper)
+- `GET /api/trading/conditions/{signal_id}` - Check if a signal's conditions are currently met
+- `POST /api/trading/execute/{signal_id}` - Execute signal immediately (fetches full signal and executes trade)
+- `POST /api/trading/execute-when-ready/{signal_id}` - Add a signal to real-time monitoring for conditional execution
+
   - RSI, SMA, EMA, MACD, Bollinger Bands, ATR, ADX, Volume indicators, etc.
 
 ### News API (Port 8005)

@@ -17,6 +17,8 @@ Architecture:
 
 import asyncio
 import logging
+import sys
+import os
 from typing import Dict, Any, List, Optional, Callable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -63,6 +65,7 @@ class TradingCondition:
     
     # Multi-condition support (AND logic)
     additional_conditions: List[Dict[str, Any]] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
     
     # Metadata
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
@@ -140,6 +143,14 @@ class SignalMonitor:
         self._triggered_signals: List[SignalTriggerEvent] = []
         self._technical_service = technical_service
         
+        # Redis client for persisted previous values
+        try:
+            from engine_module.api_service import get_redis_client
+            # Use get_redis_client if available; tests sometimes monkeypatch this function
+            self._redis_client = get_redis_client() if callable(get_redis_client) else None
+        except Exception:
+            self._redis_client = None
+
         # Callbacks for trade execution
         self._on_signal_triggered: Optional[Callable] = None
         
@@ -236,7 +247,14 @@ class SignalMonitor:
         """
         # Get latest indicators from service
         if self._technical_service is None:
-            from market_data.src.market_data.technical_indicators_service import get_technical_service
+            try:
+                from market_data.technical_indicators_service import get_technical_service
+            except ImportError:
+                # Fallback: ensure market_data/src is in path
+                market_data_src = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..', '..', 'market_data', 'src'))
+                if os.path.exists(market_data_src) and market_data_src not in sys.path:
+                    sys.path.insert(0, market_data_src)
+                from market_data.technical_indicators_service import get_technical_service
             self._technical_service = get_technical_service()
         
         indicators_dict = self._technical_service.get_indicators_dict(instrument)
@@ -258,6 +276,12 @@ class SignalMonitor:
             # Check if expired
             if condition.expires_at:
                 if datetime.now().isoformat() > condition.expires_at:
+                    # Mark expired in MongoDB and publish update
+                    try:
+                        from .signal_creator import mark_signal_status
+                        await mark_signal_status(condition.condition_id, "expired")
+                    except Exception:
+                        pass
                     signals_to_remove.append(condition_id)
                     logger.info(f"Signal {condition_id} expired")
                     continue
@@ -298,6 +322,13 @@ class SignalMonitor:
                     f"{condition.indicator}={event.indicator_value:.2f} "
                     f"(threshold: {condition.threshold})"
                 )
+
+                # Mark status in DB and publish (best-effort)
+                try:
+                    from .signal_creator import mark_signal_status
+                    await mark_signal_status(condition.condition_id, "triggered", extra={"triggered_at": event.triggered_at, "indicator_value": event.indicator_value})
+                except Exception:
+                    logger.debug("Failed to mark signal triggered in DB")
                 
                 # Execute callback if registered
                 if self._on_signal_triggered:
@@ -351,17 +382,50 @@ class SignalMonitor:
             result = abs(current_value - condition.threshold) < 0.01
         
         elif condition.operator == ConditionOperator.CROSSES_ABOVE:
-            # Check if value crossed from below to above threshold
-            if condition._previous_value is not None:
-                result = (condition._previous_value <= condition.threshold and 
-                         current_value > condition.threshold)
+            # Check cross using persisted previous value in Redis (more robust across restarts)
+            prev_val = None
+            try:
+                if self._redis_client:
+                    key = f"indicators_prev:{condition.instrument}:{condition.indicator}"
+                    pv = self._redis_client.get(key)
+                    prev_val = float(pv) if pv is not None else None
+            except Exception:
+                prev_val = condition._previous_value
+
+            # Fall back to in-memory previous if Redis not available
+            if prev_val is not None:
+                result = (prev_val <= condition.threshold and current_value > condition.threshold)
+            # Update both Redis and in-memory previous value
+            try:
+                if self._redis_client:
+                    key = f"indicators_prev:{condition.instrument}:{condition.indicator}"
+                    # Set with TTL to avoid stale storage (e.g., 4 hours)
+                    self._redis_client.setex(key, 60 * 60 * 4, str(current_value))
+            except Exception:
+                pass
             condition._previous_value = current_value
         
         elif condition.operator == ConditionOperator.CROSSES_BELOW:
-            # Check if value crossed from above to below threshold
-            if condition._previous_value is not None:
-                result = (condition._previous_value >= condition.threshold and 
-                         current_value < condition.threshold)
+            # Check cross using persisted previous value in Redis
+            prev_val = None
+            try:
+                if self._redis_client:
+                    key = f"indicators_prev:{condition.instrument}:{condition.indicator}"
+                    pv = self._redis_client.get(key)
+                    prev_val = float(pv) if pv is not None else None
+            except Exception:
+                prev_val = condition._previous_value
+
+            if prev_val is not None:
+                result = (prev_val >= condition.threshold and current_value < condition.threshold)
+
+            # Update persisted previous value and in-memory
+            try:
+                if self._redis_client:
+                    key = f"indicators_prev:{condition.instrument}:{condition.indicator}"
+                    self._redis_client.setex(key, 60 * 60 * 4, str(current_value))
+            except Exception:
+                pass
             condition._previous_value = current_value
         
         # Check additional conditions (AND logic)

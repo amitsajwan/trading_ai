@@ -1,0 +1,75 @@
+﻿
+> zerodha-trading-ui@1.0.0 test:e2e
+> playwright test
+
+
+Running 44 tests using 6 workers
+
+
+
+node.exe : [1A[2K(node:38608) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+At line:1 char:1
++ & "C:\Program Files\nodejs/node.exe" "C:\Program Files\nodejs/node_mo ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ([1A[2K(node:3... env being set.:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+(Use `node --trace-warnings ...` to show where the warning was created)
+[1A[2K(node:45200) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+
+[1A[2K(node:44784) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+
+[1A[2K(node:404) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+
+[1A[2K(node:43620) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+
+[1A[2K(node:44240) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+
+[1A[2K(node:38608) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+
+
+(Use `node --trace-warnings ...` to show where the warning was created)
+[1A[2K(node:45200) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+
+
+
+[1A[2K(node:44784) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+[1A[2K(node:404) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+
+[1A[2K(node:43620) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+
+
+[1A[2K[1/44] [chromium] ΓÇ║ e2e\analytics-settings.spec.ts:37:7 ΓÇ║ Analytics and Settings Pages ΓÇ║ should toggle theme in header
+[1A[2K[2/44] [chromium] ΓÇ║ e2e\analytics-settings.spec.ts:62:7 ΓÇ║ Analytics and Settings Pages ΓÇ║ should update settings in Settings page
+
+
+[1A[2K(node:44240) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+[1A[2K[3/44] [chromium] ΓÇ║ e2e\analytics-settings.spec.ts:20:7 ΓÇ║ Analytics and Settings Pages ΓÇ║ should display Settings page with configuration options
+[1A[2K[4/44] [chromium] ΓÇ║ e2e\analytics-settings.spec.ts:4:7 ΓÇ║ Analytics and Settings Pages ΓÇ║ should display Analytics page with title and charts
+[1A[2K[5/44] [chromium] ΓÇ║ e2e\api-integration.spec.ts:4:7 ΓÇ║ API Integration ΓÇ║ should fetch health endpoint
+[1A[2K[chromium] ΓÇ║ e2e\api-integration.spec.ts:4:7 ΓÇ║ API Integration ΓÇ║ should fetch health endpoint
+Health endpoint returned non-JSON response (likely dev server)
+
+[1A[2K[6/44] [chromium] ΓÇ║ e2e\api-integration.spec.ts:32:7 ΓÇ║ API Integration ΓÇ║ should fetch market data endpoint
+[1A[2K[WebServer] (node:34820) [DEP0060] DeprecationWarning: The `util._extend` API is deprecated. Please use 
+Object.assign() instead.
+[WebServer] (Use `node --trace-deprecation ...` to show where the warning was created)
+
+[1A[2K[7/44] [chromium] ΓÇ║ e2e\api-integration.spec.ts:18:7 ΓÇ║ API Integration ΓÇ║ should fetch system health endpoint
