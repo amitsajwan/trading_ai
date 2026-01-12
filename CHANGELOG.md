@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-01-12 — Signals: dedupe, metadata, UI improvements
+
+- Added reason_hash-based deduplication of pending signals (configurable via `SIGNAL_DEDUPE_MINUTES`). When a recently-created pending signal with same `reason_hash` is found, the existing signal id is returned instead of creating a duplicate. ✅
+- Populated `entry_price` for signals when missing, preferring latest tick price from orchestrators. `TradingCondition` now includes `entry_price` and the engine uses it when publishing/executing signals. ✅
+- Added `execution_mode` (`IMMEDIATE` | `CONDITIONAL`), `parsed_conditions`, and `reason_hash` metadata to saved signal documents and API `SignalResponse`. ✅
+- Dashboard: UI updated in `ActiveSignalsWidget` to render `execution_mode`, `entry_price`, `parsed_conditions`, and `reason_hash` for improved observability. ✅
+- Tests: Added/updated unit tests covering condition parsing, `reason_hash` generation, dedupe behavior, and API response fields (see `engine_module/tests/*`). ✅
+- Docs: API contract and changelog entry updated to document new signal fields and behavior. ✅
+
 ## 2026-01-09 — Real-time Signal Robustness & Pub/Sub Improvements
 
 - Added Redis pub/sub publishing of indicator updates in Market Data (`indicators:{instrument}`) to enable loosely-coupled signal monitoring.

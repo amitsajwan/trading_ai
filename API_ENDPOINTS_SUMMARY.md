@@ -55,6 +55,7 @@
 #### Analysis & Signals
 - `POST /api/v1/analyze` - Run orchestrator analysis
 - `GET /api/v1/signals/{instrument}` - Get trading signals
+  - Signals include new metadata fields: `execution_mode`, `parsed_conditions`, `reason_hash`, and `entry_price` to support conditional execution, visibility into parsed conditions, and deduplication.
 - `POST /api/v1/orchestrator/initialize` - Initialize orchestrator
 
 ## 📊 Data Flow

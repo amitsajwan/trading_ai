@@ -1,43 +1,15 @@
-import React, { useEffect, useState } from 'react'
-import { useDispatch, useSelector } from 'react-redux'
-import { Activity, AlertCircle, CheckCircle2, Clock, Play, X } from 'lucide-react'
+import React, { useState } from 'react'
+import { useSelector, useDispatch } from 'react-redux'
+import { Activity, CheckCircle2, Clock, Play, X } from 'lucide-react'
 import { RootState } from '../../store'
-import { 
-  fetchSignals, 
-  checkSignalConditions, 
-  executeSignalWhenReady,
-  TradingSignal 
-} from '../../store/slices/tradingSlice'
+import { executeSignalWhenReady, fetchSignals, TradingSignal } from '../../store/slices/tradingSlice'
 
 export const ActiveSignalsWidget: React.FC = () => {
+  const { signals, loading } = useSelector((state: RootState) => state.trading)
   const dispatch = useDispatch()
-  const { signals, loading, error } = useSelector((state: RootState) => state.trading)
   const [selectedSignal, setSelectedSignal] = useState<string | null>(null)
 
-  useEffect(() => {
-    // Initial fetch
-    dispatch(fetchSignals('BANKNIFTY') as any)
-
-    // Auto-refresh every 10 seconds
-    const interval = setInterval(() => {
-      dispatch(fetchSignals('BANKNIFTY') as any)
-    }, 10000)
-
-    return () => clearInterval(interval)
-  }, [dispatch])
-
-  // Check conditions for all signals periodically
-  useEffect(() => {
-    const checkInterval = setInterval(() => {
-      signals.forEach(signal => {
-        if (signal.status === 'pending' && signal.signal_id) {
-          dispatch(checkSignalConditions(signal.signal_id) as any)
-        }
-      })
-    }, 5000) // Check every 5 seconds
-
-    return () => clearInterval(checkInterval)
-  }, [signals, dispatch])
+  // Signals are now received via WebSocket - no need for HTTP polling
 
   const handleExecuteWhenReady = async (signal: TradingSignal) => {
     if (signal.signal_id || signal.condition_id) {
@@ -88,13 +60,6 @@ export const ActiveSignalsWidget: React.FC = () => {
           </span>
         </div>
       </div>
-
-      {error && (
-        <div className="mb-4 bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-3 flex items-center gap-2">
-          <AlertCircle className="w-4 h-4 text-red-600 dark:text-red-400" />
-          <p className="text-sm text-red-700 dark:text-red-400">{error}</p>
-        </div>
-      )}
 
       {loading.signals ? (
         <div className="text-center py-8">
@@ -159,6 +124,31 @@ export const ActiveSignalsWidget: React.FC = () => {
                     <p className="text-xs text-gray-600 dark:text-gray-400 mt-2 line-clamp-2">
                       {signal.reasoning}
                     </p>
+                  )}
+
+                  {/* New: execution mode & entry price */}
+                  <div className="mt-2 text-xs text-gray-600 dark:text-gray-400">
+                    {signal.execution_mode && (
+                      <span className="mr-3 px-2 py-0.5 bg-gray-100 dark:bg-gray-700 rounded">Mode: {signal.execution_mode}</span>
+                    )}
+                    {signal.entry_price !== undefined && (
+                      <span className="mr-3">Entry: ₹{signal.entry_price.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                    )}
+                    {signal.reason_hash && (
+                      <span className="mr-3 font-mono">Hash: {String(signal.reason_hash).slice(0,8)}</span>
+                    )}
+                  </div>
+
+                  {/* Parsed conditions */}
+                  {signal.parsed_conditions && signal.parsed_conditions.length > 0 && (
+                    <div className="mt-2 text-xs text-gray-600 dark:text-gray-400">
+                      <div className="font-medium text-xs mb-1">Conditions:</div>
+                      <ul className="list-disc pl-4">
+                        {signal.parsed_conditions.map((c, idx) => (
+                          <li key={idx}>{c.indicator} {c.operator} {c.threshold}</li>
+                        ))}
+                      </ul>
+                    </div>
                   )}
 
                   <div className="flex items-center gap-4 mt-2 text-xs text-gray-500 dark:text-gray-500">
