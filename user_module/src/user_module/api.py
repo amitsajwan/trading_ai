@@ -2,9 +2,11 @@
 
 from typing import Optional, Any
 from datetime import datetime
+from decimal import Decimal
+import json
 
 from .contracts import (
-    UserAccount, TradeExecutionRequest, TradeExecutionResult
+    UserAccount, TradeExecutionRequest, TradeExecutionResult, Trade
 )
 from .stores import MongoUserStore, MongoPortfolioStore, MongoTradeStore
 from .services import (
@@ -307,7 +309,49 @@ async def execute_user_trade(mongo_client, user_id: str,
             )
 
             trade_store = components["trade_store"]
-            await trade_store.record_trade(trade_record)
+            ok = await trade_store.record_trade(trade_record)
+
+            # Publish trade execution event and updated portfolio for UI consumers (best-effort)
+            try:
+                # Lazy import to avoid circular dependency when running as a module
+                from engine_module.api_service import get_redis_client
+                redis_client = get_redis_client()
+                payload = {
+                    "trade_executed": {
+                        "id": trade_record.trade_id,
+                        "order_id": trade_record.order_id,
+                        "instrument": trade_record.instrument,
+                        "side": trade_record.side,
+                        "quantity": trade_record.quantity,
+                        "price": float(trade_record.price),
+                        "timestamp": trade_record.timestamp.isoformat() if hasattr(trade_record.timestamp, 'isoformat') else str(trade_record.timestamp),
+                        "status": trade_record.status,
+                        "signal_id": getattr(trade_record, 'signal_id', None)
+                    }
+                }
+
+                # Include a quick portfolio snapshot if available
+                try:
+                    portfolio_store = components.get("portfolio_store")
+                    if portfolio_store:
+                        # Attempt to build a lightweight portfolio snapshot
+                        positions = await portfolio_store.get_positions(trade_record.user_id)
+                        # Simplify for JSON (list of dicts)
+                        payload["portfolio"] = [{
+                            "instrument": p.instrument,
+                            "side": p.side,
+                            "quantity": p.quantity,
+                            "entry_price": float(p.entry_price)
+                        } for p in positions]
+                except Exception:
+                    # not critical
+                    pass
+
+                redis_client.publish("engine:trade", json.dumps(payload))
+                redis_client.publish(f"engine:trade:{trade_record.instrument}", json.dumps(payload))
+            except Exception:
+                # Best-effort: don't fail the API if Redis publish not available
+                pass
 
         return result
 
