@@ -27,6 +27,7 @@ export interface TradingSignal {
   confidence: number;
   timestamp: string;
   entry_price?: number;
+  entry_price_source?: 'agent' | 'tick' | 'unknown';
   stop_loss?: number;
   take_profit?: number;
   reasoning?: string;
@@ -208,6 +209,7 @@ export const TradingSignalSchema = z.object({
   confidence: z.number().min(0).max(1),
   timestamp: z.string(),
   entry_price: z.number().optional(),
+  entry_price_source: z.enum(['agent','tick','unknown']).optional(),
   stop_loss: z.number().optional(),
   take_profit: z.number().optional(),
   reasoning: z.string().optional(),

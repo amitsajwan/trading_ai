@@ -8,6 +8,13 @@ export const ActiveSignalsWidget: React.FC = () => {
   const { signals, loading } = useSelector((state: RootState) => state.trading)
   const dispatch = useDispatch()
   const [selectedSignal, setSelectedSignal] = useState<string | null>(null)
+  const [copiedHash, setCopiedHash] = useState<string | null>(null)
+
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard?.writeText(text)
+    setCopiedHash(text)
+    setTimeout(() => setCopiedHash(null), 2000)
+  }
 
   // Signals are now received via WebSocket - no need for HTTP polling
 
@@ -129,13 +136,26 @@ export const ActiveSignalsWidget: React.FC = () => {
                   {/* New: execution mode & entry price */}
                   <div className="mt-2 text-xs text-gray-600 dark:text-gray-400">
                     {signal.execution_mode && (
-                      <span className="mr-3 px-2 py-0.5 bg-gray-100 dark:bg-gray-700 rounded">Mode: {signal.execution_mode}</span>
+                      <span
+                        title={signal.execution_mode === 'IMMEDIATE' ? 'Execute immediately on next tick' : 'Execute when parsed conditions are met'}
+                        className={`mr-3 px-2 py-0.5 rounded text-xs font-medium ${signal.execution_mode === 'IMMEDIATE' ? 'bg-green-50 text-green-800 dark:bg-green-900/20 dark:text-green-300' : 'bg-yellow-50 text-yellow-800 dark:bg-yellow-900/20 dark:text-yellow-300'}`}
+                      >
+                        {signal.execution_mode}
+                      </span>
                     )}
+
                     {signal.entry_price !== undefined && (
-                      <span className="mr-3">Entry: ₹{signal.entry_price.toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span>
+                      <span className="mr-3">Entry: ₹{signal.entry_price.toLocaleString('en-IN', { minimumFractionDigits: 2 })} <small className="text-xs text-gray-400">({signal.entry_price_source || (signal.metadata?.entry_price_source) || 'unknown'})</small></span>
                     )}
+
                     {signal.reason_hash && (
-                      <span className="mr-3 font-mono">Hash: {String(signal.reason_hash).slice(0,8)}</span>
+                      <button
+                        onClick={() => copyToClipboard(String(signal.reason_hash))}
+                        title={String(signal.reason_hash)}
+                        className="mr-3 font-mono text-left"
+                      >
+                        Hash: {String(signal.reason_hash).slice(0,8)} {copiedHash === signal.reason_hash && <span className="ml-1 text-green-600">✓</span>}
+                      </button>
                     )}
                   </div>
 
