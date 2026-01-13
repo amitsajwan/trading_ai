@@ -43,6 +43,7 @@ python-dateutil>=2.8.0
 pytz>=2023.0
 matplotlib>=3.7.0  # For backtest visualization
 psutil>=5.9.0  # Process management (optional, used by start scripts)
+aiohttp>=3.8.0  # Async HTTP client for monitoring
 
 # Web Scraping
 beautifulsoup4>=4.12.0

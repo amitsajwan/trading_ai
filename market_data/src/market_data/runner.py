@@ -46,7 +46,9 @@ def start_process(name, cmd, env=None):
     env['PYTHONPATH'] = pythonpath
 
     # If cmd is a list, call it directly
-    proc = subprocess.Popen(cmd, env=env)
+    # Set working directory to ensure collectors can find credentials.json
+    cwd = os.getcwd()
+    proc = subprocess.Popen(cmd, env=env, cwd=cwd)
     time.sleep(1)
     return proc
 

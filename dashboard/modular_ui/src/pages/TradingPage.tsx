@@ -3,28 +3,31 @@ import { useDispatch, useSelector } from 'react-redux'
 import { Activity, AlertCircle, CheckCircle2 } from 'lucide-react'
 import { RootState } from '../store'
 import { fetchLatestDecision, fetchPortfolio, clearError } from '../store/slices/tradingSlice'
-import { TradeExecutionWidget } from '../components/widgets/TradeExecutionWidget'
-import { ActivePositionsWidget } from '../components/widgets/ActivePositionsWidget'
+// ENABLED: Trading widgets (WebSocket-based or mock data)
 import { QuickActionsWidget } from '../components/widgets/QuickActionsWidget'
-import { RiskManagementWidget } from '../components/widgets/RiskManagementWidget'
-import { ActiveSignalsWidget } from '../components/widgets/ActiveSignalsWidget'
+import { CurrentSignalWidget } from '../components/widgets/CurrentSignalWidget'
+// DISABLED: Components requiring backend
+// import { TradeExecutionWidget } from '../components/widgets/TradeExecutionWidget'
+// import { ActivePositionsWidget } from '../components/widgets/ActivePositionsWidget'
+// import { RiskManagementWidget } from '../components/widgets/RiskManagementWidget'
+// import { ActiveSignalsWidget } from '../components/widgets/ActiveSignalsWidget'
 
 export const TradingPage: React.FC = () => {
   const dispatch = useDispatch()
   const { error, portfolio, latestDecision } = useSelector((state: RootState) => state.trading)
 
   useEffect(() => {
-    // Initial data fetch
-    dispatch(fetchLatestDecision() as any)
-    dispatch(fetchPortfolio() as any)
+    // DISABLED: No backend API calls to prevent errors
+    // dispatch(fetchLatestDecision() as any)
+    // dispatch(fetchPortfolio() as any)
 
-    // Auto-refresh every 10 seconds
-    const interval = setInterval(() => {
-      dispatch(fetchLatestDecision() as any)
-      dispatch(fetchPortfolio() as any)
-    }, 10000)
+    // DISABLED: No auto-refresh
+    // const interval = setInterval(() => {
+    //   dispatch(fetchLatestDecision() as any)
+    //   dispatch(fetchPortfolio() as any)
+    // }, 10000)
 
-    return () => clearInterval(interval)
+    // return () => clearInterval(interval)
   }, [dispatch])
 
   useEffect(() => {
@@ -118,19 +121,20 @@ export const TradingPage: React.FC = () => {
         </div>
       )}
 
-      {/* Main Widgets Grid */}
+      {/* ENABLED: Trading Widgets */}
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-        {/* Left Column - Main Trading Actions */}
+        {/* Left Column - Current Signal */}
         <div className="xl:col-span-2 space-y-6">
-          <TradeExecutionWidget />
-          <ActiveSignalsWidget />
-          <ActivePositionsWidget />
+          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-6">
+            <CurrentSignalWidget />
+          </div>
         </div>
 
-        {/* Right Column - Quick Actions and Risk Management */}
+        {/* Right Column - Quick Actions */}
         <div className="space-y-6">
-          <QuickActionsWidget />
-          <RiskManagementWidget />
+          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-6">
+            <QuickActionsWidget />
+          </div>
         </div>
       </div>
     </div>

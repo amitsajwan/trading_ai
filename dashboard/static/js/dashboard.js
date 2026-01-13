@@ -203,6 +203,7 @@ function updateSignal(signal) {
     const card = document.getElementById('signal-card');
     const icon = {'BUY': '🚀', 'SELL': '📉', 'HOLD': '📊'}[signal.signal] || '📊';
     
+    // Update banner elements
     const signalIconEl = document.getElementById('signal-icon');
     const signalTextEl = document.getElementById('signal-text');
     const signalReasoningEl = document.getElementById('signal-reasoning');
@@ -219,6 +220,25 @@ function updateSignal(signal) {
     if (signalSlEl) signalSlEl.textContent = signal.stop_loss ? formatCurrency(signal.stop_loss) : '-';
     if (signalTpEl) signalTpEl.textContent = signal.take_profit ? formatCurrency(signal.take_profit) : '-';
     if (card) card.className = 'signal-banner ' + (signal.signal || 'HOLD').toLowerCase();
+    
+    // Update Signals section elements
+    const signalsIconEl = document.getElementById('signals-icon');
+    const signalsTextEl = document.getElementById('signals-text');
+    const signalsReasoningEl = document.getElementById('signals-reasoning');
+    const signalsConfEl = document.getElementById('signals-conf');
+    const signalsEntryEl = document.getElementById('signals-entry');
+    const signalsSlEl = document.getElementById('signals-sl');
+    const signalsTpEl = document.getElementById('signals-tp');
+    const signalsSummaryEl = document.getElementById('signals-executive-summary');
+    
+    if (signalsIconEl) signalsIconEl.textContent = icon;
+    if (signalsTextEl) signalsTextEl.textContent = signal.signal || 'HOLD';
+    if (signalsReasoningEl) signalsReasoningEl.textContent = signal.reasoning || 'Analysis in progress';
+    if (signalsConfEl) signalsConfEl.textContent = signal.confidence ? formatPercent(signal.confidence) : '-';
+    if (signalsEntryEl) signalsEntryEl.textContent = signal.entry_price ? formatCurrency(signal.entry_price) : '-';
+    if (signalsSlEl) signalsSlEl.textContent = signal.stop_loss ? formatCurrency(signal.stop_loss) : '-';
+    if (signalsTpEl) signalsTpEl.textContent = signal.take_profit ? formatCurrency(signal.take_profit) : '-';
+    if (signalsSummaryEl) signalsSummaryEl.innerHTML = marked.parse(signal.executive_summary || 'Executive summary not available');
     
     // Update system time display if available
     if (signal.system_date) {

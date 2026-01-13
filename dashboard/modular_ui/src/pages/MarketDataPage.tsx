@@ -3,10 +3,15 @@ import { useDispatch, useSelector } from 'react-redux'
 import { Activity, AlertCircle, CheckCircle2 } from 'lucide-react'
 import { RootState } from '../store'
 import { fetchMarketOverview, clearError } from '../store/slices/marketDataSlice'
-import { LiveTickDataWidget } from '../components/widgets/LiveTickDataWidget'
+// Selectively enabling components - only WebSocket-based ones
+import { LiveTickDataWidgetV2 } from '../components/widgets/market/LiveTickDataWidgetV2'
+// ENABLED: Options Chain widget (WebSocket-based)
 import { OptionsChainWidget } from '../components/widgets/OptionsChainWidget'
+// ENABLED: Order Flow widget (mock data based on current tick)
 import { OrderFlowWidget } from '../components/widgets/OrderFlowWidget'
-import { HistoricalDataWidget } from '../components/widgets/HistoricalDataWidget'
+// ENABLED: Advanced Charting widget (OHLC data based)
+import { AdvancedChartWidget } from '../components/widgets/AdvancedChartWidget'
+// import { HistoricalDataWidget } from '../components/widgets/HistoricalDataWidget'
 
 const INSTRUMENTS = ['BANKNIFTY', 'NIFTY', 'SENSEX', 'FINNIFTY']
 
@@ -16,8 +21,8 @@ export const MarketDataPage: React.FC = () => {
   const [selectedInstrument, setSelectedInstrument] = useState<string>('BANKNIFTY')
 
   useEffect(() => {
-    // Fetch market overview on mount
-    dispatch(fetchMarketOverview() as any)
+    // DISABLED: No backend API calls to prevent errors
+    // dispatch(fetchMarketOverview() as any)
   }, [dispatch])
 
   useEffect(() => {
@@ -136,37 +141,29 @@ export const MarketDataPage: React.FC = () => {
         </div>
       )}
 
-      {/* Main Widgets Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Live Tick Data */}
-        <LiveTickDataWidget 
-          instrument={selectedInstrument}
-          autoRefresh={true}
-          refreshInterval={2000}
-        />
+      {/* Market Data Widgets */}
+      <div className="space-y-6">
+        {/* ENABLED: Real-time Market Data (WebSocket) */}
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-6">
+          <LiveTickDataWidgetV2
+            instrument={selectedInstrument}
+          />
+        </div>
 
-        {/* Options Chain */}
-        <OptionsChainWidget 
-          instrument={selectedInstrument}
-          autoRefresh={true}
-          refreshInterval={5000}
-          maxVisibleStrikes={10}
-        />
+        {/* ENABLED: Options Chain Widget */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-6">
+            <OptionsChainWidget instrument={selectedInstrument} />
+          </div>
 
-        {/* Order Flow */}
-        <OrderFlowWidget 
-          autoRefresh={true}
-          refreshInterval={3000}
-        />
+          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-6">
+            <OrderFlowWidget instrument={selectedInstrument} />
+          </div>
 
-        {/* Historical Data */}
-        <HistoricalDataWidget 
-          instrument={selectedInstrument}
-          defaultTimeframe="15minute"
-          defaultLimit={20}
-          autoRefresh={true}
-          refreshInterval={60000}
-        />
+          <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-6 lg:col-span-2">
+            <AdvancedChartWidget instrument={selectedInstrument} timeframe="1min" />
+          </div>
+        </div>
       </div>
     </div>
   )

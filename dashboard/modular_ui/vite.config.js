@@ -5,11 +5,27 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: 8888,
-    // Vite automatically handles SPA routing - no historyApiFallback needed
     strictPort: true,
     host: true,
+    // Ensure SPA routing works properly
+    historyApiFallback: {
+      index: '/index.html'
+    },
     proxy: {
       // Market data mappings: normalize UI paths to market_data API routes
+      '/api/v1/options/chain': {
+        target: 'http://localhost:8004',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/api\/v1\/options\/chain/, '/api/v1/options/chain'),
+        configure: (proxy, options) => {
+          proxy.on('error', (err, req, res) => {
+            console.log('Proxy error for options chain:', err);
+          });
+          proxy.on('proxyReq', (proxyReq, req, res) => {
+            console.log('Proxying options chain request:', req.url, '->', proxyReq.path);
+          });
+        }
+      },
       '/api/market-data/options/chain': {
         target: 'http://localhost:8004',
         changeOrigin: true,
@@ -175,12 +191,51 @@ export default defineConfig({
         rewrite: (path) => path.replace(/^\/api\/user/, '/api'),
       },
       
-      // Analytics endpoints - return empty data for now (endpoints not yet implemented)
-      // Frontend handles 404s gracefully
+      // Analytics endpoints - now proxy to FastAPI backend
       '/api/analytics': {
-        target: 'http://localhost:8007',
+        target: 'http://localhost:8000',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/analytics/, '/api/analytics'),
+      },
+      
+      // Risk Management API (Layer 8) - proxy to FastAPI dashboard backend
+      // FastAPI dashboard (app.py) runs on port 8000 (API backend only)
+      // Vite proxies /api/risk/* requests to the FastAPI backend
+      '/api/risk': {
+        target: 'http://localhost:8000',  // FastAPI dashboard backend
+        changeOrigin: true,
+        rewrite: (path) => path,  // Keep path as-is: /api/risk/*
+      },
+      // Dashboard API endpoints - proxy to FastAPI backend
+      '/api/health': {
+        target: 'http://localhost:8000',  // FastAPI dashboard backend
+        changeOrigin: true,
+        rewrite: (path) => path,
+      },
+      // General dashboard API catch-all (must come after specific routes)
+      '/api': {
+        target: 'http://localhost:8000',  // FastAPI dashboard backend for unmatched /api/* routes
+        changeOrigin: true,
+        rewrite: (path) => path,
+        // Only proxy if not already matched by other proxy rules
+        configure: (proxy, _options) => {
+          proxy.on('proxyReq', (proxyReq, req, _res) => {
+            // Skip if already handled by other proxies
+            const path = proxyReq.path;
+            if (path.startsWith('/api/market-data') || 
+                path.startsWith('/api/news') || 
+                path.startsWith('/api/engine') || 
+                path.startsWith('/api/trading') ||
+                path.startsWith('/api/user') ||
+                path.startsWith('/api/portfolio') ||
+                path.startsWith('/api/agent-status') ||
+                path.startsWith('/api/recent-trades') ||
+                path.startsWith('/api/analytics')) {
+              // These are handled by other proxies, don't proxy here
+              return;
+            }
+          });
+        },
       },
     },
   },

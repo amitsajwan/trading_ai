@@ -1,58 +1,35 @@
-import React, { useEffect } from 'react'
-import { useDispatch, useSelector } from 'react-redux'
-import { RootState } from '../store'
-import {
-  fetchCurrentTick,
-  fetchMarketOverview,
-  fetchOptionsChain
-} from '../store/slices/marketDataSlice'
-import {
-  fetchLatestDecision,
-  fetchPortfolio,
-  fetchAgentStatuses,
-  fetchOptionsStrategy
-} from '../store/slices/tradingSlice'
-import { MarketOverviewWidget } from '../components/widgets/MarketOverviewWidget'
+import React, { useState } from 'react'
 import { CurrentSignalWidget } from '../components/widgets/CurrentSignalWidget'
-import { OptionsStrategyWidget } from '../components/widgets/OptionsStrategyWidget'
-import { PortfolioWidget } from '../components/widgets/PortfolioWidget'
-import { RecentTradesWidget } from '../components/widgets/RecentTradesWidget'
+import { MarketOverviewWidget } from '../components/widgets/MarketOverviewWidget'
 import { TechnicalIndicatorsWidget } from '../components/widgets/TechnicalIndicatorsWidget'
+import { ActivePositionsWidget } from '../components/widgets/ActivePositionsWidget'
+import { RiskSummaryWidget } from '../components/widgets/RiskSummaryWidget'
+import { QuickActionsWidget } from '../components/widgets/QuickActionsWidget'
 import { AgentStatusWidget } from '../components/widgets/AgentStatusWidget'
+import { ActiveSignalsWidget } from '../components/widgets/ActiveSignalsWidget'
+import { AgentResponsesWidget } from '../components/widgets/AgentResponsesWidget'
+import { OrchestratorDecisionsWidget } from '../components/widgets/OrchestratorDecisionsWidget'
+import { TradeHistoryWidget } from '../components/widgets/TradeHistoryWidget'
+import { KeyInsightsWidget } from '../components/widgets/KeyInsightsWidget'
+import { AgentDetailModal } from '../components/widgets/AgentDetailModal'
 import { WidgetShell } from '../components/widgets/WidgetShell'
 
+type TabType = 'dashboard' | 'analytics' | 'signals'
+
 export const DashboardPage: React.FC = () => {
-  const dispatch = useDispatch()
-  const { dashboardLayout } = useSelector((state: RootState) => state.ui)
+  const [activeTab, setActiveTab] = useState<TabType>('dashboard')
+  const [selectedAgent, setSelectedAgent] = useState<any>(null)
+  const [agentModalOpen, setAgentModalOpen] = useState(false)
 
-  // Initial data loading
-  useEffect(() => {
-    // Market data
-    dispatch(fetchCurrentTick())
-    dispatch(fetchMarketOverview())
-    dispatch(fetchOptionsChain())
+  // Data loading and refresh hooks are disabled
+  // All data comes from WebSocket real-time streams
+  // No HTTP polling or dispatch needed
 
-    // Trading data
-    dispatch(fetchLatestDecision())
-    dispatch(fetchPortfolio())
-    dispatch(fetchAgentStatuses())
-    dispatch(fetchOptionsStrategy())
-  }, [dispatch])
-
-  // Auto-refresh
-  useEffect(() => {
-    if (!dashboardLayout.autoRefresh) return
-
-    const interval = setInterval(() => {
-      dispatch(fetchCurrentTick())
-      dispatch(fetchMarketOverview()) // Refresh overview periodically to get fresh VWAP, volume, etc.
-      dispatch(fetchLatestDecision())
-      dispatch(fetchPortfolio())
-      dispatch(fetchOptionsStrategy())
-    }, dashboardLayout.refreshInterval * 1000)
-
-    return () => clearInterval(interval)
-  }, [dispatch, dashboardLayout.autoRefresh, dashboardLayout.refreshInterval])
+  const tabs: { id: TabType; label: string; description: string }[] = [
+    { id: 'dashboard', label: 'Dashboard', description: 'Core trading view with signals & market data' },
+    { id: 'analytics', label: 'Analytics', description: 'Technical analysis & risk management' },
+    { id: 'signals', label: 'Signals', description: 'AI agent signals & trading decisions' }
+  ]
 
   return (
     <div className="space-y-6">
@@ -73,57 +50,142 @@ export const DashboardPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Dashboard Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6">
-        {/* Market Overview */}
-        <div className="xl:col-span-2">
-          <WidgetShell id="market-overview" title="Market Overview">
-            <MarketOverviewWidget />
-          </WidgetShell>
-        </div>
-
-        {/* Current Signal */}
-        <div className="xl:col-span-1">
-          <WidgetShell id="current-signal" title="Current Signal">
-            <CurrentSignalWidget />
-          </WidgetShell>
-        </div>
-
-        {/* Options Strategy */}
-        <div className="xl:col-span-2">
-          <WidgetShell id="options-strategy" title="Options Strategy">
-            <OptionsStrategyWidget />
-          </WidgetShell>
-        </div>
-
-        {/* Portfolio */}
-        <div className="xl:col-span-1">
-          <WidgetShell id="portfolio" title="Portfolio">
-            <PortfolioWidget />
-          </WidgetShell>
-        </div>
-
-        {/* Recent Trades */}
-        <div className="xl:col-span-2">
-          <WidgetShell id="recent-trades" title="Recent Trades">
-            <RecentTradesWidget />
-          </WidgetShell>
-        </div>
-
-        {/* Technical Indicators */}
-        <div className="xl:col-span-3">
-          <WidgetShell id="technical-indicators" title="Technical Indicators">
-            <TechnicalIndicatorsWidget />
-          </WidgetShell>
-        </div>
-
-        {/* Agent Status */}
-        <div className="xl:col-span-3">
-          <WidgetShell id="agent-status" title="Agent Status">
-            <AgentStatusWidget />
-          </WidgetShell>
-        </div>
+      {/* Tab Navigation */}
+      <div className="border-b border-gray-200 dark:border-gray-700">
+        <nav className="flex space-x-8">
+          {tabs.map((tab) => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`py-4 px-1 border-b-2 font-medium text-sm transition-colors ${
+                activeTab === tab.id
+                  ? 'border-primary-500 text-primary-600 dark:text-primary-400'
+                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300 dark:text-gray-400 dark:hover:text-gray-300'
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </nav>
       </div>
+
+      {/* Tab Content */}
+      <div className="min-h-96">
+        {activeTab === 'dashboard' && (
+          <div className="space-y-6">
+            <div className="text-sm text-gray-600 dark:text-gray-400">
+              {tabs.find(t => t.id === 'dashboard')?.description}
+            </div>
+            <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6">
+              {/* Current Signal - Primary Trading Focus */}
+              <div className="xl:col-span-1">
+                <WidgetShell id="current-signal" title="Current Signal">
+                  <CurrentSignalWidget />
+                </WidgetShell>
+              </div>
+
+              {/* Market Intelligence - AI Insights */}
+              <div className="xl:col-span-1">
+                <KeyInsightsWidget />
+              </div>
+
+              {/* Market Overview - Live Market Pulse */}
+              <div className="xl:col-span-1">
+                <WidgetShell id="market-overview" title="Market Overview">
+                  <MarketOverviewWidget />
+                </WidgetShell>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'analytics' && (
+          <div className="space-y-6">
+            <div className="text-sm text-gray-600 dark:text-gray-400">
+              {tabs.find(t => t.id === 'analytics')?.description}
+            </div>
+            <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-4 gap-6">
+              {/* Risk Summary */}
+              <div className="xl:col-span-1">
+                <WidgetShell id="risk-summary" title="Risk Summary">
+                  <RiskSummaryWidget />
+                </WidgetShell>
+              </div>
+
+              {/* Active Positions */}
+              <div className="xl:col-span-1">
+                <WidgetShell id="active-positions" title="Active Positions">
+                  <ActivePositionsWidget />
+                </WidgetShell>
+              </div>
+
+              {/* Quick Actions */}
+              <div className="xl:col-span-1">
+                <WidgetShell id="quick-actions" title="Quick Actions">
+                  <QuickActionsWidget />
+                </WidgetShell>
+              </div>
+
+              {/* Technical Indicators */}
+              <div className="xl:col-span-1">
+                <WidgetShell id="technical-indicators" title="Technical Indicators">
+                  <TechnicalIndicatorsWidget />
+                </WidgetShell>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'signals' && (
+          <div className="space-y-6">
+            <div className="text-sm text-gray-600 dark:text-gray-400">
+              {tabs.find(t => t.id === 'signals')?.description}
+            </div>
+
+            {/* Agent Status Overview */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <WidgetShell id="agent-status-signals" title="Agent Status">
+                <AgentStatusWidget onAgentClick={(agent) => {
+                  setSelectedAgent(agent)
+                  setAgentModalOpen(true)
+                }} />
+              </WidgetShell>
+
+              <WidgetShell id="orchestrator-decisions" title="Orchestrator Decisions">
+                <OrchestratorDecisionsWidget />
+              </WidgetShell>
+            </div>
+
+            {/* Agent Responses and Active Signals */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <WidgetShell id="agent-responses" title="Agent Responses">
+                <AgentResponsesWidget />
+              </WidgetShell>
+
+              <WidgetShell id="active-signals" title="Active Signals">
+                <ActiveSignalsWidget />
+              </WidgetShell>
+            </div>
+
+            {/* Trade History */}
+            <div className="grid grid-cols-1 gap-6">
+              <WidgetShell id="trade-history" title="Trade History">
+                <TradeHistoryWidget />
+              </WidgetShell>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Agent Detail Modal */}
+      <AgentDetailModal
+        agent={selectedAgent}
+        isOpen={agentModalOpen}
+        onClose={() => {
+          setAgentModalOpen(false)
+          setSelectedAgent(null)
+        }}
+      />
     </div>
   )
 }

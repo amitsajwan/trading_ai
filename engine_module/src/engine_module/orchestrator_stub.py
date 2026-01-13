@@ -291,12 +291,59 @@ class TradingOrchestrator:
             if self.market_data_provider and hasattr(self.market_data_provider, 'get_ohlc_data'):
                 # New Redis-based provider
                 ohlc_data = await self.market_data_provider.get_ohlc_data(instrument, periods=100)
-                current_price = ohlc_data[-1].get('close', 0) if ohlc_data else 0
+                
+                # Get REAL-TIME current price from Redis tick data (not stale OHLC close)
+                current_price = None
+                try:
+                    # Try to get latest tick price from Redis (real-time)
+                    import redis
+                    redis_client = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
+                    instrument_clean = instrument.upper().replace(" ", "").replace("-", "_")
+                    
+                    # Try key variations (BANKNIFTY vs NIFTYBANK)
+                    key_variations = [
+                        instrument_clean,
+                        instrument_clean.replace("BANKNIFTY", "NIFTYBANK"),
+                        instrument_clean.replace("NIFTYBANK", "BANKNIFTY"),
+                    ]
+                    
+                    for key_var in key_variations:
+                        price_key = f"price:{key_var}:last_price"
+                        price_str = redis_client.get(price_key)
+                        if price_str:
+                            current_price = float(price_str)
+                            break
+                    
+                    # If price key doesn't exist, try tick:latest format
+                    if current_price is None:
+                        for key_var in key_variations:
+                            tick_key = f"tick:{key_var}:latest"
+                            tick_data = redis_client.get(tick_key)
+                            if tick_data:
+                                import json
+                                tick = json.loads(tick_data)
+                                if isinstance(tick, dict) and 'last_price' in tick:
+                                    current_price = float(tick['last_price'])
+                                    break
+                                elif isinstance(tick, dict) and 'price' in tick:
+                                    current_price = float(tick['price'])
+                                    break
+                    
+                except Exception as redis_err:
+                    logger.debug(f"Could not get real-time price from Redis: {redis_err}")
+                    current_price = None
+                
+                # Fallback to OHLC close if tick price not available (less ideal but better than 0)
+                if current_price is None or current_price <= 0:
+                    current_price = ohlc_data[-1].get('close', 0) if ohlc_data else 0
+                    if current_price > 0:
+                        logger.debug(f"Using OHLC close price {current_price} as fallback (tick data unavailable)")
+                
                 return {
                     "instrument": instrument,
                     "ticks": [],  # Not available from Redis provider
                     "ohlc": ohlc_data,
-                    "current_price": current_price,
+                    "current_price": current_price,  # ✅ Now uses real-time tick price
                     "data_freshness": datetime.utcnow().isoformat()
                 }
             elif hasattr(self, 'market_store') and self.market_store:
@@ -582,6 +629,14 @@ class TradingOrchestrator:
                     valid_results.append(result)
 
         logger.info(f"Successfully ran {len(valid_results)}/{len(self.agents)} agents")
+
+        # Save individual agent decisions to API service for UI display
+        if valid_results:
+            try:
+                await self._save_agent_decisions_to_api(valid_results, instrument)
+            except Exception as save_error:
+                logger.warning(f"Failed to save agent decisions to API: {save_error}")
+
         return valid_results
 
     def _aggregate_results(self, agent_results: list[AnalysisResult]) -> Dict[str, Any]:
@@ -1018,12 +1073,27 @@ Respond in this exact JSON format:
         try:
             from .signal_creator import create_signals_from_decision, save_signal_to_mongodb
             
-            # Create signals from decision
+            # Determine current_price if not provided: prefer latest tick
+            cp = current_price
+            if cp is None:
+                try:
+                    if hasattr(self.market_data_provider, 'get_latest_ticks'):
+                        ticks = await self.market_data_provider.get_latest_ticks(instrument, limit=1)
+                        if ticks:
+                            t = ticks[0]
+                            if isinstance(t, dict):
+                                cp = t.get('last_price') or t.get('last') or t.get('price')
+                            else:
+                                cp = getattr(t, 'last_price', None) or getattr(t, 'price', None) or getattr(t, 'last', None)
+                except Exception:
+                    cp = None
+
+            # Create signals from decision (prefer fetched current_price)
             signals = create_signals_from_decision(
                 analysis_result=decision,
                 instrument=instrument,
                 technical_indicators=technical_indicators,
-                current_price=current_price,
+                current_price=cp,
                 strategy_config=self.config.get("strategy_config")
             )
             
@@ -1119,3 +1189,54 @@ Respond in this exact JSON format:
             }
         )
 
+    async def _save_agent_decisions_to_api(self, agent_results: list[AnalysisResult], instrument: str):
+        """Save individual agent decisions to API service for UI display and Redis publishing."""
+        try:
+            import aiohttp
+            import json
+            from datetime import datetime
+
+            # Prepare agent decisions for API
+            decisions_data = []
+            for result in agent_results:
+                agent_name = getattr(result, 'agent', None) or getattr(result, '_agent_name', 'Unknown')
+
+                # Map decision to UI-friendly format
+                decision = result.decision
+                if decision and 'BUY' in str(decision).upper():
+                    direction = 'BUY'
+                elif decision and 'SELL' in str(decision).upper():
+                    direction = 'SELL'
+                else:
+                    direction = 'HOLD'
+
+                decisions_data.append({
+                    "agent_name": agent_name,
+                    "signal": str(result.decision) if result.decision else "HOLD",
+                    "decision": str(result.decision) if result.decision else "HOLD",
+                    "direction": direction,
+                    "confidence": float(result.confidence) if result.confidence is not None else 0.0,
+                    "timestamp": datetime.now().isoformat(),
+                    "instrument": instrument
+                })
+
+            if not decisions_data:
+                logger.warning("No agent decisions to save")
+                return
+
+            # Send to API service
+            api_url = "http://localhost:8004/api/v1/decisions"
+            async with aiohttp.ClientSession() as session:
+                async with session.post(api_url, json=decisions_data) as response:
+                    if response.status == 200:
+                        result = await response.json()
+                        saved_count = result.get('saved_count', 0)
+                        logger.info(f"✅ Saved {saved_count} agent decisions to API service")
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"❌ Failed to save agent decisions: HTTP {response.status} - {error_text}")
+
+        except ImportError as ie:
+            logger.warning(f"aiohttp not available for API calls: {ie}")
+        except Exception as e:
+            logger.error(f"Failed to save agent decisions to API: {e}", exc_info=True)

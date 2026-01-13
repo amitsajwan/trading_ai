@@ -64,6 +64,9 @@ class TechnicalIndicators:
     bb_upper: float | None = None
     bb_middle: float | None = None
     bb_lower: float | None = None
+    bb_width: float | None = None
+    bb_percent_b: float | None = None
+    atr_14: float | None = None
     volume_sma: float | None = None
     volume_ratio: float | None = None
     price_change_pct: float | None = None

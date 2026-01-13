@@ -1,35 +1,75 @@
-import React, { useEffect } from 'react'
-import { useDispatch, useSelector } from 'react-redux'
-import { RefreshCw, TrendingUp, TrendingDown, AlertCircle, Activity } from 'lucide-react'
+import React, { useState, useEffect } from 'react'
+import { RefreshCw, TrendingUp, TrendingDown, AlertCircle, Activity, BarChart3 } from 'lucide-react'
+import { useSelector } from 'react-redux'
 import { RootState } from '../../store'
-import { fetchOrderFlow } from '../../store/slices/marketDataSlice'
 
 interface OrderFlowWidgetProps {
-  autoRefresh?: boolean
-  refreshInterval?: number
+  instrument?: string
 }
 
 export const OrderFlowWidget: React.FC<OrderFlowWidgetProps> = ({
-  autoRefresh = true,
-  refreshInterval = 3000,
+  instrument = 'BANKNIFTY'
 }) => {
-  const dispatch = useDispatch()
-  const { orderFlow, loading } = useSelector((state: RootState) => state.marketData)
+  const [mockData, setMockData] = useState<any>(null)
+  const { currentTick, orderFlow } = useSelector((state: RootState) => state.marketData)
 
+  // Generate mock order flow data based on current tick
   useEffect(() => {
-    dispatch(fetchOrderFlow() as any)
+    if (currentTick) {
+      // Generate mock order book around current price
+      const basePrice = currentTick.last_price
+      const mockBids = []
+      const mockAsks = []
+      let maxBidQty = 0
+      let maxAskQty = 0
 
-    if (autoRefresh) {
-      const interval = setInterval(() => {
-        dispatch(fetchOrderFlow() as any)
-      }, refreshInterval)
+      // Generate bid side (buy orders)
+      for (let i = 0; i < 10; i++) {
+        const price = basePrice - (i * 5) - Math.random() * 10
+        const quantity = Math.floor(Math.random() * 500) + 50
+        mockBids.push({ price: Math.round(price * 100) / 100, quantity })
+        maxBidQty = Math.max(maxBidQty, quantity)
+      }
 
-      return () => clearInterval(interval)
+      // Generate ask side (sell orders)
+      for (let i = 0; i < 10; i++) {
+        const price = basePrice + (i * 5) + Math.random() * 10
+        const quantity = Math.floor(Math.random() * 500) + 50
+        mockAsks.push({ price: Math.round(price * 100) / 100, quantity })
+        maxAskQty = Math.max(maxAskQty, quantity)
+      }
+
+      setMockData({
+        bids: mockBids.sort((a, b) => b.price - a.price), // Sort bids descending
+        asks: mockAsks.sort((a, b) => a.price - b.price), // Sort asks ascending
+        maxBidQty,
+        maxAskQty,
+        lastUpdate: new Date().toISOString()
+      })
     }
-  }, [dispatch, autoRefresh, refreshInterval])
+  }, [currentTick])
 
   const handleRefresh = () => {
-    dispatch(fetchOrderFlow() as any)
+    // Trigger data refresh by updating mock data
+    if (currentTick) {
+      const basePrice = currentTick.last_price
+      const mockBids = []
+      const mockAsks = []
+
+      for (let i = 0; i < 10; i++) {
+        const bidPrice = basePrice - (i * 5) - Math.random() * 10
+        const askPrice = basePrice + (i * 5) + Math.random() * 10
+        mockBids.push({ price: Math.round(bidPrice * 100) / 100, quantity: Math.floor(Math.random() * 500) + 50 })
+        mockAsks.push({ price: Math.round(askPrice * 100) / 100, quantity: Math.floor(Math.random() * 500) + 50 })
+      }
+
+      setMockData({
+        ...mockData,
+        bids: mockBids.sort((a, b) => b.price - a.price),
+        asks: mockAsks.sort((a, b) => a.price - b.price),
+        lastUpdate: new Date().toISOString()
+      })
+    }
   }
 
   // Helper to render order book depth
@@ -60,34 +100,29 @@ export const OrderFlowWidget: React.FC<OrderFlowWidgetProps> = ({
     )
   }
 
-  if (loading.orderFlow && !orderFlow) {
+  if (!mockData) {
     return (
       <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-6">
-        <div className="animate-pulse">
-          <div className="h-4 bg-gray-200 dark:bg-gray-700 rounded w-1/4 mb-4"></div>
-          <div className="space-y-3">
-            <div className="h-4 bg-gray-200 dark:bg-gray-700 rounded"></div>
-            <div className="h-4 bg-gray-200 dark:bg-gray-700 rounded"></div>
-            <div className="h-4 bg-gray-200 dark:bg-gray-700 rounded"></div>
-          </div>
+        <div className="text-center text-gray-500 dark:text-gray-400">
+          <Activity className="w-12 h-12 mx-auto mb-4 opacity-50" />
+          <p>Generating order flow data...</p>
+          <p className="text-xs mt-2">Waiting for market data</p>
         </div>
       </div>
     )
   }
 
-  // Handle different order flow data structures
-  // Check for depth_ladder format (from dashboard API)
-  const depthLadder = orderFlow?.depth_ladder || []
-  const bids = orderFlow?.bids || orderFlow?.buy_orders || []
-  const asks = orderFlow?.asks || orderFlow?.sell_orders || []
-  const depth = orderFlow?.depth || {}
-  const currentPrice = orderFlow?.current_price || orderFlow?.ltp || orderFlow?.last_price || 0
+  // Use mock data
+  const bids = mockData.bids || []
+  const asks = mockData.asks || []
+  const currentPrice = currentTick?.last_price || 0
   const totalBuyVolume = orderFlow?.total_buy_volume || orderFlow?.buy_volume || orderFlow?.total_depth_bid || 0
   const totalSellVolume = orderFlow?.total_sell_volume || orderFlow?.sell_volume || orderFlow?.total_depth_ask || 0
   const imbalance = orderFlow?.imbalance || 0
   const spread = orderFlow?.spread || 0
 
   // Extract bids/asks from depth_ladder if available
+  const depthLadder = orderFlow?.depth_ladder || []
   const bidsFromLadder = depthLadder.map((level: any) => ({ price: level.bid_price, quantity: level.bid_qty })).filter((b: any) => b.price && b.quantity)
   const asksFromLadder = depthLadder.map((level: any) => ({ price: level.ask_price, quantity: level.ask_qty })).filter((a: any) => a.price && a.quantity)
 

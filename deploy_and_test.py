@@ -18,6 +18,7 @@ from datetime import datetime
 
 # Add current directory to Python path
 sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'market_data', 'src'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'data_niftybank', 'src'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'genai_module', 'src'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'user_module', 'src'))

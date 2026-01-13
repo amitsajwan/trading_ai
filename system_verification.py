@@ -47,6 +47,7 @@ def verify_components():
     try:
         import sys
         sys.path.insert(0, os.path.dirname(__file__))
+        sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'market_data', 'src'))
         sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'data_niftybank', 'src'))
 
         from market_data.api import build_store

@@ -85,6 +85,124 @@ analysis = await execution_agent.analyze({
 - **FundamentalAgent**: Company/stock analysis
 - **LearningAgent**: Adaptive strategy optimization
 
+## 📊 Analysis Tools
+
+### **Multi-Timeframe Analyzer** - Confluence Detection
+
+Analyzes market data across multiple timeframes (5m, 15m, 1h, daily) to identify trend confluence and trading signal strength.
+
+```python
+from engine_module.analysis import MultiTimeframeAnalyzer
+from market_data import TechnicalIndicatorsService
+
+# Initialize analyzer
+analyzer = MultiTimeframeAnalyzer({
+    'timeframes': ['5m', '15m', '1h', 'daily'],
+    'required_alignment': 3  # Minimum timeframes that must agree
+})
+
+# Get indicators for all timeframes (from TechnicalIndicatorsService)
+indicators_service = TechnicalIndicatorsService(redis_client)
+all_indicators = indicators_service.get_all_timeframe_indicators("BANKNIFTY")
+
+# Convert TechnicalIndicators objects to dict format
+indicators_data = {}
+for tf, indicators in all_indicators.items():
+    indicators_data[tf] = {
+        'close': indicators.current_price,
+        'sma_20': indicators.sma_20,
+        'ema_50': indicators.ema_50,
+        'rsi': indicators.rsi_14,
+        'macd': indicators.macd_value,
+        'macd_signal': indicators.macd_signal,
+        'adx': indicators.adx_14
+    }
+
+# Analyze for confluence
+analysis = analyzer.analyze(indicators_data)
+
+print(f"Dominant Trend: {analysis.dominant_trend.value}")
+print(f"Confluence Score: {analysis.confluence_score:.1f}%")
+print(f"Timeframes Aligned: {analysis.is_aligned}")
+print(f"Bullish: {analysis.bullish_count}, Bearish: {analysis.bearish_count}")
+
+# Get trading signal
+signal = analyzer.get_trading_signal(analysis)
+print(f"Signal: {signal['action']} (Confidence: {signal['confidence']}%)")
+# Output: Signal: BUY (Confidence: 85%) - Bullish confluence (87.5%) across 4 timeframes
+```
+
+**Features:**
+- **Trend Detection**: Determines bullish/bearish/neutral trend for each timeframe
+- **Strength Calculation**: Calculates trend strength (0-100) based on ADX, RSI, MACD
+- **Confluence Score**: Measures agreement across timeframes (0-100%)
+- **Dominant Trend**: Identifies overall trend weighted by timeframe importance
+- **Alignment Check**: Verifies if timeframes agree on direction
+- **Trading Signals**: Generates BUY/SELL/HOLD signals with confidence scores
+
+**Configuration:**
+```python
+config = {
+    'timeframes': ['5m', '15m', '1h', 'daily'],
+    'required_alignment': 3,  # Min timeframes that must agree
+    'rsi_oversold': 30,
+    'rsi_overbought': 70,
+    'adx_trending': 25,
+    'timeframe_weights': {
+        '5m': 1,    # Lower weight (short-term noise)
+        '15m': 2,
+        '1h': 3,
+        'daily': 4  # Higher weight (long-term trend)
+    }
+}
+analyzer = MultiTimeframeAnalyzer(config)
+```
+
+### **Regime Detector** - Market State Identification
+
+Detects current market regime (trending, ranging, high volatility, breakout) for strategy selection.
+
+```python
+from engine_module.analysis import RegimeDetector, MarketRegime
+
+# Initialize detector
+detector = RegimeDetector({
+    'adx_trending': 25,
+    'iv_high_percentile': 80,
+    'volume_spike_threshold': 2.0
+})
+
+# Get market data with indicators
+market_data = {
+    'close': 45000,
+    'sma_20': 44800,
+    'ema_50': 44700,
+    'adx': 30,
+    'iv_percentile': 75,
+    'volume_ratio': 1.8,
+    'bollinger_upper': 45200,
+    'bollinger_lower': 44500,
+    'bollinger_percent_b': 0.85
+}
+
+# Detect regime
+regime = detector.detect(market_data)
+print(f"Market Regime: {regime.value}")
+
+# Get suitable strategies for this regime
+strategies = detector.get_suitable_strategies(regime)
+print(f"Suitable Strategies: {strategies}")
+# Output: ['iron_condor', 'butterfly', 'short_strangle'] for RANGING regime
+```
+
+**Detected Regimes:**
+- **TRENDING_UP**: Strong upward trend (ADX > 25, price > MAs)
+- **TRENDING_DOWN**: Strong downward trend (ADX > 25, price < MAs)
+- **RANGING**: Sideways market (low ADX, price oscillating)
+- **HIGH_VOLATILITY**: High IV regime (IV percentile > 80)
+- **BREAKOUT_UP**: Upward breakout (volume spike + price near upper BB)
+- **BREAKOUT_DOWN**: Downward breakout (volume spike + price near lower BB)
+
 ## 🎯 Orchestrator: The Brain
 
 ### Real-time signals & Redis integration (added 2026-01-09)
@@ -410,7 +528,9 @@ await ui_provider.update_latest_decision(result)
 - **LLM Integration**: Sophisticated prompt engineering
 - **Signal Aggregation**: Intelligent consensus algorithms
 - **Options Strategies**: Comprehensive strategy mapping
-- **Testing**: 22 comprehensive unit tests
+- **Multi-Timeframe Analysis**: ✅ Confluence detection across timeframes
+- **Regime Detection**: ✅ Market state identification for strategy selection
+- **Testing**: 42+ comprehensive unit tests (agents + analysis tools)
 
 ### **🎯 Production Ready Features**
 - **Async Architecture**: Non-blocking concurrent analysis
@@ -423,8 +543,7 @@ await ui_provider.update_latest_decision(result)
 - **Machine Learning Agents**: Predictive modeling integration
 - **Real-time Adaptation**: Dynamic strategy adjustment
 - **Backtesting Framework**: Historical performance analysis
-- **Multi-Timeframe Analysis**: Cross-timeframe signal confirmation
-- **Advanced Options Strategies**: Complex derivatives positioning
+- **Advanced Options Strategies**: Complex derivatives positioning (spreads, iron condors)
 
 ## 📚 Module Structure
 
@@ -441,8 +560,11 @@ engine_module/
 │   │   ├── risk_agents.py
 │   │   ├── execution_agent.py
 │   │   └── ... (6 more agents)
+│   ├── analysis/            # Analysis tools
+│   │   ├── regime_detector.py      # Market regime detection
+│   │   └── multi_timeframe.py      # Multi-timeframe confluence analysis
 │   └── tools/               # P&L calculator, utilities
-├── tests/                   # 22 comprehensive tests
+├── tests/                   # Comprehensive tests (22+ tests)
 └── README.md               # This documentation
 ```
 

@@ -22,6 +22,7 @@ const navigation = [
   { name: 'Trading', href: '/trading', icon: TrendingUp, current: false },
   { name: 'Analytics', href: '/analytics', icon: Activity, current: false },
   { name: 'News', href: '/news', icon: Newspaper, current: false },
+  { name: 'Signals', href: '/signals', icon: Activity, current: false },
   { name: 'Settings', href: '/settings', icon: Settings, current: false },
 ]
 

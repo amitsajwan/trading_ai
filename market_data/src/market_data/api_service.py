@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 """FastAPI REST API service for market_data module.
 
 This provides HTTP endpoints for:
@@ -7,8 +9,10 @@ This provides HTTP endpoints for:
 - Health checks
 """
 
-from __future__ import annotations
+print("MARKET DATA API MODULE LOADED")
 
+import asyncio
+import logging
 import os
 import sys
 from datetime import datetime, timedelta, timezone
@@ -20,6 +24,8 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 import redis
 
+logger = logging.getLogger(__name__)
+
 # Add parent directory to path for config
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 from config import get_config
@@ -28,7 +34,7 @@ from config import get_config
 IST = timezone(timedelta(hours=5, minutes=30))
 
 from .api import build_store
-from .adapters.mock_options_chain import MockOptionsChainAdapter
+from .adapters.zerodha_options_chain import ZerodhaOptionsChainAdapter
 from .contracts import MarketTick, OHLCBar, OptionsData, MarketStore
 try:
     from .technical_indicators_service import TechnicalIndicatorsService
@@ -92,29 +98,98 @@ class TechnicalIndicatorsResponse(BaseModel):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize and cleanup resources using FastAPI lifespan events."""
+    print("LIFESPAN HANDLER STARTED")
     try:
         print("Market Data API: Starting initialization...")
         # Startup: initialize services
-        get_store()
-        
+        try:
+            get_store()
+            print("Market Data API: Store initialized")
+        except Exception as e:
+            print(f"Market Data API: Store initialization failed: {e}")
+
         # Initialize technical indicators service with Redis
-        if TechnicalIndicatorsService is not None:
-            global _technical_service
-            redis_client = get_redis_client()
-            _technical_service = TechnicalIndicatorsService(redis_client=redis_client)
-        
+        print("Market Data API: Initializing technical indicators service...")
+        try:
+            if TechnicalIndicatorsService is not None:
+                global _technical_service
+                redis_client = get_redis_client()
+                _technical_service = TechnicalIndicatorsService(redis_client=redis_client)
+                print("Market Data API: Technical indicators service initialized successfully")
+            else:
+                print("Market Data API: TechnicalIndicatorsService is None - not available")
+        except Exception as e:
+            print(f"Market Data API: Technical indicators service initialization failed: {e}")
+
         # Check Redis connection
-        redis_client = get_redis_client()
-        redis_client.ping()
-        
+        try:
+            redis_client = get_redis_client()
+            redis_client.ping()
+            print("Market Data API: Redis connection verified")
+        except Exception as e:
+            print(f"Market Data API: Redis connection failed: {e}")
+
         # Try to initialize options client (non-blocking)
-        get_options_client()
-        
+        try:
+            get_options_client()
+            print("Market Data API: Options client initialized")
+        except Exception as e:
+            print(f"Market Data API: Options client initialization failed: {e}")
+
         # Socket.IO removed - real-time updates now handled by Redis WebSocket Gateway
         # Market Data API now focuses on REST endpoints only
-        
+
         print("Market Data API: Services initialized successfully")
+
+        # Start background task to continuously calculate and publish indicators
+        async def publish_indicators():
+            """Background task to continuously calculate and publish technical indicators."""
+            print("Market Data API: Starting indicator publisher background task...")
+            while True:
+                try:
+                    if _technical_service is not None and _store is not None:
+                        # Initialize OHLC data for BANKNIFTY (similar to API endpoint)
+                        ohlc_bars = list(_store.get_ohlc("BANKNIFTY", "1min", limit=100))
+                        if ohlc_bars and len(ohlc_bars) >= 20:
+                            # Convert OHLC bars to dictionaries for initialization
+                            ohlc_dicts = []
+                            for bar in ohlc_bars:
+                                ohlc_dicts.append({
+                                    "timestamp": bar.start_at.isoformat() if hasattr(bar.start_at, 'isoformat') else str(bar.start_at),
+                                    "open": bar.open,
+                                    "high": bar.high,
+                                    "low": bar.low,
+                                    "close": bar.close,
+                                    "volume": bar.volume
+                                })
+
+                            # Initialize technical indicators service with OHLC data
+                            _technical_service.initialize_with_ohlc_data("BANKNIFTY", ohlc_dicts)
+
+                            # Calculate indicators for BANKNIFTY
+                            indicators = _technical_service.calculate_indicators("BANKNIFTY")
+                            if indicators:
+                                print(f"Market Data API: Published indicators for BANKNIFTY at {datetime.now().isoformat()}")
+                        else:
+                            print(f"Market Data API: Insufficient OHLC data for BANKNIFTY: {len(ohlc_bars) if ohlc_bars else 0} bars")
+                except Exception as e:
+                    print(f"Market Data API: Error publishing indicators: {e}")
+                # Publish every 30 seconds
+                await asyncio.sleep(30)
+
+        # Create background task
+        indicator_task = asyncio.create_task(publish_indicators())
+
         yield
+
+        # Cleanup: cancel the background task
+        if indicator_task and not indicator_task.done():
+            indicator_task.cancel()
+            try:
+                await indicator_task
+            except asyncio.CancelledError:
+                pass
+        print("Market Data API: Indicator publisher stopped")
     except Exception as e:
         print(f"Market Data API: Initialization failed: {e}")
         import traceback
@@ -133,6 +208,7 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+
 # Add CORS middleware to allow requests from dashboard
 app.add_middleware(
     CORSMiddleware,
@@ -147,6 +223,7 @@ _store: Optional[MarketStore] = None
 _options_client: Optional[OptionsData] = None
 _redis_client: Optional[redis.Redis] = None
 _technical_service: Optional[TechnicalIndicatorsService] = None
+
 
 # Socket.IO removed - real-time updates now handled by Redis WebSocket Gateway
 
@@ -225,15 +302,15 @@ def get_options_client() -> Optional[OptionsData]:
             instrument = os.getenv("INSTRUMENT_SYMBOL", "BANKNIFTY")
             if is_live_mode:
                 print(f"Market Data API: Using Zerodha Options Chain (LIVE mode - real-time quote() API) for {instrument}")
-                _options_client = MockOptionsChainAdapter(kite, instrument, use_live_quotes=True)
-                print(f"Market Data API: [OK] Zerodha options client initialized (LIVE - real-time quotes, no mock data)")
+                _options_client = ZerodhaOptionsChainAdapter(kite, instrument, use_live_quotes=True)
+                print(f"Market Data API: [OK] Zerodha options client initialized (LIVE - real-time quotes)")
             else:
                 print(f"Market Data API: Using Zerodha Options Chain (historical mode - ltp() API) for {instrument}")
-                _options_client = MockOptionsChainAdapter(kite, instrument, use_live_quotes=False)
+                _options_client = ZerodhaOptionsChainAdapter(kite, instrument, use_live_quotes=False)
                 print(f"Market Data API: [OK] Zerodha options client initialized (historical - last traded price)")
             return _options_client
         except Exception as e:
-            print(f"Market Data API: Mock options client failed: {e}")
+            print(f"Market Data API: Zerodha options client failed: {e}")
             import traceback
             traceback.print_exc()
             print(f"Market Data API: Legacy options client failed: {e}")
@@ -326,7 +403,11 @@ async def health_check():
         dependencies["data_availability"] = "redis_unavailable"
     
     # Determine overall status
-    from market_data.adapters.historical_tick_replayer import IST
+    try:
+        from market_data.adapters.historical_tick_replayer import IST
+    except ImportError:
+        from datetime import timezone, timedelta
+        IST = timezone(timedelta(hours=5, minutes=30))
     status = "healthy"
     if redis_status != "healthy":
         status = "degraded"
@@ -634,7 +715,8 @@ async def get_options_chain(instrument: str):
             # Futures price is optional, log debug only
             pass  # futures_price remains None
 
-        return OptionsChainResponse(
+        # Build response object
+        response = OptionsChainResponse(
             instrument=instrument.upper(),
             expiry=expiry_str,
             strikes=normalized_strikes,
@@ -643,11 +725,38 @@ async def get_options_chain(instrument: str):
             pcr=pcr,
             max_pain=max_pain
         )
+        
+        # Publish to Redis for real-time WebSocket updates
+        try:
+            import json
+            redis_client = get_redis_client()
+            # Convert response to dict for JSON serialization
+            response_dict = response.model_dump() if hasattr(response, 'model_dump') else response.dict()
+            # Publish to Redis channel: market:options:{instrument}
+            channel = f"market:options:{instrument.upper()}"
+            redis_client.publish(channel, json.dumps(response_dict))
+        except Exception as pub_err:
+            # Don't fail the API request if publishing fails
+            # Log error but continue (Redis pub/sub may not be configured)
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.debug(f"Failed to publish options chain to Redis: {pub_err}")
+
+        return response
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.get("/api/v1/technical/status")
+async def get_technical_status():
+    """Check if technical indicators service is initialized."""
+    return {
+        "technical_service_available": TechnicalIndicatorsService is not None,
+        "technical_service_initialized": _technical_service is not None,
+        "redis_available": True  # We know Redis works from direct test
+    }
 
 @app.get("/api/v1/technical/indicators/{instrument}", response_model=TechnicalIndicatorsResponse)
 async def get_technical_indicators(
@@ -672,21 +781,35 @@ async def get_technical_indicators(
         redis_client = get_redis_client()
         key_prefix = f"indicators:{instrument.upper()}:"
         indicators_dict = {}
-        for key in redis_client.scan_iter(match=f"{key_prefix}*"):
+
+        logger.info(f"🔍 Looking for indicators with prefix: {key_prefix}")
+        found_keys = list(redis_client.scan_iter(match=f"{key_prefix}*"))
+        logger.info(f"🔍 Found {len(found_keys)} indicator keys in Redis")
+
+        for key in found_keys:
             indicator_name = key.replace(key_prefix, "")
             value = redis_client.get(key)
             try:
                 indicators_dict[indicator_name] = float(value) if value else None
-            except (ValueError, TypeError):
-                indicators_dict[indicator_name] = value
+                logger.debug(f"📊 Loaded indicator {indicator_name}: {indicators_dict[indicator_name]}")
+            except (ValueError, TypeError) as e:
+                # value is already a string in newer redis-py versions
+                indicators_dict[indicator_name] = value if value else None
+                logger.debug(f"📊 Loaded indicator {indicator_name}: {indicators_dict[indicator_name]} (string)")
+
+        logger.info(f"📊 Loaded {len(indicators_dict)} indicators from Redis cache")
 
         # If no cached indicators, try to calculate from OHLC data
         if not indicators_dict and _technical_service is not None:
+            logger.info(f"⚠️ No cached indicators found, calculating from OHLC data for {instrument}")
             try:
                 store = get_store()
                 # Get recent OHLC bars to calculate indicators
                 ohlc_bars = list(store.get_ohlc(instrument.upper(), timeframe, limit=100))
+                logger.info(f"📊 Retrieved {len(ohlc_bars)} OHLC bars for {instrument}")
+
                 if ohlc_bars and len(ohlc_bars) >= 20:  # Need at least 20 bars for meaningful indicators
+                    logger.info(f"🔄 Calculating indicators from {len(ohlc_bars)} OHLC bars")
                     # Feed OHLC data to technical service
                     for bar in ohlc_bars:
                         candle_dict = {
@@ -699,13 +822,19 @@ async def get_technical_indicators(
                             "timestamp": bar.start_at.isoformat()
                         }
                         _technical_service.update_candle(instrument.upper(), candle_dict)
-                    
+
                     # Get calculated indicators
                     indicators = _technical_service.get_indicators_dict(instrument.upper())
                     if indicators:
                         indicators_dict = indicators
+                        logger.info(f"✅ Calculated {len(indicators)} indicators from OHLC data")
+                        logger.debug(f"📊 ATR_14: {indicators.get('atr_14')}, ATR_20: {indicators.get('atr_20')}")
+                    else:
+                        logger.warning("❌ No indicators returned from calculation")
+                else:
+                    logger.warning(f"❌ Insufficient OHLC data: {len(ohlc_bars)} bars (need >= 20)")
             except Exception as e:
-                logger.warning(f"Failed to calculate indicators from OHLC: {e}")
+                logger.error(f"❌ Failed to calculate indicators from OHLC: {e}", exc_info=True)
         
         if not indicators_dict:
             raise HTTPException(
@@ -971,6 +1100,37 @@ async def get_market_depth(instrument: str):
 # Socket.IO removed - real-time updates now handled by Redis WebSocket Gateway
 # Export the FastAPI app directly (no Socket.IO wrapping)
 main_app = app
+
+# Initialize services after all functions are defined
+print("INIT CODE STARTING...")
+print("Market Data API: Initializing services...")
+try:
+    get_store()
+    print("Market Data API: Store initialized")
+
+    if TechnicalIndicatorsService is not None:
+        redis_client = get_redis_client()
+        _technical_service = TechnicalIndicatorsService(redis_client=redis_client)
+        print("Market Data API: Technical indicators service initialized successfully")
+    else:
+        print("Market Data API: TechnicalIndicatorsService is None - not available")
+
+    redis_client = get_redis_client()
+    redis_client.ping()
+    print("Market Data API: Redis connection verified")
+
+    get_options_client()
+    print("Market Data API: Options client initialized")
+
+    print("Market Data API: All services initialized successfully")
+
+    # Background indicator publishing will be handled by the lifespan handler
+
+except Exception as e:
+    print(f"Market Data API: Service initialization failed: {e}")
+    import traceback
+    traceback.print_exc()
+
 
 if __name__ == "__main__":
     import uvicorn

@@ -5,6 +5,15 @@ from engine_module.contracts import Agent, AnalysisResult, OptionsStrategy, Opti
 import logging
 from datetime import datetime, timedelta
 
+# Import standardized indicator names
+try:
+    from market_data.technical_indicators_constants import *
+except ImportError:
+    # Fallback if constants not available
+    RSI_14 = "rsi_14"
+    ADX_14 = "adx_14"
+    TREND_DIRECTION = "trend_direction"
+
 logger = logging.getLogger(__name__)
 
 
@@ -30,9 +39,9 @@ class OptionsStrategyAgent(Agent):
                 )
 
             # Analyze market conditions
-            trend = technical.get('trend_direction', 'SIDEWAYS')
-            rsi = technical.get('rsi', 50)
-            adx = technical.get('adx', 20)
+            trend = technical.get(TREND_DIRECTION, 'SIDEWAYS')
+            rsi = technical.get(RSI_14, 50)
+            adx = technical.get(ADX_14, 20)
 
             # Strategy selection logic
             if trend == 'UP' and rsi < 70:  # Bullish but not overbought

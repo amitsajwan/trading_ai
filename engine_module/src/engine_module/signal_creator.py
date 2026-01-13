@@ -162,6 +162,34 @@ def create_signals_from_decision(
     
     # Extract conditions from reasoning
     parsed_conditions = extract_conditions_from_reasoning(reasoning, current_price)
+
+    # Determine execution mode: if we have explicit parsed conditions -> CONDITIONAL, else IMMEDIATE
+    execution_mode = 'CONDITIONAL' if parsed_conditions else 'IMMEDIATE'
+
+    # Attach parsed condition normalized forms for metadata
+    normalized_conditions = []
+    for cond in parsed_conditions:
+        normalized_conditions.append({
+            'indicator': cond.get('indicator'),
+            'operator': cond.get('operator').value if hasattr(cond.get('operator'), 'value') else str(cond.get('operator')),
+            'threshold': cond.get('threshold'),
+            'source': cond.get('source')
+        })
+
+    
+    # Validate and adjust thresholds for current_price conditions
+    if parsed_conditions and current_price and current_price > 0:
+        for cond in parsed_conditions:
+            if cond.get("indicator") == "current_price" and cond.get("threshold") is not None:
+                threshold = float(cond["threshold"])
+                if threshold < current_price * 0.9:
+                    old_threshold = threshold
+                    cond["threshold"] = current_price * 0.99
+                    logger.info(f"Adjusted threshold from {old_threshold} to {cond['threshold']} for current_price condition (too low)")
+                elif threshold > current_price * 1.1:
+                    old_threshold = threshold
+                    cond["threshold"] = current_price * 1.01
+                    logger.info(f"Adjusted threshold from {old_threshold} to {cond['threshold']} for current_price condition (too high)")
     
     # If no conditions parsed, create default condition based on decision
     if not parsed_conditions:
@@ -192,24 +220,33 @@ def create_signals_from_decision(
     
     # Create signal for each primary condition
     # Primary condition is the first one; others become additional_conditions
+    # DEBUG: show parsed conditions
+    # print debug only in test runs where stdout is visible
+    try:
+        logger.debug("parsed_conditions: %s", parsed_conditions)
+    except Exception:
+        pass
+
     if parsed_conditions:
+        logger.debug('entering creation block')
         primary_condition = parsed_conditions[0]
+        logger.debug('primary_condition: %s', primary_condition)
         additional_conditions = []
         
         # Convert additional conditions to proper format
         for cond in parsed_conditions[1:]:
+            logger.debug('extra cond: %s', cond)
             additional_conditions.append({
                 "indicator": cond.get("indicator", ""),
                 "operator": cond.get("operator").value if hasattr(cond.get("operator"), "value") else str(cond.get("operator")),
                 "threshold": cond.get("threshold", 0)
             })
-        
-        # Determine action (BUY or SELL)
-        action = "BUY"
-        if "SELL" in decision or "PUT" in decision:
-            action = "SELL"
-        elif "BUY" in decision:
-            action = "BUY"
+        logger.debug('after extra loop')
+        # Determine action (BUY, SELL, or strategy name for options)
+        if strategy_type == "OPTIONS":
+            action = decision  # e.g., "IRON_CONDOR", "BUY_CALL", etc.
+        else:
+            action = "SELL" if "SELL" in decision or "PUT" in decision else "BUY"
         
         # Calculate position size based on confidence
         position_size = 1.0
@@ -220,70 +257,101 @@ def create_signals_from_decision(
         elif confidence < 0.4:
             position_size = 0.5
         
-        # Generate unique condition ID
-        condition_id = f"{instrument}_{decision}_{uuid.uuid4().hex[:8]}_{int(datetime.now().timestamp())}"
-        
-        # Set expiry (default: cycle interval minutes or 15 minutes)
-        now = datetime.now()
-        # Resolution order: details.valid_for_minutes -> strategy_config.signal_valid_minutes -> default 15
-        valid_minutes = None
+        # Recompute reason_hash now that 'action' is known
+        import hashlib
         try:
-            valid_minutes = int(details.get('valid_for_minutes')) if details and isinstance(details, dict) and details.get('valid_for_minutes') is not None else None
+            reason_hash_src = json.dumps({
+                'action': action,
+                'instrument': instrument,
+                'conditions': normalized_conditions,
+                'reasoning': reasoning or '' ,
+                'entry_price': entry_price
+            }, sort_keys=True)
+            reason_hash = hashlib.sha1(reason_hash_src.encode('utf-8')).hexdigest()[:12]
+        except Exception:
+            reason_hash = None
+
+    # Prepare expiry and validity window
+    now = datetime.now()
+    # Resolution order: details.valid_for_minutes -> strategy_config.signal_valid_minutes -> default 15
+    valid_minutes = None
+    try:
+        valid_minutes = int(details.get('valid_for_minutes')) if details and isinstance(details, dict) and details.get('valid_for_minutes') is not None else None
+    except Exception:
+        valid_minutes = None
+    if not valid_minutes and strategy_config and isinstance(strategy_config, dict):
+        try:
+            valid_minutes = int(strategy_config.get('signal_valid_minutes')) if strategy_config.get('signal_valid_minutes') is not None else None
         except Exception:
             valid_minutes = None
-        if not valid_minutes and strategy_config and isinstance(strategy_config, dict):
-            try:
-                valid_minutes = int(strategy_config.get('signal_valid_minutes')) if strategy_config.get('signal_valid_minutes') is not None else None
-            except Exception:
-                valid_minutes = None
-        if not valid_minutes:
-            valid_minutes = 15  # default one orchestrator cycle
+    if not valid_minutes:
+        valid_minutes = 15  # default one orchestrator cycle
 
-        expiry_time = now + timedelta(minutes=valid_minutes)
-        # Ensure expiry does not go beyond market close (3:30 PM)
-        market_close = now.replace(hour=15, minute=30, second=0, microsecond=0)
-        if expiry_time > market_close:
-            expiry_time = market_close
-        
-        # Prepare metadata (include options strategy summary if present in details)
-        metadata: Dict[str, Any] = {"signal_source": "orchestrator_decision"}
-        if details and isinstance(details, dict) and details.get('options_strategy'):
-            osum = details.get('options_strategy')
-            metadata['options_strategy_summary'] = {
-                'strategy_type': osum.get('strategy_type'),
-                'underlying': osum.get('underlying'),
-                'expiry': osum.get('expiry'),
-                'legs_count': len(osum.get('legs', [])),
-                'max_profit': osum.get('max_profit'),
-                'max_loss': osum.get('max_loss'),
-                'margin_required': osum.get('margin_required')
-            }
+    expiry_time = now + timedelta(minutes=valid_minutes)
+    # Ensure expiry does not go beyond market close (3:30 PM)
+    market_close = now.replace(hour=15, minute=30, second=0, microsecond=0)
+    if expiry_time > market_close:
+        expiry_time = market_close
 
-        # Create TradingCondition
-        signal = TradingCondition(
-            condition_id=condition_id,
-            instrument=instrument,
-            indicator=primary_condition.get("indicator", "rsi_14"),
-            operator=primary_condition.get("operator", ConditionOperator.GREATER_THAN),
-            threshold=primary_condition.get("threshold", 0.0),
-            action=action,
-            strategy_type=strategy_type,
-            position_size=position_size,
-            confidence=confidence,
-            stop_loss=stop_loss,
-            take_profit=take_profit,
-            additional_conditions=additional_conditions,
-            metadata=metadata,
-            expires_at=expiry_time.isoformat(),
-            is_active=True
-        )
-        
-        signals.append(signal)
-        logger.info(
-            f"Created signal {condition_id}: {action} {instrument} when "
-            f"{signal.indicator} {signal.operator.value} {signal.threshold}"
-        )
-    
+    # Prepare metadata (include options strategy summary if present in details)
+    metadata: Dict[str, Any] = {"signal_source": "orchestrator_decision"}
+    if details and isinstance(details, dict) and details.get('options_strategy'):
+        osum = details.get('options_strategy')
+        metadata['options_strategy_summary'] = {
+            'strategy_type': osum.get('strategy_type'),
+            'underlying': osum.get('underlying'),
+            'expiry': osum.get('expiry'),
+            'legs_count': len(osum.get('legs', [])),
+            'max_profit': osum.get('max_profit'),
+            'max_loss': osum.get('max_loss'),
+            'margin_required': osum.get('margin_required')
+        }
+
+    # Attach execution metadata
+    metadata['execution_mode'] = execution_mode
+    metadata['parsed_conditions'] = normalized_conditions
+    # reason_hash may be computed later after action - leave placeholder for now
+    if 'reason_hash' not in metadata:
+        metadata['reason_hash'] = None
+
+
+    # Now that reason_hash is computed, set it in metadata as well
+    if reason_hash:
+        metadata['reason_hash'] = reason_hash
+
+    # Determine action-specific condition id, etc.
+    condition_id = f"{instrument}_{decision}_{uuid.uuid4().hex[:8]}_{int(datetime.now().timestamp())}"
+    logger.debug('pre-signal: %s', {'action': action, 'position_size': position_size, 'condition_id': condition_id})
+
+    # Create TradingCondition
+    signal = TradingCondition(
+        condition_id=condition_id,
+        instrument=instrument,
+        indicator=primary_condition.get("indicator", "rsi_14"),
+        operator=primary_condition.get("operator", ConditionOperator.GREATER_THAN),
+        threshold=primary_condition.get("threshold", 0.0),
+        action=action,
+        strategy_type=strategy_type,
+        position_size=position_size,
+        confidence=confidence,
+        stop_loss=stop_loss,
+        take_profit=take_profit,
+        entry_price=entry_price,
+        additional_conditions=additional_conditions,
+        metadata=metadata,
+        execution_mode=execution_mode,
+        reason_hash=reason_hash if reason_hash else metadata.get('reason_hash'),
+        parsed_conditions=normalized_conditions,
+        expires_at=expiry_time.isoformat(),
+        is_active=True
+    )
+
+    signals.append(signal)
+    logger.debug('appended signal: %s', condition_id)
+    logger.info(
+        f"Created signal {condition_id}: {action} {instrument} when "
+        f"{signal.indicator} {signal.operator.value} {signal.threshold}"
+    )
     return signals
 
 
@@ -318,6 +386,10 @@ async def save_signal_to_mongodb(
             "confidence": signal.confidence,
             "stop_loss": signal.stop_loss,
             "take_profit": signal.take_profit,
+            "entry_price": signal.entry_price,
+            "execution_mode": signal.execution_mode,
+            "reason_hash": signal.reason_hash,
+            "parsed_conditions": signal.parsed_conditions,
             "additional_conditions": signal.additional_conditions,
             "created_at": signal.created_at,
             "expires_at": signal.expires_at,
@@ -328,6 +400,28 @@ async def save_signal_to_mongodb(
             "metadata": signal.metadata if hasattr(signal, 'metadata') and isinstance(signal.metadata, dict) else {"signal_source": "orchestrator_decision"}
         }
         
+        # Check for recent similar pending signal to avoid duplicates (within dedupe window)
+        try:
+            dedupe_minutes = int(os.getenv('SIGNAL_DEDUPE_MINUTES', '30'))
+            recent = collection.find_one({
+                "instrument": signal.instrument,
+                "action": signal.action,
+                "status": "pending",
+                "is_active": True
+            }, sort=[("created_at", -1)])
+            if recent:
+                try:
+                    recent_created = datetime.fromisoformat(recent.get('created_at'))
+                except Exception:
+                    recent_created = None
+                if recent_created and recent_created >= (datetime.now() - timedelta(minutes=dedupe_minutes)):
+                    logger.info(f"Found recent pending signal {recent.get('condition_id')} - skipping duplicate creation")
+                    existing_id = str(recent.get('_id')) if recent.get('_id') is not None else recent.get('condition_id')
+                    return existing_id
+        except Exception:
+            # If dedupe check fails for any reason, proceed with insertion
+            pass
+
         result = collection.insert_one(signal_dict)
         signal_id = str(result.inserted_id)
         
@@ -338,17 +432,88 @@ async def save_signal_to_mongodb(
             redis_host = os.getenv("REDIS_HOST", "localhost")
             redis_port = int(os.getenv("REDIS_PORT", "6379"))
             redis_client = redis.Redis(host=redis_host, port=redis_port, db=0, decode_responses=True)
-            
+
+            # Test Redis connection
+            redis_client.ping()
+            logger.info("✅ Redis connection test successful")
+
             # Add signal_id to signal_dict for pub/sub
-            signal_dict["signal_id"] = signal_id
-            
+            signal_dict["signal_id"] = str(signal_id)  # Convert ObjectId to string
+
+            # Ensure all values are JSON serializable
+            def make_json_serializable(obj):
+                if isinstance(obj, dict):
+                    return {k: make_json_serializable(v) for k, v in obj.items()}
+                elif isinstance(obj, list):
+                    return [make_json_serializable(item) for item in obj]
+                elif hasattr(obj, '__dict__'):
+                    # Convert objects to dict
+                    return str(obj)
+                elif hasattr(obj, 'isoformat'):  # datetime objects
+                    return obj.isoformat()
+                elif str(type(obj)).endswith("ObjectId'>"):  # MongoDB ObjectId
+                    return str(obj)
+                else:
+                    return obj
+
+            # Check for recent similar pending signal to avoid duplicates (within dedupe window)
+            try:
+                dedupe_minutes = int(os.getenv('SIGNAL_DEDUPE_MINUTES', '30'))
+                # Prefer reason_hash-based dedupe if available
+                rh = signal_dict.get('reason_hash') or (signal_dict.get('metadata') or {}).get('reason_hash')
+                if rh:
+                    recent = collection.find_one({
+                        "instrument": signal.instrument,
+                        "action": signal.action,
+                        "reason_hash": rh,
+                        "status": "pending",
+                        "is_active": True
+                    }, sort=[("created_at", -1)])
+                    if recent:
+                        try:
+                            recent_created = datetime.fromisoformat(recent.get('created_at'))
+                        except Exception:
+                            recent_created = None
+                        if recent_created and recent_created >= (datetime.now() - timedelta(minutes=dedupe_minutes)):
+                            logger.info(f"Found recent pending signal with same reason_hash {recent.get('condition_id')} - skipping duplicate creation")
+                            existing_id = str(recent.get('_id')) if recent.get('_id') is not None else recent.get('condition_id')
+                            return existing_id
+
+                # Fallback dedupe by instrument+action (older behavior)
+                recent = collection.find_one({
+                    "instrument": signal.instrument,
+                    "action": signal.action,
+                    "status": "pending",
+                    "is_active": True
+                }, sort=[("created_at", -1)])
+                if recent:
+                    try:
+                        recent_created = datetime.fromisoformat(recent.get('created_at'))
+                    except Exception:
+                        recent_created = None
+                    if recent_created and recent_created >= (datetime.now() - timedelta(minutes=dedupe_minutes)):
+                        logger.info(f"Found recent pending signal {recent.get('condition_id')} - skipping duplicate creation")
+                        existing_id = str(recent.get('_id')) if recent.get('_id') is not None else recent.get('condition_id')
+                        return existing_id
+            except Exception:
+                # If dedupe check fails for any reason, proceed with insertion
+                pass
+
+            # Make signal_dict JSON serializable
+            json_signal_dict = make_json_serializable(signal_dict)
+
+            # Debug: Print signal_dict to see what's causing JSON error
+            logger.info(f"DEBUG signal_dict keys: {list(signal_dict.keys())}")
+            logger.info(f"DEBUG signal_id type: {type(signal_dict.get('signal_id'))}")
+
             # Publish to Redis pub/sub
-            redis_client.publish("engine:signal", json.dumps(signal_dict))
-            redis_client.publish(f"engine:signal:{signal.instrument}", json.dumps(signal_dict))
-            logger.debug(f"Published signal {signal.condition_id} to Redis pub/sub")
+            logger.info(f"📊 Publishing signal to Redis channels: engine:signal, engine:signal:{signal.instrument}")
+            result1 = redis_client.publish("engine:signal", json.dumps(json_signal_dict))
+            result2 = redis_client.publish(f"engine:signal:{signal.instrument}", json.dumps(json_signal_dict))
+            logger.info(f"✅ Published signal {signal.condition_id} to Redis pub/sub: {result1} + {result2} subscribers")
         except Exception as pub_err:
             # Don't fail if Redis pub/sub fails
-            logger.debug(f"Failed to publish signal to Redis pub/sub: {pub_err}")
+            logger.error(f"❌ Failed to publish signal to Redis pub/sub: {pub_err}", exc_info=True)
         
         logger.info(f"Saved signal {signal.condition_id} to MongoDB with ID {signal_id}")
         return signal_id
@@ -486,6 +651,10 @@ def _convert_doc_to_trading_condition(signal_doc: Dict[str, Any]) -> Optional[Tr
             confidence=float(signal_doc.get("confidence", 0.5)),
             stop_loss=signal_doc.get("stop_loss"),
             take_profit=signal_doc.get("take_profit"),
+            entry_price=signal_doc.get("entry_price"),
+            execution_mode=signal_doc.get("execution_mode"),
+            reason_hash=signal_doc.get("reason_hash"),
+            parsed_conditions=signal_doc.get("parsed_conditions", []),
             additional_conditions=signal_doc.get("additional_conditions", []),
             created_at=signal_doc.get("created_at", datetime.now().isoformat()),
             expires_at=signal_doc.get("expires_at"),

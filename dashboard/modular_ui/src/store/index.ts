@@ -5,7 +5,7 @@ import userReducer from './slices/userSlice'
 import uiReducer from './slices/uiSlice'
 import newsReducer from './slices/newsSlice'
 import analyticsReducer from './slices/analyticsSlice'
-import { dashboardApi } from '../api/dashboardApi'
+// import { dashboardApi } from '../api/dashboardApi' // DISABLED: No HTTP API calls
 
 export const store = configureStore({
   reducer: {
@@ -15,14 +15,15 @@ export const store = configureStore({
     ui: uiReducer,
     news: newsReducer,
     analytics: analyticsReducer,
-    [dashboardApi.reducerPath]: dashboardApi.reducer,
+    // [dashboardApi.reducerPath]: dashboardApi.reducer, // DISABLED: No HTTP API calls
   },
   middleware: (getDefaultMiddleware) =>
     getDefaultMiddleware({
       serializableCheck: {
         ignoredActions: ['persist/PERSIST'],
       },
-    }).concat(dashboardApi.middleware),
+    }),
+    // .concat(dashboardApi.middleware), // DISABLED: No HTTP API calls
 })
 
 export type RootState = ReturnType<typeof store.getState>

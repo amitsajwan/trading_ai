@@ -10,19 +10,55 @@ export const CurrentSignalWidget: React.FC = React.memo(() => {
   const loading = useSelector((state: RootState) => state.trading.loading.decision)
   const signals = useSelector((state: RootState) => state.trading.signals, shallowEqual)
 
-  // Find a relevant active signal for the instrument (prefer pending)
+  // Find a relevant active signal (prefer pending, then most recent)
   // Memoize to prevent recalculation on every render
   const activeSignal = useMemo(() => {
-    if (!signals || !latestDecision) return null
-    return signals.find(s => s.instrument === latestDecision.instrument && (s.status === 'pending' || s.status === 'triggered')) 
+    console.log('📊 CurrentSignalWidget: signals in Redux:', signals?.length || 0, signals)
+    console.log('📊 CurrentSignalWidget: latestDecision:', latestDecision)
+
+    if (!signals || signals.length === 0) {
+      console.log('📊 CurrentSignalWidget: No signals in Redux')
+      return null
+    }
+
+    // First try to find signals matching latestDecision instrument
+    if (latestDecision?.instrument) {
+      const matchingSignal = signals.find(s => s.instrument === latestDecision.instrument && (s.status === 'pending' || s.status === 'triggered'))
         || signals.find(s => s.instrument === latestDecision.instrument)
+      if (matchingSignal) {
+        console.log('📊 CurrentSignalWidget: Found matching signal:', matchingSignal)
+        return matchingSignal
+      }
+    }
+
+    // Fallback: show most recent pending/triggered signal
+    const fallbackSignal = signals.find(s => s.status === 'pending' || s.status === 'triggered')
+        || signals[0] // Most recent signal
+    console.log('📊 CurrentSignalWidget: Using fallback signal:', fallbackSignal)
+    return fallbackSignal
   }, [signals, latestDecision?.instrument])
 
-  // If we have an options strategy, show a summary of it (or fallback to active signal metadata)
-  const strategySummary = optionsStrategy?.available ? optionsStrategy : activeSignal?.metadata?.options_strategy_summary
+  // Determine the signal to display (prefer latestDecision, fallback to activeSignal)
+  const displaySignal = latestDecision?.signal || activeSignal?.signal || 'HOLD'
+  const displayConfidence = latestDecision?.confidence || activeSignal?.confidence || 0
+  const displayReasoning = latestDecision?.reasoning || activeSignal?.reasoning || ''
+  const displayInstrument = latestDecision?.instrument || activeSignal?.instrument || 'BANKNIFTY'
+  const displayEntryPrice = latestDecision?.entry_price || activeSignal?.entry_price
+  const displayStopLoss = latestDecision?.stop_loss || activeSignal?.stop_loss
+  const displayTakeProfit = latestDecision?.take_profit || activeSignal?.take_profit
 
-  if (strategySummary?.available || strategySummary) {
-    const summary = strategySummary?.available ? optionsStrategy : strategySummary
+  // If we have an options strategy, show a summary of it (or fallback to active signal metadata)
+  let summary = null
+
+  if (optionsStrategy?.available) {
+    // Use the full options strategy from Redux
+    summary = optionsStrategy
+  } else if (activeSignal?.metadata?.options_strategy_summary) {
+    // Use the options strategy summary from signal metadata
+    summary = activeSignal.metadata.options_strategy_summary
+  }
+
+  if (summary) {
     return (
       <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-6">
         <div className="flex items-center justify-between mb-4">
@@ -42,14 +78,14 @@ export const CurrentSignalWidget: React.FC = React.memo(() => {
           <div className="inline-flex items-center space-x-2 px-4 py-2 rounded-lg bg-blue-100 dark:bg-blue-900 text-blue-600 dark:text-blue-200 mb-3">
             <BarChart3 className="w-6 h-6" />
             <span className="text-xl font-bold uppercase">
-              {optionsStrategy.strategy_type.replace(/_/g, ' ')}
+              {summary.strategy_type.replace(/_/g, ' ')}
             </span>
           </div>
           <div className="text-3xl font-bold text-gray-900 dark:text-white mb-2">
-            {optionsStrategy.confidence.toFixed(1)}%
+            {summary.confidence.toFixed(1)}%
           </div>
           <p className="text-sm text-gray-600 dark:text-gray-400 max-w-xs mx-auto">
-            Multi-leg options strategy with {optionsStrategy.legs.length} legs
+            Multi-leg options strategy with {summary.legs_count || 'multiple'} legs
           </p>
         </div>
 
@@ -60,7 +96,7 @@ export const CurrentSignalWidget: React.FC = React.memo(() => {
               Max Profit
             </span>
             <span className="text-sm font-semibold text-green-600 dark:text-green-400">
-              ₹{optionsStrategy.risk_analysis.max_profit.toLocaleString('en-IN')}
+              ₹{(summary.max_profit || 0).toLocaleString('en-IN')}
             </span>
           </div>
 
@@ -69,7 +105,7 @@ export const CurrentSignalWidget: React.FC = React.memo(() => {
               Max Loss
             </span>
             <span className="text-sm font-semibold text-red-600 dark:text-red-400">
-              ₹{optionsStrategy.risk_analysis.max_loss.toLocaleString('en-IN')}
+              ₹{(summary.max_loss || 0).toLocaleString('en-IN')}
             </span>
           </div>
 
@@ -78,7 +114,7 @@ export const CurrentSignalWidget: React.FC = React.memo(() => {
               Risk/Reward
             </span>
             <span className="text-sm font-semibold text-gray-900 dark:text-white">
-              1:{optionsStrategy.risk_analysis.risk_reward_ratio.toFixed(1)}
+              1:{((summary.max_profit || 1) / (summary.max_loss || 1)).toFixed(1)}
             </span>
           </div>
         </div>
@@ -87,10 +123,10 @@ export const CurrentSignalWidget: React.FC = React.memo(() => {
         <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-600">
           <div className="flex justify-between text-sm">
             <span className="text-gray-600 dark:text-gray-400">
-              {optionsStrategy.underlying}
+              {activeSignal.instrument}
             </span>
             <span className="text-gray-500 dark:text-gray-400">
-              {new Date(optionsStrategy.timestamp).toLocaleTimeString()}
+              {new Date(activeSignal.timestamp).toLocaleTimeString()}
             </span>
           </div>
         </div>
@@ -113,7 +149,7 @@ export const CurrentSignalWidget: React.FC = React.memo(() => {
     )
   }
 
-  if (!latestDecision) {
+  if (!activeSignal) {
     return (
       <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-6">
         <div className="text-center text-gray-500 dark:text-gray-400">
@@ -175,10 +211,10 @@ export const CurrentSignalWidget: React.FC = React.memo(() => {
       {/* Signal Display */}
       <div className="text-center mb-6">
         <div className="flex items-center justify-center mb-3 space-x-3">
-          <div className={`inline-flex items-center space-x-2 px-4 py-2 rounded-lg ${getSignalColor(latestDecision.signal)}`}>
-            {getSignalIcon(latestDecision.signal)}
+          <div className={`inline-flex items-center space-x-2 px-4 py-2 rounded-lg ${getSignalColor(displaySignal)}`}>
+            {getSignalIcon(displaySignal)}
             <span className="text-xl font-bold uppercase">
-              {latestDecision.signal}
+              {displaySignal}
             </span>
           </div>
           {/* Status badge from active signal */}
@@ -188,10 +224,10 @@ export const CurrentSignalWidget: React.FC = React.memo(() => {
         </div>
 
         <div className="text-3xl font-bold text-gray-900 dark:text-white mb-2">
-          {latestDecision.confidence.toFixed(1)}%
+          {displayConfidence.toFixed(1)}%
         </div>
         <p className="text-sm text-gray-600 dark:text-gray-400 max-w-xs mx-auto">
-          {latestDecision.reasoning}
+          {displayReasoning}
         </p>
 
         {/* If active signal includes options strategy summary, show a compact summary */}
@@ -212,7 +248,7 @@ export const CurrentSignalWidget: React.FC = React.memo(() => {
             Entry Price
           </span>
           <span className="text-sm font-semibold text-gray-900 dark:text-white">
-            {formatPrice(latestDecision.entry_price)}
+            {formatPrice(displayEntryPrice)}
           </span>
         </div>
 
@@ -221,7 +257,7 @@ export const CurrentSignalWidget: React.FC = React.memo(() => {
             Stop Loss
           </span>
           <span className="text-sm font-semibold text-red-600 dark:text-red-400">
-            {formatPrice(latestDecision.stop_loss)}
+            {formatPrice(displayStopLoss)}
           </span>
         </div>
 
@@ -230,7 +266,7 @@ export const CurrentSignalWidget: React.FC = React.memo(() => {
             Take Profit
           </span>
           <span className="text-sm font-semibold text-green-600 dark:text-green-400">
-            {formatPrice(latestDecision.take_profit)}
+            {formatPrice(displayTakeProfit)}
           </span>
         </div>
       </div>
@@ -239,10 +275,10 @@ export const CurrentSignalWidget: React.FC = React.memo(() => {
       <div className="mt-4 pt-4 border-t border-gray-200 dark:border-gray-600">
         <div className="flex justify-between text-sm">
           <span className="text-gray-600 dark:text-gray-400">
-            {latestDecision.instrument}
+            {displayInstrument}
           </span>
           <span className="text-gray-500 dark:text-gray-400">
-            {new Date(latestDecision.timestamp).toLocaleTimeString()}
+            {new Date(latestDecision?.timestamp || activeSignal?.timestamp || new Date()).toLocaleTimeString()}
           </span>
         </div>
       </div>

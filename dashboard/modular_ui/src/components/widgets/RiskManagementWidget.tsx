@@ -1,8 +1,12 @@
 import React, { useState, useEffect } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
-import { Shield, AlertTriangle, TrendingDown, TrendingUp, Save, RefreshCw } from 'lucide-react'
+import { Shield, AlertTriangle, TrendingDown, TrendingUp, Save, RefreshCw, Thermometer, Activity } from 'lucide-react'
 import { RootState } from '../../store'
-import axios from 'axios'
+import { 
+  useGetPortfolioHeatSummaryQuery,
+  useGetHeatUtilizationQuery,
+  useGetApprovalStatsQuery
+} from '../../api/dashboardApi'
 
 interface RiskSettings {
   maxPositionSize: number
@@ -16,6 +20,12 @@ interface RiskSettings {
 export const RiskManagementWidget: React.FC = () => {
   const dispatch = useDispatch()
   const { portfolio } = useSelector((state: RootState) => state.trading)
+  
+  // Layer 8: Portfolio Heat and Approval Stats
+  const { data: heatSummary, isLoading: heatLoading, error: heatError } = useGetPortfolioHeatSummaryQuery()
+  const { data: heatUtilization, isLoading: utilLoading } = useGetHeatUtilizationQuery()
+  const { data: approvalStats, isLoading: statsLoading } = useGetApprovalStatsQuery()
+  
   const [settings, setSettings] = useState<RiskSettings>({
     maxPositionSize: 10000,
     maxDailyLoss: 5000,
@@ -89,7 +99,9 @@ export const RiskManagementWidget: React.FC = () => {
   const metrics = calculateRiskMetrics()
 
   return (
-    <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-6">
+    <div 
+      data-testid="widget-risk-management"
+      className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-6">
       <div className="flex items-center justify-between mb-4">
         <h3 className="text-lg font-semibold text-gray-900 dark:text-white flex items-center">
           <Shield className="w-5 h-5 mr-2 text-primary-500" />
@@ -103,8 +115,116 @@ export const RiskManagementWidget: React.FC = () => {
         )}
       </div>
 
-      {/* Current Risk Metrics */}
-      {metrics && (
+      {/* Layer 8: Portfolio Heat Metrics */}
+      {heatSummary && (
+        <div className="mb-6 space-y-3">
+          <div className={`p-3 rounded-lg border ${
+            (heatSummary.total_portfolio_heat / heatSummary.max_portfolio_heat) > 0.8 || heatSummary.daily_loss_pct > 0.04
+              ? 'bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800' 
+              : (heatSummary.total_portfolio_heat / heatSummary.max_portfolio_heat) > 0.5
+              ? 'bg-yellow-50 dark:bg-yellow-900/20 border-yellow-200 dark:border-yellow-800'
+              : 'bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800'
+          }`}>
+            <div className="flex items-center justify-between mb-3">
+              <div className="flex items-center gap-2">
+                <Thermometer className="w-5 h-5 text-primary-500" />
+                <span className="text-sm font-semibold text-gray-900 dark:text-white">
+                  Portfolio Heat
+                </span>
+              </div>
+              <span className={`text-xs font-semibold px-2 py-1 rounded ${
+                (heatSummary.total_portfolio_heat / heatSummary.max_portfolio_heat) > 0.8
+                  ? 'bg-red-100 dark:bg-red-900 text-red-800 dark:text-red-300'
+                  : (heatSummary.total_portfolio_heat / heatSummary.max_portfolio_heat) > 0.5
+                  ? 'bg-yellow-100 dark:bg-yellow-900 text-yellow-800 dark:text-yellow-300'
+                  : 'bg-green-100 dark:bg-green-900 text-green-800 dark:text-green-300'
+              }`}>
+                {((heatSummary.total_portfolio_heat / heatSummary.max_portfolio_heat) * 100).toFixed(1)}% Used
+              </span>
+            </div>
+            
+            {/* Heat Progress Bar */}
+            <div className="mb-3">
+              <div className="flex justify-between text-xs text-gray-600 dark:text-gray-400 mb-1">
+                <span>Used: {(heatSummary.total_portfolio_heat * 100).toFixed(2)}%</span>
+                <span>Available: {(heatSummary.available_heat * 100).toFixed(2)}%</span>
+              </div>
+              <div className="w-full bg-gray-200 dark:bg-gray-700 rounded-full h-2">
+                <div
+                  className={`h-2 rounded-full transition-all ${
+                    (heatSummary.total_portfolio_heat / heatSummary.max_portfolio_heat) > 0.8
+                      ? 'bg-red-500'
+                      : (heatSummary.total_portfolio_heat / heatSummary.max_portfolio_heat) > 0.5
+                      ? 'bg-yellow-500'
+                      : 'bg-green-500'
+                  }`}
+                  style={{ width: `${Math.min((heatSummary.total_portfolio_heat / heatSummary.max_portfolio_heat) * 100, 100)}%` }}
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <div>
+                <span className="text-gray-600 dark:text-gray-400">Daily P&L:</span>
+                <span className={`ml-1 font-semibold ${heatSummary.daily_pnl >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                  {heatSummary.daily_pnl >= 0 ? '+' : ''}₹{heatSummary.daily_pnl.toFixed(2)}
+                </span>
+              </div>
+              <div>
+                <span className="text-gray-600 dark:text-gray-400">Daily Loss:</span>
+                <span className={`ml-1 font-semibold ${heatSummary.daily_loss_pct > 0.03 ? 'text-red-600' : 'text-gray-600'}`}>
+                  {(heatSummary.daily_loss_pct * 100).toFixed(2)}%
+                </span>
+              </div>
+              <div>
+                <span className="text-gray-600 dark:text-gray-400">Max Loss:</span>
+                <span className="ml-1 font-semibold">₹{heatSummary.total_max_loss.toFixed(2)}</span>
+              </div>
+              <div>
+                <span className="text-gray-600 dark:text-gray-400">Positions:</span>
+                <span className="ml-1 font-semibold">{heatSummary.active_positions}</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Approval Stats */}
+          {approvalStats && (
+            <div className="bg-gray-50 dark:bg-gray-700 rounded-lg p-3">
+              <div className="flex items-center gap-2 mb-2">
+                <Activity className="w-4 h-4 text-primary-500" />
+                <span className="text-xs font-semibold text-gray-700 dark:text-gray-300">
+                  Approval Stats (Last {approvalStats.total_reviews} reviews)
+                </span>
+              </div>
+              <div className="grid grid-cols-3 gap-2 text-xs">
+                <div>
+                  <span className="text-gray-600 dark:text-gray-400">Approved:</span>
+                  <span className="ml-1 font-semibold text-green-600">
+                    {approvalStats.approved} ({(approvalStats.approval_rate * 100).toFixed(0)}%)
+                  </span>
+                </div>
+                <div>
+                  <span className="text-gray-600 dark:text-gray-400">Rejected:</span>
+                  <span className="ml-1 font-semibold text-red-600">
+                    {approvalStats.rejected} ({(approvalStats.rejection_rate * 100).toFixed(0)}%)
+                  </span>
+                </div>
+                {approvalStats.reduced !== undefined && (
+                  <div>
+                    <span className="text-gray-600 dark:text-gray-400">Reduced:</span>
+                    <span className="ml-1 font-semibold text-yellow-600">
+                      {approvalStats.reduced} ({((approvalStats.reduction_rate || 0) * 100).toFixed(0)}%)
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Fallback to legacy metrics if heat summary not available */}
+      {!heatSummary && metrics && (
         <div className="mb-6 space-y-3">
           <div className={`p-3 rounded-lg border ${
             metrics.isRiskHigh 

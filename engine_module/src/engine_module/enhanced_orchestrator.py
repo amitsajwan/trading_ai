@@ -254,11 +254,32 @@ class EnhancedTradingOrchestrator(Orchestrator):
                 except Exception as e:
                     logger.warning(f"Failed to fetch technical indicators: {e}")
 
+            # Attempt to fetch latest tick price (prefer real-time tick over OHLC close)
+            current_price = None
+            try:
+                if hasattr(self.market_data_provider, 'get_latest_ticks'):
+                    ticks = await self.market_data_provider.get_latest_ticks(symbol, limit=1)
+                    if ticks:
+                        tick = ticks[0]
+                        if isinstance(tick, dict):
+                            current_price = tick.get('last_price') or tick.get('last') or tick.get('price')
+                        else:
+                            current_price = getattr(tick, 'last_price', None) or getattr(tick, 'price', None) or getattr(tick, 'last', None)
+                # Fallback to technical indicators if available
+                if current_price is None and technical_indicators and isinstance(technical_indicators, dict):
+                    current_price = technical_indicators.get('current_price') or technical_indicators.get('last_price')
+            except Exception:
+                current_price = None
+
+            # Fallback to OHLC close
+            if current_price is None:
+                current_price = market_data[-1].get('close', 0) if market_data else 0
+
             # Prepare analysis context with position information and technical data
             analysis_context = {
                 'ohlc': market_data,
                 'symbol': symbol,
-                'current_price': market_data[-1].get('close', 0) if market_data else 0,
+                'current_price': current_price,
                 'timestamp': cycle_start,
                 'current_positions': current_positions,  # Add positions to context
                 'has_long_position': any(
@@ -280,6 +301,31 @@ class EnhancedTradingOrchestrator(Orchestrator):
             trading_decision = await self._aggregate_signals(
                 agent_signals, market_data, current_positions
             )
+
+            # Publish detailed agent responses via WebSocket
+            await self._publish_agent_analysis_results(agent_signals, symbol, context)
+
+            # Generate LLM decision if available
+            market_hours = context.get('market_hours', True)
+            if hasattr(self, 'llm_client') and self.llm_client and market_hours:
+                aggregated = {
+                    'action': trading_decision.action,
+                    'confidence': trading_decision.confidence,
+                    'signal_strength': 0.5,
+                    'confidence_score': trading_decision.confidence,
+                    'agent_signals': {},
+                    'reasoning': trading_decision.reasoning
+                }
+                final_decision = await self._generate_llm_decision(aggregated, context)
+                trading_decision.action = final_decision.decision
+                trading_decision.confidence = final_decision.confidence
+                if final_decision.details.get('reasoning'):
+                    trading_decision.reasoning += f" | LLM: {final_decision.details['reasoning']}"
+                if final_decision.decision not in ["HOLD", "ERROR"]:
+                    await self._create_signals_from_decision(final_decision, symbol, current_price)
+
+                # Publish orchestrator decision
+                await self._publish_orchestrator_decision(final_decision, agent_signals, symbol, context)
 
             # Update cycle timing
             self.last_cycle_time = cycle_start
@@ -339,9 +385,20 @@ class EnhancedTradingOrchestrator(Orchestrator):
         return agent_signals
 
     async def _run_single_agent(self, agent_name: str, agent: Any, context: Dict[str, Any]) -> AnalysisResult:
-        """Run a single agent analysis."""
+        """Run a single agent analysis and standardize the result."""
         try:
-            return await agent.analyze(context)
+            result = await agent.analyze(context)
+
+            # Standardize result to ensure consistent fields for downstream consumers
+            try:
+                from engine_module.utils.agent_helpers import standardize_analysis_result
+                agent_id = getattr(agent, '_agent_name', None) or getattr(agent, 'name', None) or agent_name
+                standardize_analysis_result(result, agent_id)
+            except Exception:
+                # Never fail the agent due to standardization issues; just log at debug
+                logger.debug("Agent standardization step failed", exc_info=True)
+
+            return result
         except Exception as e:
             logger.exception(f"Error in agent {agent_name}")
             return AnalysisResult(
@@ -824,3 +881,156 @@ class EnhancedTradingOrchestrator(Orchestrator):
             logger.warning(f"Reconciliation failed: {e}")
         return reconciled
 
+    async def _create_signals_from_decision(self, analysis_result: AnalysisResult, symbol: str, current_price: Optional[float]):
+        """Create trading signals from orchestrator analysis result.
+
+        Args:
+            analysis_result: AnalysisResult from LLM decision
+            symbol: Trading instrument symbol
+            current_price: Current market price
+        """
+        try:
+            logger.info(f"Creating signals for {analysis_result.decision} decision on {symbol}")
+
+            # Import signal creation functionality
+            from .signal_creator import create_signals_from_decision, save_signal_to_mongodb
+
+            # Create signals from the decision
+            signals = create_signals_from_decision(
+                analysis_result=analysis_result,
+                instrument=symbol,
+                current_price=current_price,
+                strategy_config=getattr(self, 'strategy_config', None)
+            )
+
+            if signals:
+                logger.info(f"Created {len(signals)} signals for {symbol}")
+
+                # Save signals to database and publish to Redis
+                for signal in signals:
+                    try:
+                        # Get MongoDB connection from the orchestrator
+                        mongo_db = getattr(self, 'mongo_db', None)
+                        if mongo_db:
+                            signal_id = await save_signal_to_mongodb(signal, mongo_db)
+                            logger.info(f"Saved signal {signal.condition_id} with ID {signal_id}")
+
+                            # Sync signal to monitor if available
+                            if hasattr(self, 'signal_monitor'):
+                                try:
+                                    from .signal_creator import sync_signals_to_monitor
+                                    await sync_signals_to_monitor(mongo_db, self.signal_monitor, symbol)
+                                    logger.info(f"Synced signals to monitor for {symbol}")
+                                except Exception as sync_err:
+                                    logger.warning(f"Failed to sync signals to monitor: {sync_err}")
+
+                        else:
+                            logger.warning("MongoDB not available for signal persistence")
+
+                    except Exception as save_err:
+                        logger.error(f"Failed to save signal {signal.condition_id}: {save_err}")
+
+            else:
+                logger.info(f"No signals created for {analysis_result.decision} decision")
+
+        except Exception as e:
+            logger.error(f"Error creating signals from decision: {e}", exc_info=True)
+
+    async def _publish_agent_analysis_results(self, agent_signals: Dict[str, AnalysisResult], symbol: str, context: Dict[str, Any]):
+        """Publish detailed agent analysis results via WebSocket."""
+        try:
+            import redis.asyncio as redis_async
+            redis_host = os.getenv("REDIS_HOST", "localhost")
+            redis_port = int(os.getenv("REDIS_PORT", "6379"))
+
+            redis_client = redis_async.Redis(host=redis_host, port=redis_port, db=0, decode_responses=True)
+
+            for agent_name, analysis_result in agent_signals.items():
+                try:
+                    # Extract rich data from analysis result
+                    agent_data = {
+                        'type': 'agent_analysis',
+                        'timestamp': datetime.now().isoformat(),
+                        'agent_name': agent_name,
+                        'instrument': symbol,
+                        'decision': analysis_result.decision,
+                        'confidence': analysis_result.confidence,
+                        'details': analysis_result.details or {},
+                        'cycle_info': context.get('cycle_info', {}),
+                        'seq': context.get('cycle_info', {}).get('cycle_number', 0)
+                    }
+
+                    # Add technical indicators if available
+                    if analysis_result.details and 'indicators' in analysis_result.details:
+                        agent_data['technical_indicators'] = analysis_result.details['indicators']
+
+                    # Add reasoning if available
+                    if analysis_result.details and 'reasoning' in analysis_result.details:
+                        agent_data['reasoning'] = analysis_result.details['reasoning']
+
+                    # Publish to Redis pub/sub
+                    channel = f"engine:agent:{agent_name}"
+                    await redis_client.publish(channel, json.dumps(agent_data))
+
+                    # Also publish to general agent channel
+                    await redis_client.publish("engine:agent", json.dumps(agent_data))
+
+                    logger.debug(f"Published agent analysis for {agent_name}: {analysis_result.decision} ({analysis_result.confidence:.2f})")
+
+                except Exception as agent_err:
+                    logger.warning(f"Failed to publish agent {agent_name} analysis: {agent_err}")
+
+            await redis_client.aclose()
+
+        except Exception as e:
+            logger.error(f"Error publishing agent analysis results: {e}")
+
+    async def _publish_orchestrator_decision(self, final_decision: AnalysisResult, agent_signals: Dict[str, AnalysisResult], symbol: str, context: Dict[str, Any]):
+        """Publish orchestrator decision with agent breakdown via WebSocket."""
+        try:
+            import redis.asyncio as redis_async
+            redis_host = os.getenv("REDIS_HOST", "localhost")
+            redis_port = int(os.getenv("REDIS_PORT", "6379"))
+
+            redis_client = redis_async.Redis(host=redis_host, port=redis_port, db=0, decode_responses=True)
+
+            # Build comprehensive orchestrator decision data
+            orchestrator_data = {
+                'type': 'orchestrator_decision',
+                'timestamp': datetime.now().isoformat(),
+                'instrument': symbol,
+                'final_decision': final_decision.decision,
+                'confidence': final_decision.confidence,
+                'reasoning': final_decision.details.get('reasoning', ''),
+                'agent_responses': [],
+                'signal_created': final_decision.decision not in ["HOLD", "ERROR"],
+                'cycle_info': context.get('cycle_info', {}),
+                'seq': context.get('cycle_info', {}).get('cycle_number', 0)
+            }
+
+            # Add agent breakdown
+            for agent_name, analysis_result in agent_signals.items():
+                agent_response = {
+                    'agent': agent_name,
+                    'decision': analysis_result.decision,
+                    'confidence': analysis_result.confidence,
+                    'details': analysis_result.details.get('reasoning', '') if analysis_result.details else ''
+                }
+                orchestrator_data['agent_responses'].append(agent_response)
+
+            # Add key insights if available
+            if final_decision.details and 'aggregated_analysis' in final_decision.details:
+                agg = final_decision.details['aggregated_analysis']
+                if 'key_insights' in agg:
+                    orchestrator_data['key_insights'] = agg['key_insights']
+
+            # Publish to Redis pub/sub
+            await redis_client.publish("engine:decision", json.dumps(orchestrator_data))
+            await redis_client.publish(f"engine:decision:{symbol}", json.dumps(orchestrator_data))
+
+            logger.info(f"Published orchestrator decision: {final_decision.decision} ({final_decision.confidence:.2f}) for {symbol}")
+
+            await redis_client.aclose()
+
+        except Exception as e:
+            logger.error(f"Error publishing orchestrator decision: {e}")

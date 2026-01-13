@@ -116,6 +116,6 @@ def build_options_client(kite=None, fetcher=None) -> OptionsData:
         await options.initialize()
         chain = await options.fetch_options_chain()
     """
-    from .adapters.mock_options_chain import MockOptionsChainAdapter
-    return MockOptionsChainAdapter(kite=kite)
+    from .adapters.zerodha_options_chain import ZerodhaOptionsChainAdapter
+    return ZerodhaOptionsChainAdapter(kite=kite)
 

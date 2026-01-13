@@ -623,10 +623,14 @@ pytest tests/
 
 ### Adding New Agents
 
-1. Create agent class inheriting from `BaseAgent`
-2. Implement `process()` method
-3. Add to `TradingGraph` in `trading_orchestration/trading_graph.py`
-4. Add system prompt in `config/prompts/`
+1. Create an agent class (preferably inheriting from `BaseAgent` for common helpers). Implement the `analyze(context)` or `_analyze_internal(...)` method and return an `AnalysisResult(decision, confidence, details)`.
+2. Add unit tests under `engine_module/tests/unit/agents/` validating: decision string, confidence in [0.0, 1.0], `details` is a dict, and behavior for missing data.
+3. Register the agent in `engine_module/src/engine_module/agent_factory.py` (or update the orchestrator config) so it is instantiated in orchestrator cycles.
+4. Use `engine_module/agents/agent_template.py` as a boilerplate and update `engine_module/AGENTS.md` with any special context keys the agent expects.
+
+Notes:
+- Agents should be side-effect free (no DB writes or Redis publishes); return `AnalysisResult` and let the orchestrator/signal_creator handle persistence and execution.
+- Add documentation and examples to `engine_module/AGENTS.md` so the team has one canonical reference.
 
 ## 🎯 **Current Status: Live Zerodha Integration Complete**
 

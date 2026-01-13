@@ -3,6 +3,7 @@ import { useDispatch, useSelector } from 'react-redux'
 import { RefreshCw, TrendingUp, TrendingDown, AlertCircle } from 'lucide-react'
 import { RootState } from '../../store'
 import { fetchOptionsChain, OptionsChain } from '../../store/slices/marketDataSlice'
+import { useWebSocket } from '../../hooks/useWebSocket'
 
 interface OptionsChainWidgetProps {
   instrument?: string
@@ -19,21 +20,27 @@ export const OptionsChainWidget: React.FC<OptionsChainWidgetProps> = ({
 }) => {
   const dispatch = useDispatch()
   const { optionsChain, loading } = useSelector((state: RootState) => state.marketData)
+  const { connected: wsConnected, subscribe } = useWebSocket()
 
+  // Fetch options chain data on mount and when instrument changes
   useEffect(() => {
     dispatch(fetchOptionsChain(instrument) as any)
+  }, [dispatch, instrument])
 
-    if (autoRefresh) {
-      const interval = setInterval(() => {
-        dispatch(fetchOptionsChain(instrument) as any)
-      }, refreshInterval)
-
-      return () => clearInterval(interval)
+  // Subscribe to WebSocket for real-time options chain updates
+  useEffect(() => {
+    if (wsConnected && subscribe) {
+      // Subscribe to options chain updates for this instrument
+      subscribe([`market:options:${instrument}`, `market:options:*`])
+      console.log(`[OptionsChain] Subscribed to WebSocket channels: market:options:${instrument}, market:options:*`)
     }
-  }, [dispatch, instrument, autoRefresh, refreshInterval])
+  }, [wsConnected, subscribe, instrument])
+
+  // No polling - WebSocket provides real-time updates
 
   const handleRefresh = () => {
-    dispatch(fetchOptionsChain(instrument) as any)
+    // Refresh is handled by WebSocket - no manual refresh needed
+    console.log('Options chain refresh requested - data updated via WebSocket')
   }
 
   // Calculate ATM strikes (closest to futures price)
@@ -111,7 +118,7 @@ export const OptionsChainWidget: React.FC<OptionsChainWidgetProps> = ({
       <div className="flex items-center justify-between mb-4">
         <div>
           <h3 className="text-lg font-semibold text-gray-900 dark:text-white">
-            Options Chain
+            Options Chain with Greeks
           </h3>
           <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
             {optionsChain.expiry ? `Expiry: ${new Date(optionsChain.expiry).toLocaleDateString()}` : ''}
@@ -121,16 +128,25 @@ export const OptionsChainWidget: React.FC<OptionsChainWidgetProps> = ({
             {optionsChain.instrument && (
               <span className="ml-2">({optionsChain.instrument})</span>
             )}
+            <span className="ml-2 text-blue-600 dark:text-blue-400">Δ=Delta, Γ=Gamma</span>
           </p>
         </div>
-        <button
-          onClick={handleRefresh}
-          disabled={loading.options}
-          className="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
-          title="Refresh"
-        >
-          <RefreshCw className={`w-4 h-4 ${loading.options ? 'animate-spin' : ''}`} />
-        </button>
+        <div className="flex items-center space-x-2">
+          {wsConnected && (
+            <div className="flex items-center space-x-1 text-xs text-green-600 dark:text-green-400">
+              <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
+              <span>Live</span>
+            </div>
+          )}
+          <button
+            onClick={handleRefresh}
+            disabled={loading.options}
+            className="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+            title="Refresh"
+          >
+            <RefreshCw className={`w-4 h-4 ${loading.options ? 'animate-spin' : ''}`} />
+          </button>
+        </div>
       </div>
 
       {/* PCR and Max Pain */}
@@ -162,7 +178,11 @@ export const OptionsChainWidget: React.FC<OptionsChainWidgetProps> = ({
             <thead>
               <tr className="border-b border-gray-200 dark:border-gray-600">
                 <th className="text-left py-2 px-2 font-semibold text-gray-700 dark:text-gray-300">CE</th>
+                <th className="text-left py-2 px-2 font-semibold text-gray-700 dark:text-gray-300">Δ</th>
+                <th className="text-left py-2 px-2 font-semibold text-gray-700 dark:text-gray-300">Γ</th>
                 <th className="text-left py-2 px-2 font-semibold text-gray-700 dark:text-gray-300">Strike</th>
+                <th className="text-left py-2 px-2 font-semibold text-gray-700 dark:text-gray-300">Γ</th>
+                <th className="text-left py-2 px-2 font-semibold text-gray-700 dark:text-gray-300">Δ</th>
                 <th className="text-left py-2 px-2 font-semibold text-gray-700 dark:text-gray-300">PE</th>
               </tr>
             </thead>
@@ -203,12 +223,56 @@ export const OptionsChainWidget: React.FC<OptionsChainWidgetProps> = ({
                       )}
                     </td>
 
+                    {/* Call Delta */}
+                    <td className="py-2 px-2 text-center">
+                      {strike.ce_delta != null ? (
+                        <div className="text-sm font-medium text-blue-600 dark:text-blue-400">
+                          {strike.ce_delta.toFixed(3)}
+                        </div>
+                      ) : (
+                        <span className="text-gray-400">-</span>
+                      )}
+                    </td>
+
+                    {/* Call Gamma */}
+                    <td className="py-2 px-2 text-center">
+                      {strike.ce_gamma != null ? (
+                        <div className="text-sm font-medium text-purple-600 dark:text-purple-400">
+                          {strike.ce_gamma.toFixed(4)}
+                        </div>
+                      ) : (
+                        <span className="text-gray-400">-</span>
+                      )}
+                    </td>
+
                     {/* Strike Price */}
                     <td className="py-2 px-2 text-center">
                       <div className={`font-bold ${isATM ? 'text-primary-600 dark:text-primary-400' : 'text-gray-900 dark:text-white'}`}>
                         {strike.strike}
                         {isATM && <span className="ml-1 text-xs">(ATM)</span>}
                       </div>
+                    </td>
+
+                    {/* Put Gamma */}
+                    <td className="py-2 px-2 text-center">
+                      {strike.pe_gamma != null ? (
+                        <div className="text-sm font-medium text-purple-600 dark:text-purple-400">
+                          {strike.pe_gamma.toFixed(4)}
+                        </div>
+                      ) : (
+                        <span className="text-gray-400">-</span>
+                      )}
+                    </td>
+
+                    {/* Put Delta */}
+                    <td className="py-2 px-2 text-center">
+                      {strike.pe_delta != null ? (
+                        <div className="text-sm font-medium text-blue-600 dark:text-blue-400">
+                          {strike.pe_delta.toFixed(3)}
+                        </div>
+                      ) : (
+                        <span className="text-gray-400">-</span>
+                      )}
                     </td>
 
                     {/* Put Option */}

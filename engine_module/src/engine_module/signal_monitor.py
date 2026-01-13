@@ -62,11 +62,16 @@ class TradingCondition:
     confidence: float = 0.75
     stop_loss: Optional[float] = None
     take_profit: Optional[float] = None
+    entry_price: Optional[float] = None
     
     # Multi-condition support (AND logic)
     additional_conditions: List[Dict[str, Any]] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
-    
+    # Execution and provenance
+    execution_mode: Optional[str] = None  # 'IMMEDIATE' or 'CONDITIONAL'
+    reason_hash: Optional[str] = None
+    parsed_conditions: List[Dict[str, Any]] = field(default_factory=list)
+
     # Metadata
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     expires_at: Optional[str] = None  # Auto-cancel after this time

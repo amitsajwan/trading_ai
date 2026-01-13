@@ -178,6 +178,42 @@ body.dark-mode .page-title { text-shadow: none; }
     .dashboard-grid { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
 }
 
+/* SIGNAL DETAILS GRID */
+.signal-details-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+    gap: 20px; margin-bottom: 30px;
+}
+
+@media (max-width: 1400px) {
+    .signal-details-grid { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
+}
+
+.signal-display {
+    text-align: center; padding: 20px;
+}
+
+.signal-main {
+    display: flex; align-items: center; justify-content: center; gap: 15px; margin-bottom: 15px;
+}
+
+.signal-icon-large {
+    font-size: 48px;
+}
+
+.signal-text-large {
+    font-size: 36px; font-weight: bold; color: var(--primary);
+}
+
+.signal-reasoning-detailed {
+    font-size: 16px; color: #6b7280; line-height: 1.5;
+}
+
+body.dark-mode .signal-reasoning-detailed { color: #9ca3af; }
+
+.executive-summary {
+    font-size: 14px; line-height: 1.6; white-space: pre-line;
+}
+
 .card {
     background: white; border-radius: 12px; padding: 20px;
     box-shadow: var(--card-shadow); transition: all 0.2s ease;

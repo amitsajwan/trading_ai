@@ -4,6 +4,8 @@ All components should use this for configuration instead of hardcoded values.
 """
 
 import os
+import logging
+import logging.config
 from typing import Dict, Any
 
 
@@ -40,6 +42,24 @@ class TradingConfig:
         self.engine_port = int(os.getenv("ENGINE_PORT", "8006"))
         self.dashboard_port = int(os.getenv("DASHBOARD_PORT", "8888"))
 
+        # Logging configuration
+        self.log_level = os.getenv("LOG_LEVEL", "INFO")
+        self.log_format = os.getenv("LOG_FORMAT", "%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+        self.log_file = os.getenv("LOG_FILE", "logs/trading_system.log")
+        self.enable_json_logging = os.getenv("ENABLE_JSON_LOGGING", "false").lower() == "true"
+
+        # Performance monitoring
+        self.enable_performance_monitoring = os.getenv("ENABLE_PERFORMANCE_MONITORING", "true").lower() == "true"
+        self.performance_log_interval = int(os.getenv("PERFORMANCE_LOG_INTERVAL", "300"))  # 5 minutes
+
+        # Error handling
+        self.max_retries = int(os.getenv("MAX_RETRIES", "3"))
+        self.retry_delay = float(os.getenv("RETRY_DELAY", "1.0"))
+
+        # Rate limiting
+        self.api_rate_limit = int(os.getenv("API_RATE_LIMIT", "100"))  # requests per minute
+        self.llm_rate_limit = int(os.getenv("LLM_RATE_LIMIT", "10"))   # requests per minute
+
     @property
     def instrument_key(self) -> str:
         """Get the normalized instrument key for Redis/MongoDB."""
@@ -70,6 +90,83 @@ class TradingConfig:
             "uri": self.mongodb_uri,
             "database": "zerodha_trading"
         }
+
+    def setup_logging(self):
+        """Setup centralized logging configuration for the trading system."""
+        # Ensure logs directory exists
+        os.makedirs(os.path.dirname(self.log_file), exist_ok=True)
+
+        # Base logging configuration
+        log_config = {
+            'version': 1,
+            'disable_existing_loggers': False,
+            'formatters': {
+                'standard': {
+                    'format': self.log_format,
+                    'datefmt': '%Y-%m-%d %H:%M:%S'
+                },
+                'json': {
+                    'format': '{"timestamp": "%(asctime)s", "level": "%(levelname)s", "logger": "%(name)s", "message": "%(message)s"}',
+                    'datefmt': '%Y-%m-%dT%H:%M:%SZ'
+                }
+            },
+            'handlers': {
+                'console': {
+                    'class': 'logging.StreamHandler',
+                    'formatter': 'standard' if not self.enable_json_logging else 'json',
+                    'level': self.log_level,
+                    'stream': 'ext://sys.stdout'
+                },
+                'file': {
+                    'class': 'logging.handlers.RotatingFileHandler',
+                    'formatter': 'standard' if not self.enable_json_logging else 'json',
+                    'level': self.log_level,
+                    'filename': self.log_file,
+                    'maxBytes': 10 * 1024 * 1024,  # 10MB
+                    'backupCount': 5
+                }
+            },
+            'root': {
+                'handlers': ['console', 'file'],
+                'level': self.log_level,
+            },
+            'loggers': {
+                'market_data': {
+                    'handlers': ['console', 'file'],
+                    'level': self.log_level,
+                    'propagate': False
+                },
+                'engine_module': {
+                    'handlers': ['console', 'file'],
+                    'level': self.log_level,
+                    'propagate': False
+                },
+                'news_module': {
+                    'handlers': ['console', 'file'],
+                    'level': self.log_level,
+                    'propagate': False
+                },
+                'genai_module': {
+                    'handlers': ['console', 'file'],
+                    'level': self.log_level,
+                    'propagate': False
+                },
+                'user_module': {
+                    'handlers': ['console', 'file'],
+                    'level': self.log_level,
+                    'propagate': False
+                }
+            }
+        }
+
+        logging.config.dictConfig(log_config)
+        logger = logging.getLogger(__name__)
+        logger.info("Centralized logging configuration applied")
+        logger.info(f"Log level: {self.log_level}, JSON logging: {self.enable_json_logging}")
+
+    def get_logger(self, name: str) -> logging.Logger:
+        """Get a configured logger for the given module name."""
+        return logging.getLogger(name)
 
 
 # Global config instance

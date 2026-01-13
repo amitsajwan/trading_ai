@@ -72,6 +72,64 @@ def test_create_signals_from_decision():
     assert len(signals_hold) == 0
 
 
+def test_entry_price_populated():
+    """Ensure entry_price is populated from current_price when not provided by agent details."""
+    decision = AnalysisResult(decision="BUY", confidence=0.6, details={})
+    signals = create_signals_from_decision(decision, "BANKNIFTY", current_price=45200.0)
+    assert len(signals) > 0
+    assert signals[0].entry_price == 45200.0
+
+
+def test_signal_metadata_and_reason_hash():
+    """Condition parsing should attach execution_mode, parsed_conditions and reason_hash."""
+    decision = AnalysisResult(
+        decision="BUY",
+        confidence=0.7,
+        details={"reasoning": "RSI > 30 and volume > 100000"}
+    )
+    signals = create_signals_from_decision(decision, "BANKNIFTY", current_price=45000.0)
+    assert len(signals) > 0
+    s = signals[0]
+    assert s.metadata.get('execution_mode') == 'CONDITIONAL'
+    assert isinstance(s.metadata.get('parsed_conditions'), list)
+    assert s.metadata.get('reason_hash') is not None
+    assert s.execution_mode == 'CONDITIONAL'
+    assert s.reason_hash == s.metadata.get('reason_hash')
+
+
+@pytest.mark.asyncio
+async def test_save_signal_dedup():
+    """If a recent pending similar signal exists, saving should return existing id and skip insert."""
+    # Create mock MongoDB with a recent pending signal
+    mock_collection = Mock()
+    existing_doc = {
+        "condition_id": "existing_1",
+        "_id": "existing_oid",
+        "created_at": datetime.now().isoformat(),
+        "instrument": "BANKNIFTY",
+        "action": "BUY",
+        "status": "pending",
+        "is_active": True
+    }
+    mock_collection.find_one.return_value = existing_doc
+    mock_db = {"signals": mock_collection}
+
+    signal = TradingCondition(
+        condition_id="new_1",
+        instrument="BANKNIFTY",
+        indicator="rsi_14",
+        operator=ConditionOperator.GREATER_THAN,
+        threshold=30.0,
+        action="BUY",
+        entry_price=45000.0
+    )
+
+    # Save signal - should detect duplicate and return existing id
+    signal_id = await save_signal_to_mongodb(signal, mock_db)
+    assert signal_id == "existing_oid"
+    assert not mock_collection.insert_one.called
+
+
 @pytest.mark.asyncio
 async def test_save_signal_to_mongodb():
     """Test saving signal to MongoDB."""

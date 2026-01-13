@@ -39,6 +39,7 @@
     "@types/node": "^20.0.0",
     "@vitejs/plugin-react": "^4.0.0",
     "eslint": "^8.45.0",
+    "jsdom": "^27.4.0",
     "playwright": "^1.57.0",
     "typescript": "^5.0.0",
     "vite": "^4.3.0",

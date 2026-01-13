@@ -78,26 +78,23 @@ This analysis identifies the gap between the **designed functionality** (as docu
    - ✅ Signals are aggregated by orchestrator
    - ✅ Individual agent signals saved to MongoDB (`agent_discussions`)
 
-### ❌ **WHAT'S MISSING:**
+### ✅ **IMPLEMENTATION UPDATE (Resolved)**
 
-1. **Conditional Signal Creation**:
-   - ❌ **Agents generate decisions, NOT conditional signals**
-   - ❌ **No logic to convert agent decisions → TradingCondition objects**
-   - ❌ **Agents don't specify execution conditions** (e.g., "BUY when RSI > 32")
+1. **Conditional Signal Creation (Implemented)**:
+   - ✅ Agents now provide reasoning and decision details which are parsed into executable conditions.
+   - ✅ `engine_module.signal_creator.extract_conditions_from_reasoning()` parses textual reasoning into conditional clauses (e.g., "RSI > 32").
+   - ✅ `engine_module.signal_creator.create_signals_from_decision()` converts an `AnalysisResult` into one or more `TradingCondition` objects ready for monitoring.
 
-2. **Signal Persistence**:
-   - ❌ **Agent signals are logged but not stored as actionable signals**
-   - ❌ **No MongoDB `signals` collection population from agent analysis**
-   - ❌ **Signals disappear after orchestrator cycle - no persistence**
+2. **Signal Persistence & Publishing (Implemented)**:
+   - ✅ `signal_creator.save_signal_to_mongodb()` persists `TradingCondition` documents into the `signals` MongoDB collection.
+   - ✅ Signals are published to Redis Pub/Sub (`engine:signal`, `engine:signal:<instrument>`) for real-time UI and services.
+   - ✅ `SignalMonitor` subscribes to indicators and triggers `SignalTriggerEvent`s when conditions are met.
 
-3. **Missing Implementation**:
-   ```python
-   # SHOULD EXIST BUT DOESN'T:
-   # In orchestrator_stub.py after _generate_llm_decision():
-   
-   # Convert final decision to conditional signal
-   if result.decision in ["BUY", "SELL", "BUY_CALL", "BUY_PUT"]:
-       signal = create_conditional_signal_from_decision(result)
+3. **Where to find details**:
+   - Canonical agent documentation: `engine_module/AGENTS.md` (overview, inputs/outputs, consumers).
+   - Signal creation and lifecycle: `engine_module/src/engine_module/signal_creator.py` and `engine_module/src/engine_module/signal_monitor.py`.
+
+This resolves the previous gaps: agent decisions are now converted into actionable, persisted signals that can be monitored and executed in real-time.
        save_signal_to_mongodb(signal)  # ❌ MISSING
        signal_monitor.add_signal(signal)  # ❌ MISSING
    ```
@@ -143,14 +140,14 @@ This analysis identifies the gap between the **designed functionality** (as docu
      # ❌ THIS LOGIC DOESN'T EXIST
      ```
 
-2. **Integration Between Orchestrator and SignalMonitor**:
-   - ❌ **SignalMonitor exists but orchestrator doesn't populate it**
-   - ❌ **No automatic signal registration after orchestrator cycle**
-   - ❌ **Manual signal creation only (via examples/demos)**
+2. **Integration Between Orchestrator and SignalMonitor** (Implemented):
+   - ✅ Orchestrator can convert decisions to `TradingCondition`s via `signal_creator.create_signals_from_decision()`.
+   - ✅ Signals are persisted and published; SignalMonitor receives notifications and `active_signals` are populated either via DB load or pub/sub notifications.
+   - ✅ Signal creation is automated as part of the orchestration cycle (configurable via orchestrator settings).
 
-3. **Condition Parsing**:
-   - ❌ **No NLP/parsing logic to extract conditions from agent reasoning**
-   - ❌ **Agents provide reasoning but don't structure it as executable conditions**
+3. **Condition Parsing** (Implemented):
+   - ✅ `signal_creator.extract_conditions_from_reasoning()` provides lightweight parsing of textual reasoning into structured conditions (RSI/price/volume patterns).
+   - ✅ Agents now provide reasoning suitable for parsing; agents should include meaningful condition expressions in `details['reasoning']` when possible.
 
 ---
 
@@ -170,7 +167,8 @@ This analysis identifies the gap between the **designed functionality** (as docu
 ### ❌ **WHAT'S MISSING:**
 
 1. **Active Signal Population**:
-   - ❌ **SignalMonitor._active_signals dictionary is empty**
+   - ✅ Signal creation now persists signals to MongoDB and publishes to Redis; SignalMonitor listens to updates and populates `_active_signals` accordingly.
+   - ✅ Startup logic and pub/sub support ensure monitors pick up new or updated signals automatically.
    - ❌ **No signals are being added automatically**
    - ❌ **Manual only - no orchestrator → SignalMonitor bridge**
 
@@ -195,20 +193,17 @@ This analysis identifies the gap between the **designed functionality** (as docu
    # SHOULD EXIST IN run_orchestrator.py:
    
    async def run_cycle():
-       # Step 1: DELETE all non-executed signals from previous cycle
-       await delete_pending_signals(instrument)  # ❌ MISSING
-       signal_monitor.clear_active_signals()     # ❌ MISSING
+       # Step 1: Clear previous pending signals (implemented via `delete_pending_signals`)
+       await delete_pending_signals(instrument)
        
        # Step 2: Run orchestrator analysis
        result = await orchestrator.run_cycle(context)
        
-       # Step 3: CREATE new signals from decision
-       signals = create_signals_from_decision(result)  # ❌ MISSING
-       for signal in signals:
-           save_to_mongodb(signal)              # ❌ MISSING
-           signal_monitor.add_signal(signal)    # ❌ MISSING
+       # Step 3: Convert decision into executable signals (implemented)
+       # Use `signal_creator.create_signals_from_decision(result, instrument, current_price=...)`
+       # and persist using `signal_creator.save_signal_to_mongodb(signal, mongo_db)`.
+       # The SignalMonitor picks up published signals via Redis and/or DB fetch and populates active signals.
    ```
-
 2. **Signal State Management**:
    - ❌ **No tracking of signal execution status**
    - ❌ **No distinction between: pending, triggered, expired, executed**

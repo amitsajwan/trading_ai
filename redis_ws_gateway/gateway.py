@@ -35,7 +35,7 @@ GATEWAY_HOST = os.getenv("REDIS_WS_GATEWAY_HOST", "0.0.0.0")
 
 # Guardrails
 MAX_CHANNELS_PER_CLIENT = int(os.getenv("MAX_CHANNELS_PER_CLIENT", "50"))
-MAX_WILDCARD_SUBSCRIPTIONS = int(os.getenv("MAX_WILDCARD_SUBSCRIPTIONS", "5"))
+MAX_WILDCARD_SUBSCRIPTIONS = int(os.getenv("MAX_WILDCARD_SUBSCRIPTIONS", "10"))  # Increased for signal testing
 MAX_MESSAGES_PER_SECOND = int(os.getenv("MAX_MESSAGES_PER_SECOND", "1000"))
 
 # Authentication (simple API key for now, can be extended to JWT)
@@ -49,12 +49,37 @@ CHANNEL_ACL: Dict[str, List[str]] = {
         "market:tick:*",
         "market:tick",
         "indicators:*",
+        # Options chain and market depth data
+        "market:options:*",
+        "market:options",
+        "market:depth:*",
+        "market:depth",
+        # OHLC data for charting
+        "market:ohlc:*",
+        "market:ohlc",
+        # Allow basic engine channels for UI consumers in development (signals and decisions)
+        "engine:signal:*",
+        "engine:signal",
+        "signals:*",
+        "trading:signals:*",
+        "market:signals:*",
+        "engine:decision:*",
+        "engine:decision",
+        # Agent response and orchestrator decision channels
+        "engine:agent",
+        "engine:agent:*",
+        "agent:*",
+        "engine:orchestrator",
+        "engine:orchestrator:*",
     ],
     "admin": [
         "market:tick:*",
         "market:tick",
         "engine:signal:*",
         "engine:signal",
+        "signals:*",
+        "trading:signals:*",
+        "market:signals:*",
         "engine:decision:*",
         "engine:decision",
         "indicators:*",
@@ -225,9 +250,12 @@ class RedisWebSocketGateway:
         try:
             data = json.loads(message)
             action = data.get("action")
-            
+
+            logger.info(f"📊 WebSocket message from {client.client_id}: {action}, data: {data}")
+
             if action == "subscribe":
                 channels = data.get("channels", [])
+                logger.info(f"📊 Client {client.client_id} subscribing to channels: {channels}")
                 await self.handle_subscribe(client, channels, data.get("requestId"))
             
             elif action == "unsubscribe":
@@ -252,6 +280,7 @@ class RedisWebSocketGateway:
     
     async def handle_subscribe(self, client: ClientConnection, channels: List[str], request_id: Optional[str]):
         """Handle subscribe request."""
+        logger.info(f"📊 Processing subscribe request for {len(channels)} channels: {channels}")
         subscribed = []
         errors = []
         
@@ -489,7 +518,10 @@ class RedisWebSocketGateway:
         channel = message.get('channel', '')
         pattern = message.get('pattern', '')
         data = message.get('data', '')
-        
+
+        # Debug logging for all messages
+        logger.info(f"📊 Redis message received: channel={channel}, pattern={pattern}")
+
         if not data:
             return
         
@@ -511,6 +543,7 @@ class RedisWebSocketGateway:
                     client_ids_to_notify.update(client_ids)
         
         # Forward to clients
+        logger.info(f"Forwarding to {len(client_ids_to_notify)} clients: {list(client_ids_to_notify)}")
         if client_ids_to_notify:
             try:
                 # Parse data (assume JSON)
@@ -518,7 +551,7 @@ class RedisWebSocketGateway:
                     data_obj = json.loads(data) if isinstance(data, str) else data
                 except (json.JSONDecodeError, TypeError):
                     data_obj = {"raw": data}
-                
+
                 seq = await get_next_sequence()
                 message_data = {
                     "type": "data",
@@ -528,7 +561,9 @@ class RedisWebSocketGateway:
                     "data": data_obj,
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                 }
-                
+
+                logger.info(f"Sending WebSocket message: {message_data}")
+
                 # Send to all subscribed clients
                 disconnected_clients = []
                 for client_id in client_ids_to_notify:
@@ -538,18 +573,22 @@ class RedisWebSocketGateway:
                             await client.websocket.send_text(json.dumps(message_data))
                             client.message_count += 1
                             client.last_message_time = time.time()
+                            logger.info(f"Successfully sent to client {client_id}")
                         except Exception as e:
                             logger.warning(f"Error sending to client {client_id}: {e}")
                             disconnected_clients.append(client_id)
                     else:
+                        logger.warning(f"Client {client_id} not found in clients dict")
                         disconnected_clients.append(client_id)
-                
+
                 # Cleanup disconnected clients
                 for client_id in disconnected_clients:
                     await self.disconnect_client(client_id)
-            
+
             except Exception as e:
                 logger.error(f"Error handling Redis message: {e}", exc_info=True)
+        else:
+            logger.warning(f"No clients to notify for channel {channel}, pattern {pattern}")
     
     def _channel_matches_pattern(self, channel: str, pattern: str) -> bool:
         """Check if channel matches pattern."""

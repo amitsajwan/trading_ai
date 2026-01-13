@@ -5,6 +5,15 @@ from engine_module.contracts import Agent, AnalysisResult
 from engine_module.utils.memory import AgentMemory
 import logging
 
+# Import standardized indicator names
+try:
+    from market_data.technical_indicators_constants import *
+except ImportError:
+    # Fallback if constants not available
+    RSI_14 = "rsi_14"
+    MACD_SIGNAL = "macd_signal"
+    TREND_DIRECTION = "trend_direction"
+
 logger = logging.getLogger(__name__)
 
 
@@ -22,7 +31,7 @@ class BullResearcher(Agent):
             current_price = context.get('current_price', 0)
 
             # Get similar past situations
-            situation_desc = f"Technical analysis for {symbol}: trend={technical.get('trend_direction')}, momentum={technical.get('momentum')}"
+            situation_desc = f"Technical analysis for {symbol}: trend={technical.get(TREND_DIRECTION)}, momentum={technical.get(RSI_14)}"
             past_experiences = self.memory.retrieve_similar(situation_desc, n_results=2)
 
             # Analyze bullish signals
@@ -80,14 +89,15 @@ class BullResearcher(Agent):
         signals = []
 
         # Trend signals
-        if technical.get('trend_direction') == 'UP':
+        if technical.get(TREND_DIRECTION) == 'UP':
             signals.append("uptrend confirmed")
 
         # Momentum signals
-        if technical.get('rsi', 50) < 30:  # Oversold
+        if technical.get(RSI_14, 50) < 30:  # Oversold
             signals.append("RSI oversold")
-        if technical.get('macd_signal') == 'BUY':
-            signals.append("MACD bullish crossover")
+        # Note: MACD_SIGNAL is numeric, not 'BUY'/'SELL' string
+        # if technical.get(MACD_SIGNAL, 0) > 0:
+        #     signals.append("MACD bullish crossover")
 
         # Moving averages
         if technical.get('price_above_sma_50'):

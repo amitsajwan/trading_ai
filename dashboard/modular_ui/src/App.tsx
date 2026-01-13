@@ -4,6 +4,7 @@ import { DashboardLayout } from './components/layout/DashboardLayout'
 import { DashboardPage } from './pages/DashboardPage'
 import { MarketDataPage } from './pages/MarketDataPage'
 import { TradingPage } from './pages/TradingPage'
+import { SignalsPage } from './pages/SignalsPage'
 import { AnalyticsPage } from './pages/AnalyticsPage'
 import { NewsPage } from './pages/NewsPage'
 import { SettingsPage } from './pages/SettingsPage'
@@ -21,6 +22,7 @@ function App() {
             <Route path="/dashboard" element={<DashboardPage />} />
             <Route path="/market-data" element={<MarketDataPage />} />
             <Route path="/trading" element={<TradingPage />} />
+            <Route path="/signals" element={<SignalsPage />} />
             <Route path="/analytics" element={<AnalyticsPage />} />
             <Route path="/news" element={<NewsPage />} />
             <Route path="/settings" element={<SettingsPage />} />

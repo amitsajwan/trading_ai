@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import os
 import sys
+import asyncio
 import logging
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any
@@ -119,15 +120,81 @@ class SignalResponse(BaseModel):
     instrument: str
     action: str  # "BUY", "SELL", "HOLD"
     confidence: float
-    reasoning: str
+    reasoning: Optional[str] = None
     timestamp: str
+
+    # New fields for UI display and debugging
+    entry_price: Optional[float] = None
+    execution_mode: Optional[str] = None
+    parsed_conditions: Optional[List[Dict[str, Any]]] = None
+    reason_hash: Optional[str] = None
+    indicator: Optional[str] = None
+    threshold: Optional[float] = None
+    additional_conditions: Optional[List[Dict[str, Any]]] = None
+    status: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
 
 
 # Socket.IO removed - real-time updates now handled by Redis WebSocket Gateway
 # See redis_ws_gateway module for direct Redis pub/sub to WebSocket forwarding
 WEBSOCKET_AVAILABLE = False
 
+async def start_cycles_later():
+    """Start orchestrator cycles after a delay to ensure everything is initialized."""
+    await asyncio.sleep(30)  # Wait 30 seconds
+    try:
+        global _orchestrator_task
+        if _orchestrator and not hasattr(_orchestrator_task, 'done'):
+            _orchestrator_task = asyncio.create_task(run_orchestrator_cycles())
+            logger.info("Engine API: Automatic orchestrator cycles started (delayed)")
+    except Exception as e:
+        logger.error(f"Engine API: Failed to start delayed cycles: {e}")
+
 # Lifespan handler for FastAPI
+async def run_orchestrator_cycles():
+    """Run orchestrator analysis cycles every 15 minutes."""
+    logger.info("Starting automatic orchestrator cycles (15-minute intervals)")
+    
+    while True:
+        try:
+            # Check if orchestrator is initialized
+            if _orchestrator is None:
+                logger.debug("Orchestrator not initialized, skipping cycle")
+                await asyncio.sleep(60)  # Wait 1 minute and try again
+                continue
+            
+            # Check market hours
+            from datetime import datetime
+            # is_market_open and IST are defined in this same file
+            
+            current_time_ist = datetime.now(IST)
+            market_open = is_market_open(current_time_ist)
+            
+            if not market_open:
+                logger.debug(f"Market closed (current time: {current_time_ist.strftime('%H:%M:%S %Z')}), skipping cycle")
+                await asyncio.sleep(300)  # Wait 5 minutes when market is closed
+                continue
+            
+            # Run analysis cycle
+            context = {
+                "instrument": "BANKNIFTY",
+                "market_hours": True,
+                "timestamp": current_time_ist
+            }
+            
+            logger.info("Running automatic orchestrator cycle")
+            result = await _orchestrator.run_cycle(context)
+            
+            logger.info(f"Orchestrator cycle complete: {result.decision} (confidence: {result.confidence:.2f})")
+            
+            # Wait 15 minutes before next cycle
+            await asyncio.sleep(15 * 60)
+            
+        except Exception as e:
+            logger.error(f"Error in orchestrator cycle: {e}")
+            await asyncio.sleep(60)  # Wait 1 minute on error
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize and cleanup resources using FastAPI lifespan events."""
@@ -221,6 +288,24 @@ async def lifespan(app: FastAPI):
             except Exception as tick_error:
                 logger.warning(f"Engine API: Failed to start tick subscriber: {tick_error}")
             
+            # Start automatic orchestrator cycles (every 15 minutes)
+            try:
+                # Ensure asyncio is available in this context
+                import asyncio as asyncio_module
+                if asyncio_module and _orchestrator:
+                    _orchestrator_task = asyncio_module.create_task(run_orchestrator_cycles())
+                    logger.info("Engine API: Automatic orchestrator cycles started (15-minute intervals)")
+                else:
+                    logger.warning("Engine API: Orchestrator not ready or asyncio unavailable, skipping automatic cycles")
+            except Exception as cycle_error:
+                logger.warning(f"Engine API: Failed to start automatic orchestrator cycles: {cycle_error}")
+                # Try to start cycles later
+                try:
+                    import asyncio as asyncio_module
+                    asyncio_module.get_event_loop().create_task(start_cycles_later())
+                except:
+                    pass
+            
             # Socket.IO removed - real-time updates now handled by Redis WebSocket Gateway
             # Engine API now focuses on REST endpoints only
             
@@ -249,6 +334,18 @@ async def lifespan(app: FastAPI):
         logger.info("Engine API: Redis tick subscriber stopped")
     except Exception as e:
         logger.warning(f"Engine API: Error stopping tick subscriber: {e}")
+    
+    # Stop orchestrator task
+    try:
+        if _orchestrator_task and not _orchestrator_task.done():
+            _orchestrator_task.cancel()
+            try:
+                await _orchestrator_task
+            except asyncio.CancelledError:
+                pass
+        logger.info("Engine API: Orchestrator cycles stopped")
+    except Exception as e:
+        logger.warning(f"Engine API: Error stopping orchestrator cycles: {e}")
     
     # Socket.IO removed - no cleanup needed
     
@@ -282,6 +379,7 @@ app.add_middleware(
 _orchestrator: Optional[Orchestrator] = None
 _redis_client: Optional[redis.Redis] = None
 _mongo_client: Optional[MongoClient] = None
+_orchestrator_task: Optional[asyncio.Task] = None
 
 # Socket.IO removed - real-time updates now handled by Redis WebSocket Gateway
 # Export the FastAPI app directly (no Socket.IO wrapping)
@@ -495,8 +593,17 @@ async def get_signals(instrument: str, limit: int = 10):
                 instrument=signal.get("instrument", instrument),
                 action=signal.get("action", "HOLD"),
                 confidence=signal.get("confidence", 0.0),
-                reasoning=signal.get("reasoning", ""),
-                timestamp=signal.get("created_at", signal.get("timestamp", datetime.now(IST).isoformat()))
+                reasoning=signal.get("reasoning") or (signal.get('metadata') or {}).get('reasoning'),
+                timestamp=signal.get("created_at", signal.get("timestamp", datetime.now(IST).isoformat())),
+                entry_price=signal.get('entry_price'),
+                execution_mode=signal.get('execution_mode') or (signal.get('metadata') or {}).get('execution_mode'),
+                parsed_conditions=signal.get('parsed_conditions') or (signal.get('metadata') or {}).get('parsed_conditions'),
+                reason_hash=signal.get('reason_hash') or (signal.get('metadata') or {}).get('reason_hash'),
+                indicator=signal.get('indicator'),
+                threshold=signal.get('threshold'),
+                additional_conditions=signal.get('additional_conditions'),
+                status=signal.get('status'),
+                metadata=signal.get('metadata')
             )
             for signal in signals
         ]
@@ -940,6 +1047,35 @@ async def initialize_orchestrator(config: Dict[str, Any] = Body(...)):
             "timestamp": datetime.now(IST).isoformat()
         }
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/orchestrator/run_cycle")
+async def run_orchestrator_cycle_endpoint(instrument: str = Body("BANKNIFTY")):
+    """Manually run an orchestrator cycle for testing WebSocket publishing."""
+    global _orchestrator
+    try:
+        if _orchestrator is None:
+            return {"status": "error", "message": "Orchestrator not initialized"}
+
+        from datetime import datetime
+        context = {
+            'symbol': instrument,
+            'timestamp': datetime.now(),
+            'cycle_info': {'cycle_number': 1, 'duration_seconds': 0}
+        }
+
+        logger.info(f"Manually running orchestrator cycle for {instrument}")
+        result = await _orchestrator.run_cycle(context)
+
+        return {
+            "status": "success",
+            "decision": result.action,
+            "confidence": result.confidence,
+            "reasoning": result.reasoning,
+            "agent_signals": len(result.agent_signals)
+        }
+    except Exception as e:
+        logger.error(f"Failed to run orchestrator cycle: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

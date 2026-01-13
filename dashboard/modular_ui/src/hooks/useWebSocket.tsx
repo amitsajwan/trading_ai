@@ -1,8 +1,9 @@
 import React, { createContext, useContext, useEffect, useRef, useCallback } from 'react'
 import { useDispatch } from 'react-redux'
 import { updateTick, updateIndicators, updateOHLC, updateOptionsChain, TickData } from '../store/slices/marketDataSlice'
-import { updateDecision, updatePortfolio, addTrade, addOrUpdateSignal } from '../store/slices/tradingSlice'
+import { updateDecision, updatePortfolio, addTrade, addOrUpdateSignal, updateAgentResponse, updateOrchestratorDecision } from '../store/slices/tradingSlice'
 import { addNotification } from '../store/slices/uiSlice'
+import { messageRouter } from '../services/data/WebSocketMessageRouter'
 
 interface WebSocketContextType {
   ws: WebSocket | null
@@ -22,6 +23,8 @@ const WS_URL = import.meta.env.VITE_WS_URL ?? 'ws://localhost:8889/ws'
 if (import.meta.env.DEV) {
   console.log('WebSocket URL configured:', WS_URL)
   console.log('VITE_WS_URL from env:', import.meta.env.VITE_WS_URL)
+  console.log('WS_URL truthy:', !!WS_URL)
+  console.log('WS_URL value:', WS_URL)
 }
 
 export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -42,25 +45,36 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const tickUpdateQueue = useRef<TickData[]>([])
   const tickUpdateTimeoutRef = useRef<NodeJS.Timeout | null>(null)
 
+  // Use a ref to store the latest connect function to avoid circular dependency
+  const connectRef = useRef<() => void>()
+  
   const scheduleReconnect = useCallback(() => {
     if (reconnectAttempts.current >= maxReconnectAttempts) {
       dispatch(addNotification({
         type: 'error',
         title: 'Reconnect Failed',
-        message: 'Unable to reconnect to real-time services'
+        message: 'Unable to reconnect to real-time services after multiple attempts'
       }))
       return
     }
     reconnectAttempts.current += 1
     const delay = backoff(reconnectAttempts.current)
-    console.log(`Scheduling reconnect in ${delay}ms (attempt ${reconnectAttempts.current})`)
+    console.log(`[WebSocket] Scheduling reconnect in ${delay}ms (attempt ${reconnectAttempts.current}/${maxReconnectAttempts})`)
     
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current)
     }
     reconnectTimeoutRef.current = setTimeout(() => {
-      if (!wsRef.current || wsRef.current.readyState === WebSocket.CLOSED) {
-        connect()
+      // Check if we still need to reconnect (might have connected in the meantime)
+      if (!wsRef.current || wsRef.current.readyState === WebSocket.CLOSED || wsRef.current.readyState === WebSocket.CONNECTING) {
+        console.log(`[WebSocket] Attempting reconnect (attempt ${reconnectAttempts.current})`)
+        // Use ref to get latest connect function
+        if (connectRef.current) {
+          connectRef.current()
+        }
+      } else {
+        console.log('[WebSocket] Reconnect cancelled - connection already established')
+        reconnectAttempts.current = 0 // Reset if already connected
       }
     }, delay)
   }, [dispatch])
@@ -103,6 +117,7 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     if (!WS_URL) {
       console.info('WebSocket disabled: set VITE_WS_URL to enable real-time connections')
       return
+      return
     }
 
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
@@ -117,69 +132,61 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     try {
       // Ensure we're using the correct URL (port 8889, not 8888)
       const wsUrl = WS_URL || 'ws://localhost:8889/ws'
-      if (import.meta.env.DEV) {
-        console.log('Connecting to WebSocket:', wsUrl)
-      }
+      console.log('🔌 Connecting to WebSocket:', wsUrl)
+
       const ws = new WebSocket(wsUrl)
       wsRef.current = ws
+      console.log('🔌 WebSocket instance created:', ws)
 
+      // Handle WebSocket connection opened
       ws.onopen = () => {
-        reconnectAttempts.current = 0
-        console.log('WebSocket connected to Redis Gateway')
+        console.log('🔌 WebSocket connection OPENED successfully')
+        console.log('✅ WebSocket connection opened')
         setConnected(true)
-        dispatch(addNotification({
-          type: 'success',
-          title: 'Connected',
-          message: 'Real-time data connection established'
-        }))
-
-        // Resubscribe to all previous channels
-        resubscribe()
-
-        // Start ping interval (every 20 seconds)
+        reconnectAttempts.current = 0 // Reset reconnect attempts on successful connection
+        lastPong.current = Date.now() // Initialize lastPong timestamp
+        
+        // Start ping/heartbeat interval
         if (pingIntervalRef.current) {
           clearInterval(pingIntervalRef.current)
         }
         pingIntervalRef.current = setInterval(() => {
-          if (ws.readyState === WebSocket.OPEN) {
-            sendMessage({ action: 'ping', requestId: `ping-${Date.now()}` })
+          if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+            sendMessage({
+              action: 'ping',
+              requestId: `ping-${Date.now()}`
+            })
           }
-        }, 20_000)
+        }, 30_000) // Ping every 30 seconds
+        
+        // Resubscribe to previously subscribed channels
+        resubscribe()
       }
 
+      // Handle WebSocket connection closed
       ws.onclose = (event) => {
-        console.log('WebSocket disconnected', event.code, event.reason)
+        console.log('🔌 WebSocket connection CLOSED:', event.code, event.reason, event.wasClean)
         setConnected(false)
         
+        // Clear ping interval
         if (pingIntervalRef.current) {
           clearInterval(pingIntervalRef.current)
           pingIntervalRef.current = null
         }
-
-        // Only reconnect if not a normal closure
+        
+        // Only attempt reconnect if it wasn't a clean close by the client
         if (event.code !== 1000) {
-          dispatch(addNotification({
-            type: 'warning',
-            title: 'Disconnected',
-            message: 'Real-time data connection lost'
-          }))
+          console.log('WebSocket closed unexpectedly, scheduling reconnect...')
           scheduleReconnect()
         }
       }
 
+      // Handle WebSocket errors
       ws.onerror = (error) => {
-        console.error('WebSocket error:', error)
-        console.error('WebSocket URL attempted:', wsUrl)
-        console.error('Expected URL: ws://localhost:8889/ws')
-        if (wsUrl.includes('8888')) {
-          console.error('⚠️ ERROR: WebSocket URL is using port 8888 instead of 8889!')
-          console.error('Please check VITE_WS_URL environment variable or restart Vite dev server')
-        }
-        dispatch(addNotification({
-          type: 'error',
-          title: 'Connection Error',
-          message: `WebSocket connection failed. Check console for details. URL: ${wsUrl}`
-        }))
+        console.error('🔌 WebSocket ERROR:', error)
+        setConnected(false)
+        // Note: onclose will be called after onerror, so we don't schedule reconnect here
+        // to avoid double reconnection attempts
       }
 
       ws.onmessage = (event) => {
@@ -189,11 +196,20 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
           // Handle different message types from gateway
           switch (message.type) {
             case 'connected':
-              console.log('Gateway connected:', message)
+              // Gateway confirmation message (sent after WebSocket opens)
+              // Connection state is already set in onopen, but we can use this to confirm
+              console.log('Gateway confirmed connection:', message)
+              // Ensure we're marked as connected (redundant but safe)
+              if (!connected) {
+                setConnected(true)
+              }
               break
 
             case 'pong':
               lastPong.current = Date.now()
+              if (import.meta.env.DEV) {
+                console.log('Pong received')
+              }
               break
 
             case 'subscribed':
@@ -212,82 +228,200 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
               const channel = message.channel || ''
               const data = message.data || {}
 
+
+              // Route to message router for new data services (HybridDataService)
+              messageRouter.route(channel, data)
+
               // Map channels to Redux actions
               if (channel.startsWith('market:tick:') || channel === 'market:tick') {
                 // Market tick update - debounce rapid updates to prevent flickering
                 if (import.meta.env.DEV) {
                   console.log('📊 WebSocket tick received:', channel, data)
                 }
-                
+
                 // Queue the update
                 tickUpdateQueue.current.push(data)
-                
+
                 // Clear existing timeout
                 if (tickUpdateTimeoutRef.current) {
                   clearTimeout(tickUpdateTimeoutRef.current)
                 }
-                
+
                 // Debounce: process updates every 100ms (10 updates per second max)
                 tickUpdateTimeoutRef.current = setTimeout(() => {
                   if (tickUpdateQueue.current.length > 0) {
                     // Process the most recent tick
-                    const latestTick = tickUpdateQueue.current[tickUpdateQueue.current.length - 1]
-                    dispatch(updateTick(latestTick))
+                    const rawTick = tickUpdateQueue.current[tickUpdateQueue.current.length - 1]
+                    console.log('📊 Processing tick update:', rawTick)
+
+                    // Transform raw tick data to match TickData interface
+                    const transformedTick = {
+                      instrument: rawTick.instrument || 'NIFTY BANK',
+                      last_price: rawTick.price || rawTick.last_price || rawTick.ltp,
+                      timestamp: rawTick.ts || rawTick.timestamp || new Date().toISOString(),
+                      volume: rawTick.volume,
+                      oi: rawTick.oi
+                    }
+
+                    dispatch(updateTick(transformedTick))
                     tickUpdateQueue.current = []
                   }
                 }, 100)
-              } else if (channel.startsWith('engine:signal:') || channel === 'engine:signal') {
+                return // Prevent further processing of tick messages
+              } else if (channel.startsWith('engine:signal:') || channel === 'engine:signal' ||
+                         channel.startsWith('signals:') || channel === 'signals' ||
+                         channel.startsWith('trading:signals:') || channel === 'trading:signals' ||
+                         channel.startsWith('market:signals:') || channel === 'market:signals') {
                 // Trading signal update - update signal list and show notification
-                dispatch(addOrUpdateSignal({
+                console.log('📊 WebSocket signal received:', channel, data)
+                // Normalize signal data for UI compatibility
+                let normalizedSignal = data.action || data.signal || 'HOLD'
+
+                // Map OPTIONS strategy actions to BUY/SELL/HOLD for UI display
+                if (data.strategy_type === 'OPTIONS') {
+                  if (normalizedSignal.includes('BUY') || normalizedSignal.includes('CALL') || normalizedSignal.includes('PUT')) {
+                    normalizedSignal = normalizedSignal.startsWith('SELL') ? 'SELL' : 'BUY'
+                  } else {
+                    normalizedSignal = 'HOLD'
+                  }
+                }
+
+                const signalData = {
                   signal_id: data.signal_id || data.condition_id,
                   condition_id: data.condition_id,
                   instrument: data.instrument,
-                  action: data.action || data.signal,
+                  action: data.action || data.signal, // Keep original action for details
+                  signal: normalizedSignal, // Add normalized signal for UI
                   status: data.status || data.state || 'pending',
                   confidence: data.confidence || data.confidence_pct || 0.0,
                   timestamp: data.timestamp || data.created_at || new Date().toISOString(),
                   reasoning: data.reasoning || data.reason || '',
                   operator: data.operator,
                   threshold: data.threshold,
+                  strategy_type: data.strategy_type,
                   // include metadata if present
                   metadata: data.metadata || data.options_strategy_summary || undefined
-                }))
+                }
+                console.log('📊 Processing signal for Redux:', signalData)
+                dispatch(addOrUpdateSignal(signalData))
 
                 dispatch(addNotification({
                   type: 'info',
                   title: 'Signal Update',
                   message: `Signal: ${data.action || data.signal || 'N/A'} (${(Number(data.confidence ?? 0)).toFixed(1)}% confidence)`
                 }))
-              } else if (channel.startsWith('engine:decision:')) {
-                // Agent decision update
+                return // Prevent further processing of signal messages
+              } else if (channel.startsWith('engine:decision:') || channel === 'engine:decision') {
+                // Agent decision update (consolidated handler)
+                console.log('📊 WebSocket decision received:', channel, data)
                 dispatch(updateDecision(data))
-              } else if (channel === 'engine:decision') {
-                // General decision
-                dispatch(updateDecision(data))
+
+                // Individual agent decision update (from API service)
+                console.log('🤖 WebSocket agent decision received:', channel, data)
+                dispatch(updateAgentResponse({
+                  agent: data.agent_name || data.agent || 'unknown',
+                  decision: data.direction || data.decision || data.signal || 'HOLD',
+                  confidence: data.confidence || 0,
+                  timestamp: data.timestamp || new Date().toISOString(),
+                  details: {
+                    reasoning: data.signal || 'Agent analysis completed',
+                    direction: data.direction
+                  }
+                }))
+
+                // Publish orchestrator decision to orchestrator decisions store
+                dispatch(updateOrchestratorDecision({
+                  decision_id: `decision_${Date.now()}`,
+                  instrument: data.instrument || 'BANKNIFTY',
+                  final_decision: data.final_decision,
+                  confidence: data.confidence,
+                  reasoning: data.reasoning,
+                  agent_responses: data.agent_responses || [],
+                  signal_created: data.signal_created || false,
+                  signal_id: data.signal_id,
+                  timestamp: data.timestamp
+                }))
+
+                return // Prevent further processing of decision messages
+              } else if (channel.startsWith('engine:agent:') || channel === 'engine:agent') {
+                // Detailed agent analysis update
+                console.log('🤖 WebSocket detailed agent analysis received:', channel, data)
+
+                // Update agent status with rich data
+                dispatch(updateAgentStatus({
+                  name: data.agent_name,
+                  status: 'active',
+                  signal: data.decision,
+                  confidence: data.confidence,
+                  last_update: data.timestamp,
+                  summary: data.details,
+                  technical_indicators: data.technical_indicators,
+                  reasoning: data.reasoning
+                }))
+
+                // Also update agent response with detailed information
+                dispatch(updateAgentResponse({
+                  agent: data.agent_name,
+                  decision: data.decision,
+                  confidence: data.confidence,
+                  timestamp: data.timestamp,
+                  details: {
+                    reasoning: data.reasoning || 'Analysis completed',
+                    technical_indicators: data.technical_indicators,
+                    cycle_info: data.cycle_info
+                  }
+                }))
+
+                return // Prevent further processing of agent messages
               } else if (channel.startsWith('indicators:')) {
                 // Technical indicators update
-                if (import.meta.env.DEV) {
-                  console.log('📊 WebSocket indicator update:', channel, data)
-                }
-                // Extract instrument from channel (e.g., "indicators:BANKNIFTY" -> "BANKNIFTY")
-                const instrument = channel.split(':').slice(1).join(':') || 'BANKNIFTY'
+                console.log('📊 WebSocket indicator update:', channel, {
+                  atr_14: data.atr_14,
+                  atr_20: data.atr_20,
+                  rsi_14: data.rsi_14,
+                  macd_value: data.macd_value,
+                  adx_14: data.adx_14,
+                  has_atr_14: 'atr_14' in data,
+                  data_keys: Object.keys(data).slice(0, 15) // Limit to first 15 keys
+                })
+
+                // Extract instrument and timeframe from channel (e.g., "indicators:BANKNIFTY:1min" -> "BANKNIFTY", "1min")
+                const parts = channel.split(':')
+                const instrument = parts[1] || 'BANKNIFTY'
+                const timeframe = parts[2] || data.timeframe || '1min' // Support both channel-based and data-based timeframe
+
+                console.log('🚀 Dispatching updateIndicators for', instrument, timeframe, 'ATR_14:', data.atr_14)
                 dispatch(updateIndicators({
                   ...data,
                   instrument,
+                  timeframe,
                   timestamp: data.timestamp || new Date().toISOString(),
                 }))
+                console.log('✅ updateIndicators dispatched - ATR should now be in Redux')
+                return
               } else if (channel.startsWith('market:ohlc:') || channel === 'market:ohlc') {
                 // OHLC candle update
                 if (import.meta.env.DEV) {
                   console.log('📊 WebSocket OHLC update:', channel, data)
                 }
-                dispatch(updateOHLC(data))
+                // Extract instrument and timeframe from channel (e.g., "market:ohlc:BANKNIFTY:5min" -> "BANKNIFTY", "5min")
+                const parts = channel.split(':')
+                const instrument = parts[2] || data.instrument || 'BANKNIFTY'
+                const timeframe = parts[3] || data.timeframe || '1min'
+
+                dispatch(updateOHLC({
+                  ...data,
+                  instrument,
+                  timeframe
+                }))
+                return // Prevent further processing of OHLC messages
               } else if (channel.startsWith('market:options:') || channel === 'market:options') {
                 // Options chain update
                 if (import.meta.env.DEV) {
                   console.log('📊 WebSocket options chain update:', channel, data)
                 }
                 dispatch(updateOptionsChain(data))
+                return // Prevent further processing of options messages
               }
 
               // Handle portfolio and trade updates if present in data
@@ -302,6 +436,9 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
                   title: 'Trade Executed',
                   message: `Trade ${trade.id || 'N/A'} executed for ${trade.instrument || 'N/A'}`
                 }))
+              } else {
+                // Unrecognized channel - log for debugging
+                console.log('📊 WebSocket unrecognized channel:', channel, data)
               }
               break
 
@@ -323,9 +460,16 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       }
     } catch (error) {
       console.error('Failed to create WebSocket connection:', error)
+      setConnected(false)
       scheduleReconnect()
     }
-  }, [dispatch, WS_URL, scheduleReconnect, resubscribe, sendMessage])
+    // Note: resubscribe and sendMessage are stable callbacks
+  }, [dispatch, scheduleReconnect, resubscribe, sendMessage])
+
+  // Update connectRef whenever connect changes
+  useEffect(() => {
+    connectRef.current = connect
+  }, [connect])
 
   const disconnect = useCallback(() => {
     if (reconnectTimeoutRef.current) {
@@ -389,11 +533,15 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   // Auto-subscribe to common channels on connect
   useEffect(() => {
     if (connected) {
-      // Subscribe to common channels
+      // Subscribe to common channels (reduced to stay under limit)
       subscribe([
         'market:tick:*',
+        'engine:signal',
         'engine:signal:*',
+        'engine:decision',
         'engine:decision:*',
+        'engine:agent',
+        'engine:agent:*',
         'indicators:*'
       ])
     }

@@ -127,12 +127,58 @@ class RedisMarketStore(MarketStore):
             try:
                 from ..technical_indicators_service import TechnicalIndicatorsService
                 self._technical_service = TechnicalIndicatorsService(redis_client=redis_client)
+                
+                # Initialize technical service with existing OHLC data
+                self._initialize_technical_service_with_existing_data()
+                
                 logger.info("Technical indicators service initialized in MarketStore")
             except Exception as e:
                 logger.warning(f"Could not initialize technical indicators service: {e}")
                 self._technical_service = None
         else:
             self._technical_service = None
+
+    def _initialize_technical_service_with_existing_data(self) -> None:
+        """Initialize technical indicators service with existing OHLC data from Redis."""
+        if not self._technical_service or not self._available:
+            return
+            
+        try:
+            # Get all instruments that have OHLC data
+            ohlc_keys = self.redis.keys("ohlc:*:*")
+            instruments = set()
+            for key in ohlc_keys:
+                parts = key.split(":")
+                if len(parts) >= 2:
+                    instruments.add(parts[1])  # Extract instrument name
+            
+            # For each instrument, load recent OHLC data and initialize technical service
+            for instrument in instruments:
+                try:
+                    ohlc_bars = list(self.get_ohlc(instrument, "1min", limit=100))  # Load last 100 bars
+                    if ohlc_bars:
+                        # Convert OHLCBar objects to dictionaries
+                        ohlc_dicts = []
+                        for bar in ohlc_bars:
+                            ohlc_dicts.append({
+                                'open': bar.open,
+                                'high': bar.high,
+                                'low': bar.low,
+                                'close': bar.close,
+                                'volume': bar.volume,
+                                'start_at': bar.start_at.isoformat(),
+                                'timestamp': bar.start_at.isoformat()
+                            })
+                        
+                        # Initialize technical service with this data
+                        self._technical_service.initialize_with_ohlc_data(instrument, ohlc_dicts)
+                        logger.info(f"Initialized technical indicators for {instrument} with {len(ohlc_dicts)} OHLC bars")
+                        
+                except Exception as e:
+                    logger.warning(f"Failed to initialize technical indicators for {instrument}: {e}")
+                    
+        except Exception as e:
+            logger.warning(f"Failed to initialize technical service with existing data: {e}")
 
     def store_tick(self, tick: MarketTick) -> None:
         if not self._available:
@@ -180,14 +226,14 @@ class RedisMarketStore(MarketStore):
         """Process tick through candle builder to generate OHLC bars."""
         try:
             from ..adapters.candle_builder import CandleBuilder
-            
+
             instrument = tick.instrument
             timeframe = "1min"  # Default timeframe for minute candles
-            
+
             # Get or create candle builder for this instrument and timeframe
             if instrument not in self._candle_builders:
                 self._candle_builders[instrument] = {}
-            
+
             if timeframe not in self._candle_builders[instrument]:
                 # Create candle builder with callback to store OHLC bars
                 def on_candle_close(bar: OHLCBar):
@@ -208,19 +254,55 @@ class RedisMarketStore(MarketStore):
                             self._technical_service.update_candle(instrument, candle_dict)
                     except Exception as e:
                         logger.warning(f"Error in candle close callback: {e}")
-                
+
                 self._candle_builders[instrument][timeframe] = CandleBuilder(
                     timeframe=timeframe,
                     on_candle_close=on_candle_close
                 )
-            
+
             # Process tick through candle builder
             candle_builder = self._candle_builders[instrument][timeframe]
             closed_bar = candle_builder.process_tick(tick)
             # closed_bar is already stored via on_candle_close callback
-            
+
+            # Debug: Log candle status
+            active_candles = list(candle_builder._active_candles.get(instrument, {}).keys())
+            logger.debug(f"Active candles for {instrument}: {active_candles}")
+
+            # Also check if we need to force close any expired candles (older than current time - timeframe)
+            self._force_close_expired_candles(instrument, timeframe, tick.timestamp)
+
         except Exception as e:
             logger.debug(f"Error processing tick for OHLC: {e}")
+
+    def _force_close_expired_candles(self, instrument: str, timeframe: str, current_time: datetime) -> None:
+        """Force close any candles that should have closed based on wall clock time."""
+        try:
+            if instrument not in self._candle_builders or timeframe not in self._candle_builders[instrument]:
+                return
+
+            candle_builder = self._candle_builders[instrument][timeframe]
+
+            # Use the public force_close_all method but filter to only close truly expired candles
+            # For now, let's close all candles that are older than 2 minutes to be safe
+            candles_to_close = []
+            for candle_key, candle in candle_builder._active_candles.get(instrument, {}).items():
+                # Check if candle should have closed based on wall clock time
+                elapsed = (current_time - candle.start_time).total_seconds()
+                if elapsed >= candle_builder.timeframe_seconds * 2:  # Close if 2x timeframe old
+                    candles_to_close.append((instrument, candle_key))
+
+            # Close expired candles
+            for inst, candle_key in candles_to_close:
+                try:
+                    closed_bar = candle_builder._close_candle(inst, candle_key)
+                    if closed_bar:
+                        logger.debug(f"Force closed expired candle for {inst} {timeframe}: {closed_bar.start_at}")
+                except Exception as e:
+                    logger.debug(f"Error force closing candle {candle_key}: {e}")
+
+        except Exception as e:
+            logger.debug(f"Error in force_close_expired_candles: {e}")
 
     def get_latest_tick(self, instrument: str) -> Optional[MarketTick]:
         if not self._available:
@@ -242,8 +324,48 @@ class RedisMarketStore(MarketStore):
             sorted_key = f"ohlc_sorted:{bar.instrument}:{bar.timeframe}"
             score = bar.start_at.timestamp()
             self.redis.zadd(sorted_key, {json.dumps(payload): float(score)})
-            cutoff = float((datetime.now() - timedelta(seconds=self._ohlc_ttl)).timestamp())
-            self.redis.zremrangebyscore(sorted_key, 0, cutoff)
+
+            # Publish OHLC data to Redis pub/sub for real-time WebSocket updates
+            try:
+                payload_json = json.dumps(payload)
+                # Publish to specific instrument/timeframe channel
+                self.redis.publish(f"market:ohlc:{bar.instrument}:{bar.timeframe}", payload_json)
+                # Also publish to general OHLC channel
+                self.redis.publish("market:ohlc", payload_json)
+                # And to instrument-specific OHLC channel
+                self.redis.publish(f"market:ohlc:{bar.instrument}", payload_json)
+            except Exception as pub_exc:
+                # Don't fail if pub/sub fails (may not be enabled)
+                logger.debug(f"Failed to publish OHLC to pub/sub: {pub_exc}")
+
+            # Update technical indicators when OHLC data is stored
+            if self._enable_technical_indicators and self._technical_service:
+                try:
+                    candle_dict = {
+                        "open": bar.open,
+                        "high": bar.high,
+                        "low": bar.low,
+                        "close": bar.close,
+                        "volume": bar.volume or 0,
+                        "start_at": bar.start_at.isoformat(),
+                        "timestamp": bar.start_at.isoformat()
+                    }
+                    self._technical_service.update_candle(bar.instrument, candle_dict)
+                except Exception as e:
+                    logger.debug(f"Error updating technical indicators for OHLC: {e}")
+
+            # Skip cleanup for historical data (older than 1 hour) to preserve historical OHLC data
+            # Only clean up recent/live data that may have expired TTL
+            try:
+                # Handle timezone-aware vs naive datetime comparison
+                now = datetime.now(bar.start_at.tzinfo) if bar.start_at.tzinfo else datetime.now()
+                data_age_hours = (now - bar.start_at).total_seconds() / 3600
+                if data_age_hours < 1.0:  # Only cleanup data less than 1 hour old
+                    cutoff = float((datetime.now() - timedelta(seconds=self._ohlc_ttl)).timestamp())
+                    self.redis.zremrangebyscore(sorted_key, 0, cutoff)
+            except (TypeError, AttributeError):
+                # If timezone handling fails, skip cleanup for safety
+                pass
         except Exception as exc:  # noqa: BLE001
             logger.error("Error storing ohlc: %s", exc, exc_info=True)
 

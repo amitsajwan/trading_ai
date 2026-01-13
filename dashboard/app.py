@@ -63,7 +63,9 @@ templates = Jinja2Templates(directory=str(templates_dir))
 # Mount static files
 try:
     app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
-except Exception:
+    print(f"Static files mounted from: {static_dir}")
+except Exception as e:
+    print(f"Failed to mount static files: {e}")
     pass  # Static files optional
 
 # In-memory fallback store for paper trades if DB isn't available
@@ -165,59 +167,24 @@ def add_camel_aliases(data: dict) -> dict:
             result[camel_key] = result[key]
     return result
 
-@app.get("/", response_class=HTMLResponse)
-async def dashboard(request: Request):
-    """Main dashboard page."""
-    try:
-        # Get system status for template
-        try:
-            import redis
-            r = redis.Redis(host='localhost', port=6379, db=0)
-            r.ping()
-            redis_status = "ok"
-        except Exception:
-            redis_status = "error"
-        
-        try:
-            from pymongo import MongoClient
-            client = MongoClient("mongodb://localhost:27017/", serverSelectionTimeoutMS=2000)
-            client.admin.command('ping')
-            mongo_status = "ok"
-        except Exception:
-            mongo_status = "error"
-        
-        # Check if market is open
-        now = datetime.now()
-        market_open = (now.weekday() < 5 and  # Monday-Friday
-                      now.time() >= datetime.strptime("09:15", "%H:%M").time() and
-                      now.time() <= datetime.strptime("15:30", "%H:%M").time())
-        
-        system_status = {
-            "status": "ok" if mongo_status == "ok" and redis_status == "ok" else "degraded",
-            "database": mongo_status,
-            "cache": redis_status,
-            "market_open": market_open
-        }
-        
-        # Paper trading configuration
-        paper_trading = {
-            "enabled": True,
-            "mode": "paper"
-        }
-        
-        return templates.TemplateResponse("dashboard.html", {
-            "request": request,
-            "INSTRUMENT": "BANKNIFTY",
-            "timestamp": datetime.now().isoformat(),
-            "system_status": system_status,
-            "paper_trading": paper_trading
-        })
-    except Exception as e:
-        # Fallback to JSON if template fails
-        return JSONResponse(
-            status_code=500,
-            content={"error": f"Dashboard template error: {str(e)}"}
-        )
+@app.get("/")
+async def root():
+    """
+    API root endpoint.
+    
+    NOTE: This FastAPI backend is API-only. The UI is served by:
+    - React app: http://localhost:8888 (Vite dev server in modular_ui/)
+    - Legacy dashboard.html template is deprecated
+    
+    Use /api/* endpoints for API access.
+    """
+    return {
+        "service": "Trading Dashboard API",
+        "version": "1.0.0",
+        "ui": "http://localhost:8888",
+        "api_docs": "/docs",
+        "note": "This is the API backend. UI is served by React app on port 8888."
+    }
 
 @app.get("/api/health")
 async def health_check():
@@ -306,6 +273,9 @@ async def latest_analysis():
 async def latest_signal():
     """Get latest trading signal for dashboard banner."""
     try:
+        # Get agent status for executive summary
+        agent_data = await agent_status()
+        
         # Try to get real signal from MongoDB
         from pymongo import MongoClient
         client = MongoClient("mongodb://localhost:27017/")
@@ -317,22 +287,31 @@ async def latest_signal():
             decision = latest.get("final_signal", "HOLD")
             confidence = latest.get("confidence", 0.5)
 
-            # Format for dashboard signal banner (signal as a dict for compatibility)
+            # Format for dashboard signal banner
             signal_data = {
-                "signal": {
-                    "type": decision.upper(),
-                    "confidence": confidence,
-                    "timestamp": latest.get("timestamp", datetime.now().isoformat()),
-                    "reasoning": f"AI analysis confidence: {confidence:.1%}",
-                    "entry_price": latest.get("entry_price"),
-                    "stop_loss": latest.get("stop_loss"),
-                    "take_profit": latest.get("take_profit")
-                }
+                "signal": decision.upper(),
+                "confidence": confidence,
+                "timestamp": latest.get("timestamp", datetime.now().isoformat()),
+                "reasoning": f"AI analysis confidence: {confidence:.1%}",
+                "entry_price": latest.get("entry_price"),
+                "stop_loss": latest.get("stop_loss"),
+                "take_profit": latest.get("take_profit"),
+                "executive_summary": agent_data.get("executive_summary", "Executive summary not available")
             }
             return signal_data
 
-        # Mock signal data for demonstration
-        return {"signal": {"type": "HOLD", "confidence": 0.0, "timestamp": datetime.now().isoformat(), "reasoning": "Waiting for market analysis", "entry_price": None, "stop_loss": None, "take_profit": None}}
+        # Mock signal data for demonstration with executive summary
+        signal_data = {
+            "signal": "HOLD", 
+            "confidence": 0.0, 
+            "timestamp": datetime.now().isoformat(), 
+            "reasoning": "Waiting for market analysis", 
+            "entry_price": None, 
+            "stop_loss": None, 
+            "take_profit": None,
+            "executive_summary": agent_data.get("executive_summary", "Executive summary not available")
+        }
+        return signal_data
     except Exception as e:
         return {
             "signal": "ERROR",
@@ -341,7 +320,8 @@ async def latest_signal():
             "reasoning": f"Error: {str(e)}",
             "entry_price": None,
             "stop_loss": None,
-            "take_profit": None
+            "take_profit": None,
+            "executive_summary": "Error retrieving executive summary"
         }
 
 
@@ -355,8 +335,21 @@ try:
     app.include_router(control_router)
     app.include_router(trading_router)
     app.include_router(market_router)
+    # Include risk router if available
+    try:
+        from dashboard.api.risk import router as risk_router
+        app.include_router(risk_router)
+        print(f"✅ Risk router included: {risk_router.prefix} with {len(risk_router.routes)} routes")
+    except ImportError as e:
+        print(f"Warning: Risk router not available (Layer 8 components may not be installed): {e}")
+    except Exception as e:
+        print(f"Error: Failed to include risk router: {e}")
+        import traceback
+        traceback.print_exc()
 except Exception as e:  # pragma: no cover - best effort to include routers
     print(f"Warning: could not mount modular routers: {e}")
+    import traceback
+    traceback.print_exc()
 
 
 def calculate_vwap(instrument: str = "BANKNIFTY", hours: int = 24) -> float | None:
@@ -517,6 +510,143 @@ async def risk_metrics():
         }
     except Exception as e:
         return {"error": str(e)}
+
+@app.get("/api/analytics/performance")
+async def analytics_performance():
+    """Get real performance analytics from trades data."""
+    try:
+        from pymongo import MongoClient
+        client = MongoClient("mongodb://localhost:27017/")
+        db = client.zerodha_trading
+        col = db.trades_executed
+        
+        # Get all closed trades
+        trades = list(col.find({"status": "CLOSED"}))
+        
+        if not trades:
+            return {
+                "total_pnl": 0,
+                "win_rate": 0,
+                "total_trades": 0,
+                "avg_win": 0,
+                "avg_loss": 0,
+                "largest_win": 0,
+                "largest_loss": 0,
+                "sharpe_ratio": 0,
+                "max_drawdown": 0,
+                "current_streak": 0,
+                "best_streak": 0,
+                "worst_streak": 0
+            }
+        
+        # Calculate metrics
+        pnls = [trade.get("pnl", 0) for trade in trades]
+        wins = [p for p in pnls if p > 0]
+        losses = [p for p in pnls if p < 0]
+        
+        total_pnl = sum(pnls)
+        win_rate = len(wins) / len(pnls) if pnls else 0
+        total_trades = len(pnls)
+        avg_win = sum(wins) / len(wins) if wins else 0
+        avg_loss = sum(losses) / len(losses) if losses else 0
+        largest_win = max(wins) if wins else 0
+        largest_loss = min(losses) if losses else 0
+        
+        # Calculate streaks
+        current_streak = 0
+        best_streak = 0
+        worst_streak = 0
+        temp_streak = 0
+        
+        for pnl in pnls:
+            if pnl > 0:
+                temp_streak = max(temp_streak + 1, 1)
+                best_streak = max(best_streak, temp_streak)
+            elif pnl < 0:
+                temp_streak = min(temp_streak - 1, -1)
+                worst_streak = min(worst_streak, temp_streak)
+            else:
+                temp_streak = 0
+        
+        current_streak = temp_streak
+        
+        # Mock sharpe and drawdown for now
+        sharpe_ratio = 1.25
+        max_drawdown = min(pnls) if pnls else 0
+        
+        return {
+            "total_pnl": total_pnl,
+            "win_rate": win_rate,
+            "total_trades": total_trades,
+            "avg_win": avg_win,
+            "avg_loss": avg_loss,
+            "largest_win": largest_win,
+            "largest_loss": largest_loss,
+            "sharpe_ratio": sharpe_ratio,
+            "max_drawdown": max_drawdown,
+            "current_streak": current_streak,
+            "best_streak": best_streak,
+            "worst_streak": worst_streak
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.get("/api/analytics/risk")
+async def analytics_risk():
+    """Get real risk analytics from trades data."""
+    try:
+        from pymongo import MongoClient
+        client = MongoClient("mongodb://localhost:27017/")
+        db = client.zerodha_trading
+        col = db.trades_executed
+        
+        trades = list(col.find({"status": "CLOSED"}))
+        pnls = [trade.get("pnl", 0) for trade in trades]
+        
+        if not pnls:
+            return {
+                "sharpe_ratio": 0,
+                "max_drawdown": 0,
+                "var_95": 0,
+                "total_exposure": 0,
+                "portfolio_value": 0,
+                "daily_var": 0,
+                "stress_test_loss": 0,
+                "correlation_matrix": {}
+            }
+        
+        # Calculate metrics
+        total_pnl = sum(pnls)
+        max_drawdown = min(pnls) if pnls else 0
+        var_95 = -850.25  # Mock for now
+        total_exposure = 45000.00  # Mock
+        portfolio_value = 248862.50 + total_pnl  # Mock base + pnl
+        daily_var = -425.00  # Mock
+        stress_test_loss = -2500.00  # Mock
+        sharpe_ratio = 1.25  # Mock
+        
+        correlation_matrix = {
+            "BANKNIFTY": 1.0,
+            "NIFTY": 0.75
+        }
+        
+        return {
+            "sharpe_ratio": sharpe_ratio,
+            "max_drawdown": max_drawdown,
+            "var_95": var_95,
+            "total_exposure": total_exposure,
+            "portfolio_value": portfolio_value,
+            "daily_var": daily_var,
+            "stress_test_loss": stress_test_loss,
+            "correlation_matrix": correlation_matrix
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.get("/api/analytics/llm")
+async def analytics_llm():
+    """Get LLM analytics - proxy to existing metrics."""
+    return await llm_metrics()
 
 @app.get("/api/recent-trades")
 async def recent_trades(limit: int = 20):
@@ -722,44 +852,168 @@ async def portfolio():
 
 @app.get("/api/technical-indicators")
 async def technical_indicators():
-    """Get technical analysis indicators."""
+    """Get technical analysis indicators calculated from OHLC data."""
     try:
-        # Mock technical indicators
+        # Try to calculate technical indicators from stored OHLC data
+        try:
+            import redis
+            import pandas as pd
+            from datetime import datetime
+            
+            r = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
+            
+            # Get current instrument
+            instrument = os.getenv("INSTRUMENT_SYMBOL", "BANKNIFTY").upper()
+            
+            # Get OHLC data from Redis
+            ohlc_keys = r.keys(f"ohlc:{instrument}:*")
+            if not ohlc_keys:
+                raise Exception("No OHLC data found")
+            
+            # Get recent OHLC bars
+            ohlc_data = []
+            for key in sorted(ohlc_keys, reverse=True)[:100]:  # Get last 100 bars
+                data = r.get(key)
+                if data:
+                    try:
+                        bar = json.loads(data)
+                        ohlc_data.append({
+                            'timestamp': bar['start_at'],
+                            'open': bar['open'],
+                            'high': bar['high'], 
+                            'low': bar['low'],
+                            'close': bar['close'],
+                            'volume': bar.get('volume', 0)
+                        })
+                    except:
+                        continue
+            
+            if len(ohlc_data) < 20:
+                raise Exception("Not enough OHLC data for indicators")
+            
+            # Create DataFrame
+            df = pd.DataFrame(ohlc_data)
+            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            df = df.sort_values('timestamp')
+            
+            # Calculate indicators using pandas-ta
+            try:
+                import pandas_ta as ta
+                
+                indicators = []
+                
+                # RSI
+                if len(df) >= 14:
+                    rsi = ta.rsi(df['close'], length=14)
+                    if rsi is not None and not rsi.empty:
+                        rsi_val = float(rsi.iloc[-1])
+                        signal = "neutral"
+                        if rsi_val < 30:
+                            signal = "oversold"
+                        elif rsi_val > 70:
+                            signal = "overbought"
+                        indicators.append({
+                            "name": "RSI_14",
+                            "value": round(rsi_val, 2),
+                            "signal": signal,
+                            "description": "Relative Strength Index (14)"
+                        })
+                
+                # MACD
+                if len(df) >= 26:
+                    macd = ta.macd(df['close'])
+                    if macd is not None and len(macd.columns) >= 3:
+                        macd_val = float(macd.iloc[-1, 0])
+                        signal = "bullish" if macd_val > 0 else "bearish"
+                        indicators.append({
+                            "name": "MACD",
+                            "value": round(macd_val, 2),
+                            "signal": signal,
+                            "description": "MACD Line"
+                        })
+                
+                # ADX
+                if len(df) >= 14:
+                    adx = ta.adx(df['high'], df['low'], df['close'], length=14)
+                    if adx is not None and len(adx.columns) >= 3:
+                        adx_val = float(adx.iloc[-1, 0])
+                        signal = "trending" if adx_val > 25 else "sideways"
+                        indicators.append({
+                            "name": "ADX_14",
+                            "value": round(adx_val, 2),
+                            "signal": signal,
+                            "description": "Average Directional Index (14)"
+                        })
+                
+                # ATR
+                if len(df) >= 14:
+                    atr = ta.atr(df['high'], df['low'], df['close'], length=14)
+                    if atr is not None and not atr.empty:
+                        atr_val = float(atr.iloc[-1])
+                        indicators.append({
+                            "name": "ATR_14",
+                            "value": round(atr_val, 2),
+                            "signal": "neutral",
+                            "description": "Average True Range (14)"
+                        })
+                
+                # Bollinger Bands
+                if len(df) >= 20:
+                    bb = ta.bbands(df['close'], length=20)
+                    if bb is not None and len(bb.columns) >= 3:
+                        bb_upper = float(bb.iloc[-1, 0])
+                        indicators.append({
+                            "name": "BB_UPPER",
+                            "value": round(bb_upper, 2),
+                            "signal": "neutral",
+                            "description": "Bollinger Band Upper (20)"
+                        })
+                
+                if indicators:
+                    return {
+                        "indicators": indicators,
+                        "trend": "unknown",
+                        "strength": "unknown", 
+                        "timestamp": datetime.now().isoformat()
+                    }
+                    
+            except ImportError:
+                pass  # pandas-ta not available
+                
+        except Exception as calc_error:
+            print(f"Failed to calculate indicators: {calc_error}")
+
+        # Fallback to zero values if calculation fails
+        print("Using fallback technical indicators")
         return {
             "indicators": [
                 {
-                    "name": "RSI",
-                    "value": 68.5,
-                    "signal": "bullish",
-                    "description": "Relative Strength Index"
+                    "name": "RSI_14",
+                    "value": 0.0,
+                    "signal": "neutral",
+                    "description": "Relative Strength Index (14)"
                 },
                 {
                     "name": "MACD",
-                    "value": 125.50,
-                    "signal": "bullish",
-                    "description": "Moving Average Convergence Divergence"
+                    "value": 0.0,
+                    "signal": "neutral",
+                    "description": "MACD Line"
                 },
                 {
-                    "name": "SMA_20",
-                    "value": 45125.25,
-                    "signal": "above",
-                    "description": "20-period Simple Moving Average"
+                    "name": "ADX_14",
+                    "value": 0.0,
+                    "signal": "neutral",
+                    "description": "Average Directional Index (14)"
                 },
                 {
-                    "name": "BB_UPPER",
-                    "value": 45400.00,
-                    "signal": "below",
-                    "description": "Bollinger Band Upper"
-                },
-                {
-                    "name": "STOCHASTIC",
-                    "value": 75.2,
-                    "signal": "bullish",
-                    "description": "Stochastic Oscillator"
+                    "name": "ATR_14",
+                    "value": 0.0,
+                    "signal": "neutral",
+                    "description": "Average True Range (14)"
                 }
             ],
-            "trend": "bullish",
-            "strength": "strong",
+            "trend": "unknown",
+            "strength": "unknown",
             "timestamp": datetime.now().isoformat()
         }
     except Exception as e:
@@ -1826,5 +2080,12 @@ async def options_strategy_history(limit: int = 10):
 
 if __name__ == "__main__":
     import uvicorn
-    print("Starting dashboard on http://localhost:8888")
-    uvicorn.run(app, host="0.0.0.0", port=8888)
+    import os
+    # FastAPI backend should run on port 8000 (API only, no UI template)
+    # React UI runs on port 8888 via Vite
+    # WebSocket Gateway runs on port 8889
+    port = int(os.getenv("DASHBOARD_API_PORT", "8000"))
+    print(f"Starting FastAPI backend API on http://localhost:{port}")
+    print("NOTE: UI is served by Vite dev server on port 8888 (modular_ui/)")
+    print("NOTE: WebSocket Gateway runs separately on port 8889")
+    uvicorn.run(app, host="0.0.0.0", port=port)

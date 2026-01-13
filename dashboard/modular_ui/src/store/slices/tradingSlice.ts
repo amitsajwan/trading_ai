@@ -56,6 +56,38 @@ export interface AgentStatus {
   signal?: string
   confidence?: number
   summary?: any
+  technical_indicators?: any
+  reasoning?: string
+  cycle_info?: any
+}
+
+export interface AgentResponse {
+  agent: string
+  decision: 'BUY' | 'SELL' | 'HOLD'
+  confidence: number
+  timestamp: string
+  details: {
+    reasoning?: string
+    indicators?: any
+    perspectives?: any
+    entry_price?: number
+    stop_loss?: number
+    take_profit?: number
+    [key: string]: any
+  }
+  structured_report?: any
+}
+
+export interface OrchestratorDecision {
+  decision_id: string
+  timestamp: string
+  instrument: string
+  final_decision: 'BUY' | 'SELL' | 'HOLD'
+  confidence: number
+  agent_responses: AgentResponse[]
+  reasoning: string
+  signal_created?: boolean
+  signal_id?: string
 }
 
 export interface StrategyRecommendation {
@@ -163,6 +195,8 @@ interface TradingState {
   portfolio: PortfolioSummary | null
   recentTrades: Trade[]
   agentStatuses: AgentStatus[]
+  agentResponses: AgentResponse[]
+  orchestratorDecisions: OrchestratorDecision[]
   strategyRecommendation: StrategyRecommendation | null
   optionsStrategy: OptionsStrategy | null
   optionsAlgoActive: boolean
@@ -172,6 +206,8 @@ interface TradingState {
     portfolio: boolean
     trades: boolean
     agents: boolean
+    agentResponses: boolean
+    orchestrator: boolean
     strategy: boolean
     signals: boolean
     optionsStrategy: boolean
@@ -186,6 +222,8 @@ const initialState: TradingState = {
   portfolio: null,
   recentTrades: [],
   agentStatuses: [],
+  agentResponses: [],
+  orchestratorDecisions: [],
   strategyRecommendation: null,
   optionsStrategy: null,
   optionsAlgoActive: false,
@@ -195,6 +233,8 @@ const initialState: TradingState = {
     portfolio: false,
     trades: false,
     agents: false,
+    agentResponses: false,
+    orchestrator: false,
     strategy: false,
     signals: false,
     optionsStrategy: false,
@@ -285,6 +325,18 @@ export const fetchSignals = createAsyncThunk(
       return response.data.signals || []
     } catch (err: any) {
       return rejectWithValue(err.response?.data?.error || err.message || 'Failed to fetch signals')
+    }
+  }
+)
+
+export const executeSignal = createAsyncThunk(
+  'trading/executeSignal',
+  async (signalId: string, { rejectWithValue }) => {
+    try {
+      const response = await axios.post(`/api/trading/execute/${signalId}`)
+      return { signalId, result: response.data }
+    } catch (err: any) {
+      return rejectWithValue(err.response?.data?.error || err.message || 'Failed to execute signal')
     }
   }
 )
@@ -408,6 +460,27 @@ const tradingSlice = createSlice({
     },
     setSignals: (state, action: PayloadAction<TradingSignal[]>) => {
       state.signals = action.payload
+      state.lastUpdated = new Date().toISOString()
+    },
+    updateAgentResponse: (state, action: PayloadAction<AgentResponse>) => {
+      const response = action.payload
+      const existingIndex = state.agentResponses.findIndex(r => r.agent === response.agent)
+      if (existingIndex >= 0) {
+        state.agentResponses[existingIndex] = response
+      } else {
+        state.agentResponses.push(response)
+        // Keep only last 50 responses per agent
+        state.agentResponses = state.agentResponses.slice(-50)
+      }
+      state.lastUpdated = new Date().toISOString()
+    },
+    updateOrchestratorDecision: (state, action: PayloadAction<OrchestratorDecision>) => {
+      const decision = action.payload
+      state.orchestratorDecisions.unshift(decision)
+      // Keep only last 20 decisions
+      if (state.orchestratorDecisions.length > 20) {
+        state.orchestratorDecisions = state.orchestratorDecisions.slice(0, 20)
+      }
       state.lastUpdated = new Date().toISOString()
     },
     clearError: (state) => {
@@ -555,6 +628,22 @@ const tradingSlice = createSlice({
         state.error = action.error.message || 'Failed to execute signal when ready'
       })
 
+    // Execute Signal Immediately
+    builder
+      .addCase(executeSignal.pending, (state) => {
+        state.error = null
+      })
+      .addCase(executeSignal.fulfilled, (state, action) => {
+        const { signalId } = action.payload
+        const signal = state.signals.find(s => s.signal_id === signalId || s.condition_id === signalId)
+        if (signal) {
+          signal.status = 'executed'
+        }
+      })
+      .addCase(executeSignal.rejected, (state, action) => {
+        state.error = action.error.message || 'Failed to execute signal'
+      })
+
     // Fetch Options Strategy
     builder
       .addCase(fetchOptionsStrategy.pending, (state) => {
@@ -611,5 +700,5 @@ const tradingSlice = createSlice({
   },
 })
 
-export const { updateDecision, updatePortfolio, addTrade, clearError, addOrUpdateSignal, setSignals } = tradingSlice.actions
+export const { updateDecision, updatePortfolio, addTrade, clearError, addOrUpdateSignal, setSignals, updateAgentResponse, updateOrchestratorDecision } = tradingSlice.actions
 export default tradingSlice.reducer

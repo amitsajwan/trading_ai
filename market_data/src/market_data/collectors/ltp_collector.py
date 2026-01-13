@@ -37,8 +37,10 @@ except ImportError:
 def load_credentials():
     """Load credentials from json file with automatic refresh if needed."""
     cred_path = os.path.join(os.getcwd(), "credentials.json")
+    print(f"[ltp] Looking for credentials at: {cred_path}")
     if not os.path.exists(cred_path):
-        print("No credentials.json found. Please run kite_auth.py first.")
+        print(f"[ltp] No credentials.json found at {cred_path}. Current working directory: {os.getcwd()}")
+        print("[ltp] Please run kite_auth.py first.")
         return None, None
 
     try:
@@ -245,6 +247,11 @@ class LTPDataCollector:
                 self.r.setex(f"tick:{instrument_name}:latest", 86400, json.dumps(tick_data))  # 24h TTL
                 self.r.set(f"price:{instrument_name}:latest", str(price))
                 self.r.set(f"price:{instrument_name}:latest_ts", ts.isoformat())
+
+                # Publish to Redis pub/sub channels for real-time WebSocket updates
+                self.r.publish(f"market:tick:{instrument_name}", json.dumps(tick_data))
+                self.r.publish("market:tick", json.dumps(tick_data))
+
             except Exception as e:
                 print(f"[ltp] Redis error: {e}")
 
@@ -262,7 +269,25 @@ class LTPDataCollector:
 def main():
     # Standalone runner mainly for container entrypoint
     kite_client = build_kite_client()
-    collector = LTPDataCollector(kite_client, market_memory=None)
+    
+    # Initialize market store for technical indicators
+    try:
+        import redis
+        redis_config = config.get_redis_config() if config else {
+            "host": os.getenv("REDIS_HOST", "localhost"),
+            "port": int(os.getenv("REDIS_PORT", "6379")),
+            "db": 0,
+            "decode_responses": True
+        }
+        redis_client = redis.Redis(**redis_config)
+        from ..api import build_store
+        market_memory = build_store(redis_client=redis_client)
+        print("[ltp] Initialized Redis-backed market store for technical indicators")
+    except Exception as e:
+        print(f"[ltp] Failed to initialize market store: {e}")
+        market_memory = None
+    
+    collector = LTPDataCollector(kite_client, market_memory)
     collector.run_forever(interval_seconds=2.0)
 
 

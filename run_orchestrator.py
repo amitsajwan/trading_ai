@@ -197,9 +197,33 @@ async def run_continuous_orchestrator():
         from genai_module.core.llm_provider_manager import LLMProviderManager
         from genai_module.api import build_llm_client
         
-        # Use async-friendly stubs for market/options data when real pipelines aren't configured
-        market_store = StubMarketStore()
-        print("[OK] Using stub market store (synthetic OHLC/ticks)")
+        # Choose market store based on provider
+        provider = os.getenv("PROVIDER", "mock")
+        market_store = None
+
+        if provider == "zerodha":
+            # Try to use real Zerodha data
+            try:
+                import redis
+                redis_host = os.getenv("REDIS_HOST", "localhost")
+                redis_port = int(os.getenv("REDIS_PORT", "6379"))
+                redis_client = redis.Redis(host=redis_host, port=redis_port, db=0, decode_responses=True)
+
+                # Test Redis connection
+                redis_client.ping()
+
+                # Import and use Redis-backed market store for live data
+                from market_data.api import build_store
+                market_store = build_store(redis_client=redis_client)
+                print("[OK] Using Redis-backed market store (live Zerodha data)")
+            except Exception as e:
+                print(f"[!] Redis not available ({e}), falling back to stub market store")
+                market_store = StubMarketStore()
+                print("[OK] Using stub market store (synthetic OHLC/ticks)")
+        else:
+            # Mock mode - use stub data
+            market_store = StubMarketStore()
+            print("[OK] Using stub market store (mock data mode)")
 
         options_client = StubOptionsClient()
         print("[OK] Using stub options chain client")
@@ -231,8 +255,46 @@ async def run_continuous_orchestrator():
         # Initialize technical indicators service
         technical_data_provider = None
         try:
-            from engine_module.services.technical_indicators_service import TechnicalIndicatorsService
-            technical_data_provider = TechnicalIndicatorsService(market_store)
+            from market_data.technical_indicators_service import TechnicalIndicatorsService
+            from engine_module.contracts import TechnicalDataProvider
+
+            # Create TechnicalIndicatorsService with Redis client for caching
+            import redis
+            redis_host = os.getenv("REDIS_HOST", "localhost")
+            redis_port = int(os.getenv("REDIS_PORT", "6379"))
+            redis_client = redis.Redis(host=redis_host, port=redis_port, db=0, decode_responses=True)
+
+            indicators_service = TechnicalIndicatorsService(redis_client)
+
+            # Create wrapper to implement TechnicalDataProvider protocol
+            class TechnicalIndicatorsProvider(TechnicalDataProvider):
+                def __init__(self, service, market_store):
+                    self.service = service
+                    self.market_store = market_store
+
+                async def get_technical_indicators(self, symbol: str, periods: int = 100):
+                    try:
+                        # Get OHLC data from market store
+                        ohlc_data = await self.market_store.get_ohlc_data(symbol, periods)
+                        if ohlc_data and len(ohlc_data) > 0:
+                            # Feed OHLC data to the service
+                            for candle in ohlc_data[-periods:]:  # Use last 'periods' candles
+                                try:
+                                    self.service.update_candle(symbol, candle)
+                                except Exception as e:
+                                    print(f"Failed to update candle: {e}")
+                                    continue
+
+                            # Calculate indicators using the service
+                            return self.service.calculate_indicators(symbol)
+                    except Exception as e:
+                        print(f"Failed to get indicators from market store: {e}")
+
+                    return None
+
+            technical_data_provider = TechnicalIndicatorsProvider(indicators_service, market_store)
+
+            technical_data_provider = TechnicalIndicatorsProvider(indicators_service)
             print("[OK] Technical indicators service initialized")
         except Exception as e:
             print(f"[!] Technical indicators service not available: {e}")
@@ -312,6 +374,7 @@ async def run_continuous_orchestrator():
             # Check if market is open (skip when explicitly forced or in replay/historical mode)
             force_market_open = os.environ.get('FORCE_MARKET_OPEN', 'false').lower() == 'true'
             simulation_mode = os.environ.get('SIMULATION_MODE', 'false').lower() == 'true'
+            demo_mode = os.getenv("DEMO_MODE", "true").lower() == "true"
             # Check for historical/replay mode via multiple methods:
             # 1. Virtual time is active (set by historical replayer)
             # 2. Environment variables indicating historical mode
@@ -322,7 +385,7 @@ async def run_continuous_orchestrator():
                 os.environ.get('USE_VIRTUAL_TIME', '0').lower() in ('1', 'true', 'yes') or
                 os.environ.get('TRADING_PROVIDER', '').lower() in ('historical', 'replay')
             )
-            market_open = force_market_open or simulation_mode or in_replay_mode or is_market_open(cycle_start)
+            market_open = force_market_open or simulation_mode or in_replay_mode or demo_mode or is_market_open(cycle_start)
             
             if not market_open:
                 # Convert to IST for display (IST is UTC+5:30)
@@ -416,7 +479,39 @@ async def run_continuous_orchestrator():
                             print(f'   [OK] Synced {synced_count} new signal(s) to SignalMonitor for real-time monitoring')
                     except Exception as e:
                         logger.warning(f"Failed to sync signals to SignalMonitor: {e}")
-                
+
+                # Step 4: Publish final decision to Redis for real-time UI updates
+                try:
+                    import redis
+                    import json
+                    redis_host = os.getenv("REDIS_HOST", "localhost")
+                    redis_port = int(os.getenv("REDIS_PORT", "6379"))
+                    redis_client = redis.Redis(host=redis_host, port=redis_port, db=0, decode_responses=True)
+
+                    # Test Redis connection
+                    redis_client.ping()
+
+                    # Publish final decision
+                    decision_data = {
+                        "instrument": "BANKNIFTY",
+                        "signal": result.decision,
+                        "confidence": float(result.confidence),
+                        "timestamp": cycle_start.isoformat(),
+                        "reasoning": reasoning_text,
+                        "entry_price": result.details.get("entry_price") if result.details else None,
+                        "stop_loss": result.details.get("stop_loss") if result.details else None,
+                        "take_profit": result.details.get("take_profit") if result.details else None,
+                        "cycle_number": cycle_count
+                    }
+
+                    logger.info(f"📊 Publishing decision to Redis channels: engine:decision, engine:decision:BANKNIFTY")
+                    redis_client.publish("engine:decision", json.dumps(decision_data))
+                    redis_client.publish("engine:decision:BANKNIFTY", json.dumps(decision_data))
+                    logger.info(f"✅ Published decision {result.decision} to Redis pub/sub")
+
+                except Exception as e:
+                    logger.warning(f"Failed to publish decision to Redis: {e}")
+
                 # Update orchestrator health in MongoDB
                 try:
                     health_doc = {

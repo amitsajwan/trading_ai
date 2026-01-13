@@ -18,9 +18,10 @@
             <nav class="nav-section">
                 <div class="nav-section-title">Main</div>
                 <div class="nav-item active" onclick="scrollToSection('overview')">📈 Overview</div>
+                <div class="nav-item" onclick="scrollToSection('signals')">📊 Signals</div>
+                <div class="nav-item" onclick="scrollToSection('agents')">🤖 Agents</div>
                 <div class="nav-item" onclick="scrollToSection('technicals')">📊 Technicals</div>
                 <div class="nav-item" onclick="scrollToSection('trades')">📋 Trades</div>
-                <div class="nav-item" onclick="scrollToSection('analysis')">🤖 Analysis</div>
                 <div class="nav-item" onclick="scrollToSection('portfolio')">🎯 Portfolio</div>
             </nav>
             <nav class="nav-section">
@@ -108,6 +109,65 @@
                     <div class="signal-metric">
                         <div class="signal-metric-label">Take Profit</div>
                         <div class="signal-metric-value" id="signal-tp">-</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- SIGNALS SECTION -->
+            <div class="section-full" id="signals">
+                <div class="section-title">📊 Trading Signals</div>
+                <div class="signal-details-grid">
+                    <div class="card">
+                        <div class="card-header">
+                            <span style="font-size: 18px;">🎯</span>
+                            <h3 class="card-title">Current Signal</h3>
+                        </div>
+                        <div class="card-content">
+                            <div class="signal-display">
+                                <div class="signal-main">
+                                    <span id="signals-icon" class="signal-icon-large">📊</span>
+                                    <span id="signals-text" class="signal-text-large">HOLD</span>
+                                </div>
+                                <div id="signals-reasoning" class="signal-reasoning-detailed">Waiting for analysis...</div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="card">
+                        <div class="card-header">
+                            <span style="font-size: 18px;">📈</span>
+                            <h3 class="card-title">Signal Metrics</h3>
+                        </div>
+                        <div class="card-content">
+                            <div class="metric-row">
+                                <span class="metric-label">Confidence</span>
+                                <span class="metric-value" id="signals-conf">-</span>
+                            </div>
+                            <div class="metric-row">
+                                <span class="metric-label">Option Premium (₹)</span>
+                                <span class="metric-value" id="signals-entry">-</span>
+                            </div>
+                            <div class="metric-row">
+                                <span class="metric-label">Stop Loss</span>
+                                <span class="metric-value" id="signals-sl">-</span>
+                            </div>
+                            <div class="metric-row">
+                                <span class="metric-label">Take Profit</span>
+                                <span class="metric-value" id="signals-tp">-</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="card">
+                        <div class="card-header">
+                            <span style="font-size: 18px;">📋</span>
+                            <h3 class="card-title">Executive Summary</h3>
+                        </div>
+                        <div class="card-content">
+                            <div id="signals-executive-summary" class="executive-summary">
+                                Loading executive summary...
+                            </div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -347,8 +407,8 @@
                 </div>
             </div>
 
-            <!-- AGENT ANALYSIS SECTION -->
-            <div class="section-full" id="analysis">
+            <!-- AGENTS SECTION -->
+            <div class="section-full" id="agents">
                 <div class="section-title">🤖 Agent Analysis</div>
                 <div id="agents-container" class="agent-grid">
                     <div class="loading" style="grid-column: 1/-1;">Loading agents...</div>

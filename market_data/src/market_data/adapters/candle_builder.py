@@ -78,11 +78,13 @@ class CandleBuilder:
             closed_candle = self._check_and_close_candle(instrument, tick.timestamp)
             
             # Create new candle
+            start_time = self._get_candle_start_time(tick.timestamp)
             self._active_candles[instrument][candle_key] = CandleData(
                 instrument=instrument,
                 timeframe=self.timeframe,
-                start_time=self._get_candle_start_time(tick.timestamp)
+                start_time=start_time
             )
+            logger.debug(f"Created new candle {candle_key} for {instrument} at {start_time}")
         
         # Update active candle with tick
         candle = self._active_candles[instrument][candle_key]
@@ -90,6 +92,12 @@ class CandleBuilder:
         
         # Check if candle should close
         if self._should_close_candle(tick.timestamp, candle.start_time):
+            logger.debug(f"Closing candle {candle_key} for {instrument} due to time: {tick.timestamp} - {candle.start_time} = {(tick.timestamp - candle.start_time).total_seconds()}s")
+            return self._close_candle(instrument, candle_key)
+
+        # Also force close candles that are too old (more than 2 minutes) to prevent stale data
+        if (tick.timestamp - candle.start_time).total_seconds() > self.timeframe_seconds * 2:
+            logger.debug(f"Force closing old candle {candle_key} for {instrument}: {tick.timestamp} - {candle.start_time} = {(tick.timestamp - candle.start_time).total_seconds()}s")
             return self._close_candle(instrument, candle_key)
         
         return None

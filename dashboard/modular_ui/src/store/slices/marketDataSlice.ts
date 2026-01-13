@@ -64,11 +64,11 @@ export interface TechnicalIndicators {
 
 interface MarketDataState {
   currentTick: TickData | null
-  ohlcData: OHLCData[]
+  ohlcData: Record<string, Record<string, OHLCData[]>>
   optionsChain: OptionsChain | null
   overview: MarketOverview | null
   orderFlow: any | null
-  technicalIndicators: TechnicalIndicators | null
+  technicalIndicators: Record<string, Record<string, TechnicalIndicators>> | null
   loading: {
     tick: boolean
     ohlc: boolean
@@ -82,11 +82,11 @@ interface MarketDataState {
 
 const initialState: MarketDataState = {
   currentTick: null,
-  ohlcData: [],
+  ohlcData: {},
   optionsChain: null,
   overview: null,
   orderFlow: null,
-  technicalIndicators: null,
+  technicalIndicators: {},
   loading: {
     tick: false,
     ohlc: false,
@@ -120,9 +120,10 @@ export const fetchOHLCData = createAsyncThunk(
 export const fetchOptionsChain = createAsyncThunk(
   'marketData/fetchOptionsChain',
   async (instrument: string = 'BANKNIFTY') => {
-    const response = await axios.get(`/api/market-data/options/chain/${instrument}`)
+    // Call market data API directly to bypass proxy issues
+    const response = await axios.get(`http://localhost:8004/api/v1/options/chain/${instrument}`)
     const data = response.data
-    
+
     // Normalize response: API returns {strikes, expiry, instrument}, Redux expects {chain, available}
     if (data.strikes && !data.chain) {
       return {
@@ -131,7 +132,7 @@ export const fetchOptionsChain = createAsyncThunk(
         available: true,
       }
     }
-    
+
     return {
       ...data,
       available: data.available !== false, // Default to true if not specified
@@ -229,40 +230,62 @@ const marketDataSlice = createSlice({
       state.error = null
     },
     updateIndicators: (state, action: PayloadAction<TechnicalIndicators>) => {
-      state.technicalIndicators = {
-        ...state.technicalIndicators,
-        ...action.payload,
-        timestamp: action.payload.timestamp || new Date().toISOString(),
+      const { instrument, timeframe = '1min', ...indicators } = action.payload
+      if (instrument) {
+        if (!state.technicalIndicators) {
+          state.technicalIndicators = {}
+        }
+        if (!state.technicalIndicators[instrument]) {
+          state.technicalIndicators[instrument] = {}
+        }
+        state.technicalIndicators[instrument][timeframe] = {
+          ...indicators,
+          timestamp: action.payload.timestamp || new Date().toISOString(),
+        }
       }
       state.lastUpdated = new Date().toISOString()
     },
     updateOHLC: (state, action: PayloadAction<OHLCData>) => {
-      // Add or update OHLC candle data
+      // Add or update OHLC candle data organized by instrument and timeframe
       const newCandle = action.payload
-      const existingIndex = state.ohlcData.findIndex(
-        (candle) => 
-          candle.timestamp === newCandle.timestamp || 
-          candle.start_at === newCandle.start_at ||
-          (candle.instrument === newCandle.instrument && 
-           candle.timeframe === newCandle.timeframe &&
-           Math.abs(new Date(candle.timestamp || candle.start_at || '').getTime() - 
-                   new Date(newCandle.timestamp || newCandle.start_at || '').getTime()) < 60000) // Within 1 minute
+      const instrument = newCandle.instrument || 'BANKNIFTY'
+      const timeframe = newCandle.timeframe || '1min'
+
+      // Initialize structure if needed
+      if (!state.ohlcData[instrument]) {
+        state.ohlcData[instrument] = {}
+      }
+      if (!state.ohlcData[instrument][timeframe]) {
+        state.ohlcData[instrument][timeframe] = []
+      }
+
+      const candles = state.ohlcData[instrument][timeframe]
+
+      // For OHLC data, check for exact duplicates (same timestamp AND same OHLC values)
+      // This prevents overwriting candles with different data that happen to have the same timestamp
+      const existingIndex = candles.findIndex(
+        (candle) =>
+          candle.start_at === newCandle.start_at &&
+          candle.open === newCandle.open &&
+          candle.high === newCandle.high &&
+          candle.low === newCandle.low &&
+          candle.close === newCandle.close
       )
-      
+
       if (existingIndex >= 0) {
-        // Update existing candle
-        state.ohlcData[existingIndex] = newCandle
+        // Update existing candle with identical data
+        candles[existingIndex] = newCandle
       } else {
         // Add new candle and sort by timestamp
-        state.ohlcData.push(newCandle)
-        state.ohlcData.sort((a, b) => {
+        candles.push(newCandle)
+        candles.sort((a, b) => {
           const timeA = new Date(a.timestamp || a.start_at || '').getTime()
           const timeB = new Date(b.timestamp || b.start_at || '').getTime()
           return timeA - timeB
         })
-        // Keep only last 500 candles to prevent memory issues
-        if (state.ohlcData.length > 500) {
-          state.ohlcData = state.ohlcData.slice(-500)
+        // Keep only last 500 candles per timeframe to prevent memory issues
+        if (candles.length > 500) {
+          candles.splice(0, candles.length - 500)
         }
       }
       state.lastUpdated = new Date().toISOString()
