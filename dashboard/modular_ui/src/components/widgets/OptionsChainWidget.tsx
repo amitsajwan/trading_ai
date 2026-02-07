@@ -96,6 +96,12 @@ export const OptionsChainWidget: React.FC<OptionsChainWidgetProps> = ({
   }
 
   const chainData = optionsChain?.chain || optionsChain?.strikes || []
+
+  // Check if any strikes have calculation notes (for historical/backtest mode indicators)
+  const hasCalculationNotes = chainData.some((strike: any) =>
+    strike.ce_calculation_note || strike.pe_calculation_note
+  )
+
   if (!optionsChain || (optionsChain.available === false) || chainData.length === 0) {
     return (
       <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-6">
@@ -128,7 +134,7 @@ export const OptionsChainWidget: React.FC<OptionsChainWidgetProps> = ({
             {optionsChain.instrument && (
               <span className="ml-2">({optionsChain.instrument})</span>
             )}
-            <span className="ml-2 text-blue-600 dark:text-blue-400">Δ=Delta, Γ=Gamma</span>
+            <span className="ml-2 text-blue-600 dark:text-blue-400">Δ=Delta, Γ=Gamma, IV=Implied Volatility</span>
           </p>
         </div>
         <div className="flex items-center space-x-2">
@@ -178,11 +184,13 @@ export const OptionsChainWidget: React.FC<OptionsChainWidgetProps> = ({
             <thead>
               <tr className="border-b border-gray-200 dark:border-gray-600">
                 <th className="text-left py-2 px-2 font-semibold text-gray-700 dark:text-gray-300">CE</th>
+                <th className="text-left py-2 px-2 font-semibold text-gray-700 dark:text-gray-300">IV</th>
                 <th className="text-left py-2 px-2 font-semibold text-gray-700 dark:text-gray-300">Δ</th>
                 <th className="text-left py-2 px-2 font-semibold text-gray-700 dark:text-gray-300">Γ</th>
                 <th className="text-left py-2 px-2 font-semibold text-gray-700 dark:text-gray-300">Strike</th>
                 <th className="text-left py-2 px-2 font-semibold text-gray-700 dark:text-gray-300">Γ</th>
                 <th className="text-left py-2 px-2 font-semibold text-gray-700 dark:text-gray-300">Δ</th>
+                <th className="text-left py-2 px-2 font-semibold text-gray-700 dark:text-gray-300">IV</th>
                 <th className="text-left py-2 px-2 font-semibold text-gray-700 dark:text-gray-300">PE</th>
               </tr>
             </thead>
@@ -215,6 +223,22 @@ export const OptionsChainWidget: React.FC<OptionsChainWidgetProps> = ({
                           {strike.ce_iv != null && (
                             <div className="text-xs text-gray-500 dark:text-gray-400">
                               IV: {strike.ce_iv.toFixed(2)}%
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-gray-400">-</span>
+                      )}
+                    </td>
+
+                    {/* Call IV */}
+                    <td className="py-2 px-2 text-center">
+                      {strike.ce_iv != null ? (
+                        <div className={`text-sm font-medium ${strike.ce_calculation_note ? 'text-orange-500' : 'text-orange-600 dark:text-orange-400'}`}>
+                          {strike.ce_iv.toFixed(1)}%
+                          {strike.ce_calculation_note && (
+                            <div className="text-xs text-gray-500 mt-1" title={strike.ce_calculation_note}>
+                              *
                             </div>
                           )}
                         </div>
@@ -275,6 +299,22 @@ export const OptionsChainWidget: React.FC<OptionsChainWidgetProps> = ({
                       )}
                     </td>
 
+                    {/* Put IV */}
+                    <td className="py-2 px-2 text-center">
+                      {strike.pe_iv != null ? (
+                        <div className={`text-sm font-medium ${strike.pe_calculation_note ? 'text-orange-500' : 'text-orange-600 dark:text-orange-400'}`}>
+                          {strike.pe_iv.toFixed(1)}%
+                          {strike.pe_calculation_note && (
+                            <div className="text-xs text-gray-500 mt-1" title={strike.pe_calculation_note}>
+                              *
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-gray-400">-</span>
+                      )}
+                    </td>
+
                     {/* Put Option */}
                     <td className="py-2 px-2">
                       {strike.pe_ltp != null ? (
@@ -308,6 +348,20 @@ export const OptionsChainWidget: React.FC<OptionsChainWidgetProps> = ({
           No strike data available
         </div>
       )}
+
+      {/* Mode information and calculation notes */}
+      <div className="text-xs text-gray-500 dark:text-gray-400 mt-4 pt-4 border-t border-gray-200 dark:border-gray-600">
+        <div className="flex justify-between items-center">
+          <div>
+            Last updated: {optionsChain?.timestamp ? new Date(optionsChain.timestamp).toLocaleTimeString() : 'Unknown'}
+          </div>
+          {hasCalculationNotes && (
+            <div className="text-orange-600 dark:text-orange-400">
+              * IV calculations may be unreliable in historical/backtest modes
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   )
 }

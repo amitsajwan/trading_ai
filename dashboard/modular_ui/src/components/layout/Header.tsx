@@ -113,7 +113,7 @@ export const Header: React.FC = () => {
         </div>
 
         <div className="text-gray-500 dark:text-gray-400">
-          Last updated: {new Date().toLocaleTimeString()}
+          Last updated: {new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' })}
         </div>
       </div>
     </header>

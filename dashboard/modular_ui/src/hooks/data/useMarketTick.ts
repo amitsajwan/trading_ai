@@ -22,6 +22,12 @@ export interface UseMarketTickOptions {
   instrument?: string
 
   /**
+   * Instrument type ('INDEX', 'FUT', 'OPT')
+   * @default 'INDEX'
+   */
+  instrumentType?: 'INDEX' | 'FUT' | 'OPT'
+
+  /**
    * Cache TTL in milliseconds
    * @default 5 minutes
    */
@@ -38,7 +44,7 @@ export interface UseMarketTickOptions {
  * Hook for market tick data
  */
 export function useMarketTick(options: UseMarketTickOptions = {}) {
-  const { instrument = 'BANKNIFTY', cacheTTL, fetchOnSubscribe } = options
+  const { instrument = 'BANKNIFTY', instrumentType = 'INDEX', cacheTTL, fetchOnSubscribe } = options
 
   // Memoize fetchInitial (DISABLED - no HTTP fetching)
   const fetchInitial = useCallback(async () => {
@@ -46,10 +52,13 @@ export function useMarketTick(options: UseMarketTickOptions = {}) {
     throw new Error(`HTTP fetching disabled for ${instrument}`)
   }, [instrument])
 
+  // Use type-specific channel (e.g., market:tick:BANKNIFTY:INDEX)
+  const wsChannel = `market:tick:${instrument}:${instrumentType}`
+
   return useData<TickData>({
     key: `tick:${instrument}`,
-    // fetchInitial, // DISABLED: No HTTP fallbacks
-    wsChannel: `market:tick:${instrument}`,
+    fetchInitial, // Required by UseDataOptions, but throws error (no HTTP fallbacks)
+    wsChannel,
     cacheTTL: cacheTTL ?? 5 * 60 * 1000, // 5 minutes default
     fetchOnSubscribe: false, // DISABLED: No HTTP fetching on subscribe
   })

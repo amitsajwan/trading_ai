@@ -2,6 +2,7 @@ import React from 'react'
 import { useSelector } from 'react-redux'
 import { History, TrendingUp, TrendingDown, DollarSign, Target, AlertTriangle } from 'lucide-react'
 import { RootState } from '../../store'
+import { formatTimestampForDisplay } from '../../utils/dateUtils'
 
 export const TradeHistoryWidget: React.FC = () => {
   const { recentTrades, signals, loading } = useSelector((state: RootState) => state.trading)
@@ -93,7 +94,7 @@ export const TradeHistoryWidget: React.FC = () => {
                     </div>
                   )}
                   <div className="text-xs text-gray-500 dark:text-gray-400">
-                    {new Date(trade.timestamp).toLocaleTimeString()}
+                    {formatTimestampForDisplay(trade.timestamp)}
                   </div>
                 </div>
               </div>

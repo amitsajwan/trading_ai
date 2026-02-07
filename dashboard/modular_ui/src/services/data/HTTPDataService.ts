@@ -7,7 +7,7 @@
 
 import axios, { AxiosInstance } from 'axios'
 
-const BASE_URL = import.meta.env.VITE_DASHBOARD_API_URL ?? 'http://localhost:8888'
+const BASE_URL = import.meta.env.VITE_DASHBOARD_API_URL ?? ''
 
 /**
  * HTTP Data Service

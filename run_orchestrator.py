@@ -242,7 +242,17 @@ async def run_continuous_orchestrator():
         except Exception as e:
             print(f"[!] News service not available: {e}")
             print("   Orchestrator will run without news sentiment analysis")
-        
+
+        # Initialize macro data provider (optional - will work without it)
+        macro_data_provider = None
+        try:
+            from news_module.adapters.macro_adapter import MacroDataAdapter
+            macro_data_provider = MacroDataAdapter()
+            print("[OK] Macro data provider initialized")
+        except Exception as e:
+            print(f"[!] Macro data provider not available: {e}")
+            print("   Orchestrator will run without macro economic analysis")
+
         # Create LLM client with real provider manager
         llm_manager = LLMProviderManager()
         llm_client = build_llm_client(llm_manager)
@@ -274,27 +284,40 @@ async def run_continuous_orchestrator():
 
                 async def get_technical_indicators(self, symbol: str, periods: int = 100):
                     try:
+                        print(f"[DEBUG] TechnicalIndicatorsProvider called for {symbol}, periods={periods}")
+                        print(f"[DEBUG] market_store available: {self.market_store is not None}")
+
                         # Get OHLC data from market store
                         ohlc_data = await self.market_store.get_ohlc_data(symbol, periods)
+                        print(f"[DEBUG] OHLC data received: {len(ohlc_data) if ohlc_data else 0} candles")
+
                         if ohlc_data and len(ohlc_data) > 0:
+                            print(f"[DEBUG] Processing {len(ohlc_data)} candles for indicators")
                             # Feed OHLC data to the service
+                            processed_count = 0
                             for candle in ohlc_data[-periods:]:  # Use last 'periods' candles
                                 try:
                                     self.service.update_candle(symbol, candle)
+                                    processed_count += 1
                                 except Exception as e:
                                     print(f"Failed to update candle: {e}")
                                     continue
 
+                            print(f"[DEBUG] Processed {processed_count} candles, calculating indicators")
                             # Calculate indicators using the service
-                            return self.service.calculate_indicators(symbol)
+                            indicators = self.service.calculate_indicators(symbol)
+                            print(f"[DEBUG] Calculated indicators: {list(indicators.keys()) if indicators else 'None'}")
+                            return indicators
+                        else:
+                            print(f"[DEBUG] No OHLC data available for {symbol}")
                     except Exception as e:
-                        print(f"Failed to get indicators from market store: {e}")
+                        print(f"[DEBUG] Exception in get_technical_indicators: {e}")
+                        import traceback
+                        traceback.print_exc()
 
                     return None
 
             technical_data_provider = TechnicalIndicatorsProvider(indicators_service, market_store)
-
-            technical_data_provider = TechnicalIndicatorsProvider(indicators_service)
             print("[OK] Technical indicators service initialized")
         except Exception as e:
             print(f"[!] Technical indicators service not available: {e}")
@@ -320,16 +343,25 @@ async def run_continuous_orchestrator():
         print(f"[OK] Using database: {db.name} (mode: {current_mode})")
         
         # Build orchestrator with signal monitoring support
+        from engine_module.enhanced_orchestrator import TradingContext
+        # Use PAPER mode for mock/paper trading
+        context = TradingContext(
+            instrument="BANKNIFTY",
+            mode="PAPER",
+            run_id=f"orchestrator_{int(get_system_time().timestamp())}"
+        )
+
         orchestrator = build_orchestrator(
             llm_client=llm_client,
             market_store=market_store,
             options_data=options_client,
             news_service=news_service,
             technical_data_provider=technical_data_provider,
+            macro_data_provider=macro_data_provider,
             agents=agents,
             signal_monitor=signal_monitor,
             mongo_db=db,
-            instrument="BANKNIFTY"
+            context=context
         )
         print("[OK] Orchestrator built successfully with signal monitoring support")
         print()
@@ -507,7 +539,12 @@ async def run_continuous_orchestrator():
                     logger.info(f"📊 Publishing decision to Redis channels: engine:decision, engine:decision:BANKNIFTY")
                     redis_client.publish("engine:decision", json.dumps(decision_data))
                     redis_client.publish("engine:decision:BANKNIFTY", json.dumps(decision_data))
-                    logger.info(f"✅ Published decision {result.decision} to Redis pub/sub")
+                    
+                    # Persist last decision in Redis for "replay on subscribe"
+                    redis_client.set("engine:decision:BANKNIFTY:latest", json.dumps(decision_data))
+                    redis_client.set("engine:decision:latest", json.dumps(decision_data))
+                    
+                    logger.info(f"[OK] Published decision {result.decision} to Redis pub/sub")
 
                 except Exception as e:
                     logger.warning(f"Failed to publish decision to Redis: {e}")

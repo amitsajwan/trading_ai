@@ -1,12 +1,12 @@
 # USER_MODULE - User Management & Trade Execution
 
-**Status: ✅ COMPLETE** - Full user account management with risk-based trade execution, portfolio tracking, and comprehensive financial analytics.
+**Status: ✅ COMPLETE** - Full user account management with risk-based trade execution and portfolio tracking.
 
 A comprehensive user management system handling accounts, portfolios, trades, and risk management for individual traders within the multi-agent trading ecosystem.
 
 ## 🎯 Purpose & Architecture
 
-The user module provides complete **user-centric financial services**:
+The user module provides complete user-centric financial services:
 
 ```
 User Accounts → Risk Profiles → Trade Validation → Execution → Portfolio Tracking → P&L Analytics
@@ -20,34 +20,150 @@ User Accounts → Risk Profiles → Trade Validation → Execution → Portfolio
 - **TradeExecutor**: Broker integration with risk-aware execution
 - **PnLAnalytics**: Performance calculation and reporting
 
-## 👤 User Account Management
+## 🚀 Quick Start
 
-### **UserAccount Structure**
+### Prerequisites
+- Python 3.8+
+- MongoDB (running)
+- Broker API credentials (for live trading)
+
+### Installation
+```bash
+# Install dependencies
+pip install -r requirements.txt
+```
+
+### Basic Usage
 ```python
-@dataclass
+from user_module.api import build_user_module, create_user_account
+
+# Create user module
+user_service = build_user_module()
+
+# Create new user account
+user = create_user_account(
+    email="trader@example.com",
+    initial_balance=1000000  # ₹10 lakh
+)
+
+# Execute trade
+trade_result = await user_service.execute_trade(user.id, trade_request)
+```
+
+## 🔧 API Reference
+
+### Factory Functions
+```python
+from user_module.api import (
+    build_user_module,       # Main user service factory
+    create_user_account,     # Account creation
+    execute_user_trade,      # Trade execution
+    get_user_portfolio      # Portfolio retrieval
+)
+```
+
+### Key Classes
+```python
 class UserAccount:
+    """User account with risk profile."""
     user_id: str
     email: str
-    name: str
     risk_profile: RiskProfile
-    balances: Dict[str, float]  # INR, USD, etc.
-    created_at: datetime
-    is_active: bool
+    balances: Dict[str, float]
+
+class RiskManager:
+    """Risk validation and position sizing."""
+
+    def validate_trade(self, user: UserAccount, trade: TradeRequest) -> bool:
+        """Validate trade against risk limits."""
+
+    def calculate_position_size(self, capital: float, risk_per_trade: float) -> int:
+        """Calculate safe position size."""
 ```
 
-### **RiskProfile Configuration**
-```python
-@dataclass
-class RiskProfile:
-    risk_tolerance: str        # "LOW", "MEDIUM", "HIGH"
-    max_daily_loss: float      # Max loss per day (INR)
-    max_position_size: float   # Max position size (INR)
-    max_positions: int         # Max concurrent positions
-    allowed_instruments: List[str]  # ["BANKNIFTY", "NIFTY", "BTC"]
-    leverage_limit: float      # Max leverage ratio
-    stop_loss_required: bool   # Mandatory stop loss
-    min_win_rate: float        # Minimum win rate threshold
+### Endpoints
+- `POST /api/v1/users` - Create user account
+- `GET /api/v1/users/{user_id}/portfolio` - Get user portfolio
+- `POST /api/v1/users/{user_id}/trades` - Execute trade
+- `GET /api/v1/users/{user_id}/performance` - Get performance metrics
+
+## 🧪 Testing
+
+### Run Tests
+```bash
+# From user_module directory
+cd user_module
+pytest tests/
+
+# Run risk management tests
+pytest tests/test_risk.py
+
+# With coverage
+pytest --cov=src --cov-report=html
 ```
+
+### Test Structure
+- `tests/test_accounts.py` - User account tests
+- `tests/test_risk.py` - Risk management tests
+- `tests/test_trades.py` - Trade execution tests
+
+## 🏗️ Development
+
+### Project Structure
+```
+user_module/
+├── src/
+│   ├── __init__.py
+│   ├── accounts.py          # User account management
+│   ├── portfolio.py         # Portfolio tracking
+│   ├── risk.py             # Risk management
+│   └── api.py              # Public API
+├── tests/
+│   ├── __init__.py
+│   ├── test_accounts.py
+│   └── test_risk.py
+├── contracts/             # User and trade contracts
+├── tools/                 # Risk calculation utilities
+└── README.md             # This file
+```
+
+### Adding New Features
+1. Define contracts in `contracts/`
+2. Implement in `src/`
+3. Add tests in `tests/`
+4. Update this README
+
+## 📊 Dependencies
+
+### Internal Dependencies
+- `core_kernel` - Service container
+- `market_data` - Market data for P&L calculations
+
+### External Dependencies
+- `pymongo` - MongoDB driver
+- `fastapi` - Web framework
+- `kiteconnect` - Broker API client
+
+## 🔍 Troubleshooting
+
+### Common Issues
+- **MongoDB connection failed**: Ensure MongoDB is running
+- **Risk validation errors**: Check risk profile configuration
+- **Trade execution failures**: Verify broker API credentials
+
+### Debug Mode
+```bash
+# Enable debug logging
+export LOG_LEVEL=DEBUG
+python -c "from user_module.api import build_user_module; print('User module ready')"
+```
+
+## 🤝 Contributing
+
+1. Follow the existing code style
+2. Add tests for new features
+3. Update risk management docs
+4. Submit PR with clear description
 
 ## 💼 Portfolio & Trading
 

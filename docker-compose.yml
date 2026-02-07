@@ -1,3 +1,81 @@
+# Common configurations using YAML anchors
+x-trading-bot-config: &trading-bot-config
+  build: .
+  depends_on:
+    mongodb:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  environment:
+    - MONGODB_URI=mongodb://mongodb:27017/zerodha_trading
+    - REDIS_HOST=redis
+    - REDIS_PORT=6379
+    - DEBUG_AGENT_OUTPUT=true
+    - LLM_SELECTION_STRATEGY=weighted
+    - LLM_SOFT_THROTTLE_FACTOR=0.8
+  volumes:
+    - ./logs:/app/logs
+  healthcheck:
+    test: ["CMD", "sh", "-c", "pgrep -f 'python.*trading' > /dev/null || exit 1"]
+    interval: 30s
+    timeout: 10s
+    retries: 3
+    start_period: 40s
+  restart: unless-stopped
+  networks:
+    - trading-network
+
+x-backend-config: &backend-config
+  build: .
+  depends_on:
+    mongodb:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  environment:
+    - MONGODB_URI=mongodb://mongodb:27017/zerodha_trading
+    - REDIS_HOST=redis
+    - REDIS_PORT=6379
+    - DEBUG_AGENT_OUTPUT=true
+    - LLM_SELECTION_STRATEGY=weighted
+    - LLM_SOFT_THROTTLE_FACTOR=0.8
+  ports:
+    - "8000:8000"
+  volumes:
+    - ./logs:/app/logs
+  command: ["python", "-m", "uvicorn", "dashboard.dashboard_pro:app", "--host", "0.0.0.0", "--port", "8000"]
+  healthcheck:
+    test: ["CMD", "python", "-c", "import urllib.request,sys;urllib.request.urlopen('http://localhost:8000/health', timeout=5).read();sys.exit(0)"]
+    interval: 30s
+    timeout: 10s
+    retries: 3
+    start_period: 40s
+  restart: unless-stopped
+  networks:
+    - trading-network
+
+x-collector-config: &collector-config
+  build: .
+  depends_on:
+    redis:
+      condition: service_healthy
+  environment:
+    - REDIS_HOST=redis
+    - REDIS_PORT=6379
+    - PYTHONPATH=/app:/app/market_data/src
+  volumes:
+    - ./logs:/app/logs
+    - ./credentials.json:/app/credentials.json:ro
+  healthcheck:
+    test: ["CMD", "python", "-c", "print('OK')"]
+    interval: 30s
+    timeout: 5s
+    retries: 5
+    start_period: 20s
+  restart: unless-stopped
+  networks:
+    - trading-network
+
 services:
   mongodb:
     image: mongo:7
@@ -35,7 +113,7 @@ services:
 
   trading-bot-btc:
     # profile: disabled
-    build: .
+    <<: *trading-bot-config
     container_name: zerodha-trading-bot-btc
     depends_on:
       mongodb:
@@ -44,60 +122,32 @@ services:
         condition: service_healthy
     env_file:
       - market_data/.env.btc
-    environment:
-      - MONGODB_URI=mongodb://mongodb:27017/zerodha_trading
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - DEBUG_AGENT_OUTPUT=true
-      - LLM_SELECTION_STRATEGY=weighted
-      - LLM_SOFT_THROTTLE_FACTOR=0.8
     volumes:
       - ./logs:/app/logs
       # - ./credentials.json:/app/credentials.json:ro
-    healthcheck:
-      test: ["CMD", "sh", "-c", "pgrep -f 'python.*trading' > /dev/null || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
-    restart: unless-stopped
-    networks:
-      - trading-network
+    command: ["python", "run_orchestrator.py"]
 
   trading-bot-banknifty:
     # profile: banknifty
-    build: .
+    <<: *trading-bot-config
     container_name: zerodha-trading-bot-banknifty
     depends_on:
       mongodb:
         condition: service_healthy
       redis:
         condition: service_healthy
+      market-data-api:
+        condition: service_started
     env_file:
       - market_data/.env.banknifty
-    environment:
-      - MONGODB_URI=mongodb://mongodb:27017/zerodha_trading
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - DEBUG_AGENT_OUTPUT=true
-      - LLM_SELECTION_STRATEGY=weighted
-      - LLM_SOFT_THROTTLE_FACTOR=0.8
     volumes:
       - ./logs:/app/logs
       - ./credentials.json:/app/credentials.json:ro
-    healthcheck:
-      test: ["CMD", "sh", "-c", "pgrep -f 'python.*trading' > /dev/null || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
-    restart: unless-stopped
-    networks:
-      - trading-network
+    command: ["python", "run_orchestrator.py"]
 
   trading-bot-nifty:
     # profile: disabled
-    build: .
+    <<: *trading-bot-config
     container_name: zerodha-trading-bot-nifty
     depends_on:
       mongodb:
@@ -106,29 +156,14 @@ services:
         condition: service_healthy
     env_file:
       - market_data/.env.nifty
-    environment:
-      - MONGODB_URI=mongodb://mongodb:27017/zerodha_trading
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - DEBUG_AGENT_OUTPUT=true
-      - LLM_SELECTION_STRATEGY=weighted
-      - LLM_SOFT_THROTTLE_FACTOR=0.8
     volumes:
       - ./logs:/app/logs
       - ./credentials.json:/app/credentials.json:ro
-    healthcheck:
-      test: ["CMD", "sh", "-c", "pgrep -f 'python.*trading' > /dev/null || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
-    restart: unless-stopped
-    networks:
-      - trading-network
+    command: ["python", "run_orchestrator.py"]
 
   backend-btc:
     # profile: disabled
-    build: .
+    <<: *backend-config
     container_name: zerodha-backend-btc
     depends_on:
       mongodb:
@@ -137,32 +172,15 @@ services:
         condition: service_healthy
     env_file:
       - .env.btc
-    environment:
-      - MONGODB_URI=mongodb://mongodb:27017/zerodha_trading
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - DEBUG_AGENT_OUTPUT=true
-      - LLM_SELECTION_STRATEGY=weighted
-      - LLM_SOFT_THROTTLE_FACTOR=0.8
     ports:
-      - "8001:8000"
+      - "8011:8000"
     volumes:
       - ./logs:/app/logs
       # - ./credentials.json:/app/credentials.json:ro
-    command: ["python", "-m", "uvicorn", "dashboard_pro:app", "--host", "0.0.0.0", "--port", "8000"]
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,sys;urllib.request.urlopen('http://localhost:8000/health', timeout=5).read();sys.exit(0)"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
-    restart: unless-stopped
-    networks:
-      - trading-network
 
   backend-banknifty:
     # profile: banknifty
-    build: .
+    <<: *backend-config
     container_name: zerodha-backend-banknifty
     depends_on:
       mongodb:
@@ -175,31 +193,14 @@ services:
         condition: service_healthy
     env_file:
       - market_data/.env.banknifty
-    environment:
-      - MONGODB_URI=mongodb://mongodb:27017/zerodha_trading
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - DEBUG_AGENT_OUTPUT=true
-      - LLM_SELECTION_STRATEGY=weighted
-      - LLM_SOFT_THROTTLE_FACTOR=0.8
     ports:
       - "8002:8000"
     volumes:
       - ./logs:/app/logs
       # - ./credentials.json:/app/credentials.json:ro
-    command: ["python", "-m", "uvicorn", "dashboard_pro:app", "--host", "0.0.0.0", "--port", "8000"]
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,sys;urllib.request.urlopen('http://localhost:8000/health', timeout=5).read();sys.exit(0)"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
-    restart: unless-stopped
-    networks:
-      - trading-network
 
   backend-nifty:
-    build: .
+    <<: *backend-config
     container_name: zerodha-backend-nifty
     depends_on:
       mongodb:
@@ -212,33 +213,16 @@ services:
         condition: service_healthy
     env_file:
       - .env.nifty
-    environment:
-      - MONGODB_URI=mongodb://mongodb:27017/zerodha_trading
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - DEBUG_AGENT_OUTPUT=true
-      - LLM_SELECTION_STRATEGY=weighted
-      - LLM_SOFT_THROTTLE_FACTOR=0.8
     ports:
       - "8003:8000"
     volumes:
       - ./logs:/app/logs
       # - ./credentials.json:/app/credentials.json:ro
-    command: ["python", "-m", "uvicorn", "dashboard_pro:app", "--host", "0.0.0.0", "--port", "8000"]
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,sys;urllib.request.urlopen('http://localhost:8000/health', timeout=5).read();sys.exit(0)"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
-    restart: unless-stopped
-    networks:
-      - trading-network
 
   # Collectors: Bank Nifty
   ltp-collector-banknifty:
     # profile: banknifty
-    build: .
+    <<: *collector-config
     container_name: zerodha-ltp-collector-banknifty
     depends_on:
       mongodb:
@@ -247,28 +231,15 @@ services:
         condition: service_healthy
     env_file:
       - market_data/.env.banknifty
-    environment:
-      - MONGODB_URI=mongodb://mongodb:27017/zerodha_trading
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - PYTHONPATH=/app:/app/market_data/src
     volumes:
       - ./logs:/app/logs
       - ./credentials.json:/app/credentials.json:ro
+      - ./market_data:/app/market_data
     command: ["python", "-m", "market_data.collectors.ltp_collector"]
-    healthcheck:
-      test: ["CMD", "python", "-c", "import os,sys,redis,datetime as dt;h=os.getenv('REDIS_HOST','redis');p=int(os.getenv('REDIS_PORT','6379'));r=redis.Redis(host=h,port=p,db=0,decode_responses=True);sym=os.getenv('INSTRUMENT_SYMBOL','NIFTY BANK').upper().replace(' ','');key='BANKNIFTY' if ('BANKNIFTY' in sym or 'NIFTYBANK' in sym) else 'NIFTY';ts=r.get(f'price:{key}:latest_ts');price=r.get(f'price:{key}:last_price');sys.exit(0) if ts and price and (dt.datetime.now()-dt.datetime.fromisoformat(ts)).total_seconds()<120 else sys.exit(1)"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
-    restart: unless-stopped
-    networks:
-      - trading-network
 
   depth-collector-banknifty:
     # profile: banknifty
-    build: .
+    <<: *collector-config
     container_name: zerodha-depth-collector-banknifty
     depends_on:
       redis:
@@ -284,12 +255,79 @@ services:
       - ./credentials.json:/app/credentials.json:ro
     working_dir: /app
     command: ["python", "-m", "market_data.collectors.depth_collector"]
+
+  websocket-tick-collector-banknifty:
+    # profile: banknifty
+    <<: *collector-config
+    container_name: zerodha-websocket-tick-collector-banknifty
+    depends_on:
+      redis:
+        condition: service_healthy
+    env_file:
+      - market_data/.env.banknifty
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - PYTHONPATH=/app:/app/market_data/src
+    volumes:
+      - ./logs:/app/logs
+      - ./credentials.json:/app/credentials.json:ro
+      - ./market_data:/app/market_data
+    command: ["python", "-m", "market_data.collectors.websocket_tick_collector"]
+
+  # OHLC Aggregator Service - Generates 1-minute candles from enhanced ticks
+  ohlc-aggregator:
+    build: .
+    container_name: zerodha-ohlc-aggregator
+    depends_on:
+      redis:
+        condition: service_healthy
+    env_file:
+      - market_data/.env.banknifty
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - PYTHONPATH=/app:/app/market_data/src
+      - INSTRUMENT_SYMBOL=BANKNIFTY26FEBFUT
+      - EXECUTION_MODE=LIVE
+    volumes:
+      - ./logs:/app/logs
+      - ./market_data:/app/market_data
+      - ./redis_key_manager.py:/app/redis_key_manager.py:ro
+    command: ["python", "ohlc_aggregator_service.py"]
     healthcheck:
-      test: ["CMD", "python", "-c", "import os,sys,redis,datetime as dt;h=os.getenv('REDIS_HOST','redis');p=int(os.getenv('REDIS_PORT','6379'));r=redis.Redis(host=h,port=p,db=0,decode_responses=True);sym=os.getenv('INSTRUMENT_SYMBOL','NIFTY BANK').upper().replace(' ','');key='BANKNIFTY' if ('BANKNIFTY' in sym or 'NIFTYBANK' in sym) else 'NIFTY';ts=r.get(f'price:{key}:latest_ts');price=r.get(f'price:{key}:last_price');sys.exit(0) if ts and price and (dt.datetime.now()-dt.datetime.fromisoformat(ts)).total_seconds()<120 else sys.exit(1)"]
+      test: ["CMD", "sh", "-c", "pgrep -f 'ohlc_aggregator_service' > /dev/null || exit 1"]
       interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - trading-network
+
+  # Multi-Timeframe Aggregator Service - Aggregates 1min candles into 5min/15min/1h/4h
+  multi-timeframe-aggregator:
+    build: .
+    container_name: zerodha-multi-timeframe-aggregator
+    depends_on:
+      redis:
+        condition: service_healthy
+      ohlc-aggregator:
+        condition: service_started
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - EXECUTION_MODE=live
+    volumes:
+      - ./logs:/app/logs
+      - ./redis_key_manager.py:/app/redis_key_manager.py:ro
+    command: ["python", "multi_timeframe_aggregator.py"]
+    healthcheck:
+      test: ["CMD", "sh", "-c", "pgrep -f 'multi_timeframe_aggregator' > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
     restart: unless-stopped
     networks:
       - trading-network
@@ -297,7 +335,7 @@ services:
   # Collectors: Nifty 50
   ltp-collector-nifty:
     # profile: disabled
-    build: .
+    <<: *collector-config
     container_name: zerodha-ltp-collector-nifty
     depends_on:
       mongodb:
@@ -306,27 +344,14 @@ services:
         condition: service_healthy
     env_file:
       - .env.nifty
-    environment:
-      - MONGODB_URI=mongodb://mongodb:27017/zerodha_trading
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
     volumes:
       - ./logs:/app/logs
       - ./credentials.json:/app/credentials.json:ro
     command: ["python", "-m", "market_data.collectors.ltp_collector"]
-    healthcheck:
-      test: ["CMD", "python", "-c", "import os,sys,redis,datetime as dt;h=os.getenv('REDIS_HOST','redis');p=int(os.getenv('REDIS_PORT','6379'));r=redis.Redis(host=h,port=p,db=0,decode_responses=True);sym=os.getenv('INSTRUMENT_SYMBOL','NIFTY 50').upper().replace(' ','');key='BANKNIFTY' if ('BANKNIFTY' in sym or 'NIFTYBANK' in sym) else 'NIFTY';ts=r.get(f'price:{key}:latest_ts');price=r.get(f'price:{key}:last_price');sys.exit(0) if ts and price and (dt.datetime.now()-dt.datetime.fromisoformat(ts)).total_seconds()<120 else sys.exit(1)"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
-    restart: unless-stopped
-    networks:
-      - trading-network
 
   depth-collector-nifty:
     # profile: disabled
-    build: .
+    <<: *collector-config
     container_name: zerodha-depth-collector-nifty
     depends_on:
       redis:
@@ -339,53 +364,9 @@ services:
     volumes:
       - ./logs:/app/logs
       - ./credentials.json:/app/credentials.json:ro
-    command: ["python", "scripts/market_data.collectors.depth_collector.py"]
-    healthcheck:
-      test: ["CMD", "python", "-c", "import os,sys,redis,datetime as dt;h=os.getenv('REDIS_HOST','redis');p=int(os.getenv('REDIS_PORT','6379'));r=redis.Redis(host=h,port=p,db=0,decode_responses=True);sym=os.getenv('INSTRUMENT_SYMBOL','NIFTY 50').upper().replace(' ','');key='BANKNIFTY' if ('BANKNIFTY' in sym or 'NIFTYBANK' in sym) else 'NIFTY';ts=r.get(f'price:{key}:latest_ts');price=r.get(f'price:{key}:last_price');sys.exit(0) if ts and price and (dt.datetime.now()-dt.datetime.fromisoformat(ts)).total_seconds()<120 else sys.exit(1)"]
-      interval: 30s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
-    restart: unless-stopped
-    networks:
-      - trading-network
+    command: ["python", "-m", "market_data.collectors.depth_collector"]
 
   # Dashboard service (FastAPI-based trading cockpit)
-  dashboard-service:
-    build: .
-    container_name: zerodha-dashboard-service
-    depends_on:
-      mongodb:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      ltp-collector-banknifty:
-        condition: service_healthy
-      depth-collector-banknifty:
-        condition: service_healthy
-    env_file:
-      - market_data/.env.banknifty
-    environment:
-      - MONGODB_URI=mongodb://mongodb:27017/zerodha_trading
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - PYTHONPATH=/app:/app/market_data/src
-    ports:
-      - "8888:8888"
-    volumes:
-      - ./logs:/app/logs
-      - ./credentials.json:/app/credentials.json:ro
-    command: ["python", "-m", "uvicorn", "dashboard.app:app", "--host", "0.0.0.0", "--port", "8888"]
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,sys,json;resp=urllib.request.urlopen('http://localhost:8888/health', timeout=5);data=json.loads(resp.read());sys.exit(0) if data.get('status')=='healthy' else sys.exit(1)"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
-    restart: unless-stopped
-    networks:
-      - trading-network
-
   # Continuous multi-agent orchestrator service
   orchestrator-service:
     build: .
@@ -459,13 +440,17 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - PYTHONPATH=/app:/app/market_data/src
-      # Default config to prevent crash-loop; override as needed
-      - HISTORICAL_START_DATE=2024-01-01
-      - HISTORICAL_END_DATE=2024-01-31
+      # Historical replay configuration
+      # HISTORICAL_DATE is primary (set by docker-compose.historical.yml)
+      # These are fallback defaults to prevent crash-loop
+      - HISTORICAL_DATE=2026-01-28
+      - HISTORICAL_SOURCE=zerodha
       - HISTORICAL_INTERVAL=minute
+      - HISTORICAL_SPEED=1.0
     volumes:
       - ./logs:/app/logs
       - ./credentials.json:/app/credentials.json:ro
+      - ./market_data:/app/market_data
     command: ["python", "-m", "services.historical_data_replay_service"]
     healthcheck:
       test: ["CMD", "sh", "-c", "pgrep -f 'python.*historical' > /dev/null || exit 1"]
@@ -520,21 +505,45 @@ services:
       - MONGODB_URI=mongodb://mongodb:27017/zerodha_trading
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - PYTHONPATH=/app:/app/market_data/src
+      - PYTHONPATH=/app:/app/market_data/src:/app/engine_module/src:/app/user_module/src:/app/news_module/src:/app/genai_module/src
       - MARKET_DATA_API_HOST=0.0.0.0
       - MARKET_DATA_API_PORT=8004
+      # Environment configuration
+      - DEVELOPMENT_MODE=0
+      - REDIS_DB=0
+      - TRADING_PROVIDER=zerodha
+      - ENV=LIVE
+      - EXECUTION_MODE=live
+      - INSTRUMENT_SYMBOL=BANKNIFTY26FEBFUT
+      - INSTRUMENT_TRADING_SYMBOL=
+      - INSTRUMENT_EXCHANGE=NFO
     ports:
       - "8004:8004"
     volumes:
       - ./logs:/app/logs
       - ./credentials.json:/app/credentials.json:ro
+      - ./market_data:/app/market_data:ro
+      - ./redis_key_manager.py:/app/redis_key_manager.py:ro
     command: ["python", "-m", "market_data.api_service"]
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request,sys;urllib.request.urlopen('http://localhost:8004/health', timeout=5).read();sys.exit(0)"]
+      test:
+      - CMD
+      - python
+      - -c
+      - |
+        import urllib.request, json, sys
+        try:
+          with urllib.request.urlopen('http://localhost:8004/health', timeout=5) as response:
+            data = json.loads(response.read().decode())
+            status = data.get('status')
+            sys.exit(0 if status in ('healthy', 'degraded') else 1)
+        except Exception as e:
+          print(f'Health check failed: {e}')
+          sys.exit(1)
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 20s
+      start_period: 30s
     restart: unless-stopped
     networks:
       - trading-network
@@ -577,10 +586,8 @@ services:
     build: .
     container_name: zerodha-engine-api
     depends_on:
-      mongodb:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+      - redis
+      - market-data-api
     environment:
       - MONGODB_URI=mongodb://mongodb:27017/zerodha_trading
       - REDIS_HOST=redis
@@ -588,6 +595,7 @@ services:
       - PYTHONPATH=/app:/app/engine_module/src
       - ENGINE_API_HOST=0.0.0.0
       - ENGINE_API_PORT=8006
+      - ENGINE_ALLOWED_ORIGINS=http://localhost:8888,http://127.0.0.1:8888,http://localhost:3000,http://localhost:5173
       - LLM_SELECTION_STRATEGY=weighted
       - LLM_SOFT_THROTTLE_FACTOR=0.8
     ports:
@@ -643,14 +651,106 @@ services:
     depends_on:
       - redis
     environment:
-      - KITE_API_KEY=anbel41tccg186z0
-      - KITE_API_SECRET=hvfug2sn5h1xe1ky3qbuj1gsntd9kk86
+      - KITE_API_KEY=${KITE_API_KEY:-mjs329hg8qn0wyx3}
+      - KITE_API_SECRET=${KITE_API_SECRET:-hvfug2sn5h1xe1ky3qbuj1gsntd9kk86}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
       - PYTHONPATH=/app:/app/market_data/src
     volumes:
       - ./credentials.json:/app/credentials.json
       - ./logs:/app/logs
     working_dir: /app
     command: ["python", "-m", "market_data.tools.kite_auth_service"]
+    restart: unless-stopped
+    networks:
+      - trading-network
+
+  # Market Data Dashboard Service - Standalone monitoring
+  market-data-dashboard:
+    build:
+      context: ./market_data_dashboard
+    container_name: zerodha-market-data-dashboard
+    depends_on:
+      market-data-api:
+        condition: service_healthy
+    environment:
+      - MARKET_DATA_API_URL=http://market-data-api:8004
+      - MARKET_DATA_DASHBOARD_PORT=8008
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    ports:
+      - "8008:8008"
+    volumes:
+      - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys;urllib.request.urlopen('http://localhost:8008/api/health', timeout=5).read();sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+    networks:
+      - trading-network
+
+  # Dashboard Backend Service - FastAPI analytics and risk endpoints
+  dashboard-backend:
+    build:
+      context: .
+      dockerfile: dashboard/Dockerfile.backend
+    container_name: zerodha-dashboard-backend
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      - MONGODB_URI=mongodb://mongodb:27017/zerodha_trading
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - PYTHONPATH=/app:/app/dashboard:/app/dashboard/src:/app/engine_module/src:/app/market_data/src:/app/risk_module/src:/app/news_module/src:/app/user_module/src
+      - DASHBOARD_HOST=0.0.0.0
+      - DASHBOARD_PORT=8001
+    ports:
+      - "8001:8001"
+    volumes:
+      - ./logs:/app/logs
+      - ./credentials.json:/app/credentials.json:ro
+    command: ["uvicorn", "dashboard.dashboard_pro:app", "--host", "0.0.0.0", "--port", "8001"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys;urllib.request.urlopen('http://localhost:8001/health', timeout=5).read();sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+    networks:
+      - trading-network
+
+  # Dashboard Frontend Service - React/Vite UI
+  dashboard-frontend:
+    build:
+      context: ./dashboard/modular_ui
+      dockerfile: Dockerfile.frontend
+    container_name: zerodha-dashboard-frontend
+    depends_on:
+      - dashboard-backend
+    environment:
+      - VITE_DASHBOARD_API_URL=http://localhost:8001
+      - VITE_MARKET_API_URL=http://localhost:8001
+      - VITE_NEWS_API_URL=http://news-api:8005
+      - VITE_ENGINE_API_URL=http://engine-api:8006
+      - VITE_USER_API_URL=http://user-api:8007
+      - VITE_WS_URL=ws://redis-ws-gateway:8889
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8888/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
     restart: unless-stopped
     networks:
       - trading-network
@@ -666,6 +766,11 @@ networks:
     driver: bridge
 
   
+
+
+
+
+
 
 
 

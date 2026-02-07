@@ -44,9 +44,9 @@ def main():
     print(f'Indicator data: {json.dumps(indicator_data, indent=2)}')
 
     try:
-        # Publish to indicators channel
-        r.publish("indicators:BANKNIFTY", json.dumps(indicator_data))
-        print(f"[OK] Published to indicators:BANKNIFTY: {r.pubsub_numsub('indicators:BANKNIFTY')[0][1]} subscribers")
+        # Publish to indicators channel (type-specific)
+        r.publish("indicators:BANKNIFTY:INDEX", json.dumps(indicator_data))
+        print(f"[OK] Published to indicators:BANKNIFTY:INDEX: {r.pubsub_numsub('indicators:BANKNIFTY:INDEX')[0][1]} subscribers")
 
         print("[SUCCESS] Test indicators sent! Check browser console for WebSocket reception.")
     except Exception as e:

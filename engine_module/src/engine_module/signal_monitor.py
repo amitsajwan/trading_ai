@@ -21,8 +21,45 @@ import sys
 import os
 from typing import Dict, Any, List, Optional, Callable
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from enum import Enum
+
+# IST timezone for Indian financial markets
+IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def get_current_time(redis_client: Optional[Any] = None) -> datetime:
+    """Get current time, considering virtual time mode for backtesting.
+
+    In backtest/historical mode, uses virtual time from Redis if available.
+    Otherwise uses real current time.
+
+    Args:
+        redis_client: Redis client to check for virtual time
+
+    Returns:
+        Current datetime (IST timezone)
+    """
+    if redis_client:
+        try:
+            # Check if virtual time is enabled
+            virtual_enabled = redis_client.get("system:virtual_time:enabled")
+            if virtual_enabled and virtual_enabled.decode() == "1":
+                virtual_time_str = redis_client.get("system:virtual_time:current")
+                if virtual_time_str:
+                    virtual_time = datetime.fromisoformat(virtual_time_str.decode())
+                    # Ensure it's in IST
+                    if virtual_time.tzinfo is None:
+                        virtual_time = virtual_time.replace(tzinfo=IST)
+                    else:
+                        virtual_time = virtual_time.astimezone(IST)
+                    return virtual_time
+        except Exception as e:
+            # If Redis fails, fall back to real time
+            pass
+
+    # Default to real current time
+    return datetime.now(IST)
 
 logger = logging.getLogger(__name__)
 
@@ -138,8 +175,8 @@ class SignalMonitor:
     """
     
     def __init__(self, technical_service=None):
-        """Initialize signal monitor.
-        
+        """Initialize optimized signal monitor.
+
         Args:
             technical_service: Optional TechnicalIndicatorsService instance.
                               If None, will fetch via get_technical_service()
@@ -147,7 +184,7 @@ class SignalMonitor:
         self._active_signals: Dict[str, TradingCondition] = {}
         self._triggered_signals: List[SignalTriggerEvent] = []
         self._technical_service = technical_service
-        
+
         # Redis client for persisted previous values
         try:
             from engine_module.api_service import get_redis_client
@@ -158,8 +195,13 @@ class SignalMonitor:
 
         # Callbacks for trade execution
         self._on_signal_triggered: Optional[Callable] = None
-        
-        logger.info("SignalMonitor initialized")
+
+        # Performance statistics
+        self._stats_signals_checked = 0
+        self._stats_signals_triggered = 0
+        self._stats_last_reset = datetime.now()
+
+        logger.info("Optimized SignalMonitor initialized")
     
     def add_signal(self, condition: TradingCondition) -> str:
         """Add a conditional signal to monitor.
@@ -192,6 +234,31 @@ class SignalMonitor:
             logger.info(f"Removed signal {condition_id}")
             return True
         return False
+
+    def remove_signals_for_instrument(self, instrument: str) -> int:
+        """Remove all active signals for an instrument.
+
+        This is used to support the 15-min cadence lifecycle where a new cycle
+        invalidates the previous signal set for the instrument.
+
+        Args:
+            instrument: Instrument whose signals should be removed
+
+        Returns:
+            Number of signals removed
+        """
+        if not instrument:
+            return 0
+
+        to_remove = [cid for cid, cond in self._active_signals.items() if cond.instrument == instrument]
+        for cid in to_remove:
+            try:
+                del self._active_signals[cid]
+            except Exception:
+                pass
+        if to_remove:
+            logger.info(f"Removed {len(to_remove)} active signal(s) for instrument {instrument}")
+        return len(to_remove)
     
     def get_active_signals(self, instrument: Optional[str] = None) -> List[TradingCondition]:
         """Get all active signals, optionally filtered by instrument.
@@ -250,19 +317,15 @@ class SignalMonitor:
         Returns:
             List of triggered events (if any)
         """
-        # Get latest indicators from service
+        # Get latest indicators from Redis
+        from engine_module.redis_providers import RedisTechnicalDataProvider
+        from engine_module.api_service import get_redis_client
+
         if self._technical_service is None:
-            try:
-                from market_data.technical_indicators_service import get_technical_service
-            except ImportError:
-                # Fallback: ensure market_data/src is in path
-                market_data_src = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..', '..', 'market_data', 'src'))
-                if os.path.exists(market_data_src) and market_data_src not in sys.path:
-                    sys.path.insert(0, market_data_src)
-                from market_data.technical_indicators_service import get_technical_service
-            self._technical_service = get_technical_service()
-        
-        indicators_dict = self._technical_service.get_indicators_dict(instrument)
+            redis_client = get_redis_client()
+            self._technical_service = RedisTechnicalDataProvider(redis_client)
+
+        indicators_dict = await self._technical_service.get_indicators(instrument)
         if not indicators_dict:
             return []
         
@@ -280,7 +343,8 @@ class SignalMonitor:
             
             # Check if expired
             if condition.expires_at:
-                if datetime.now().isoformat() > condition.expires_at:
+                current_time = get_current_time(self._redis_client)
+                if current_time.isoformat() > condition.expires_at:
                     # Mark expired in MongoDB and publish update
                     try:
                         from .signal_creator import mark_signal_status
@@ -347,27 +411,94 @@ class SignalMonitor:
             self.remove_signal(condition_id)
         
         return triggered_events
-    
+
+    def _create_trigger_event(self, condition: TradingCondition, indicators_dict: Dict[str, Any],
+                             current_time: str) -> SignalTriggerEvent:
+        """Optimized trigger event creation."""
+        return SignalTriggerEvent(
+            condition_id=condition.condition_id,
+            instrument=condition.instrument,
+            action=condition.action,
+            triggered_at=current_time,
+            indicator_name=condition.indicator,
+            indicator_value=indicators_dict.get(condition.indicator, 0),
+            threshold=condition.threshold,
+            current_price=indicators_dict.get("current_price", 0),
+            position_size=condition.position_size,
+            confidence=condition.confidence,
+            stop_loss=condition.stop_loss,
+            take_profit=condition.take_profit,
+            strategy_type=condition.strategy_type,
+            all_indicators=indicators_dict
+        )
+
+    async def _batch_mark_expired(self, expired_signal_ids: List[str]):
+        """Batch mark multiple signals as expired."""
+        try:
+            from .signal_creator import mark_signal_status
+            # Mark all expired signals in parallel
+            tasks = [mark_signal_status(signal_id, "expired") for signal_id in expired_signal_ids]
+            await asyncio.gather(*tasks, return_exceptions=True)
+        except Exception as e:
+            logger.debug(f"Batch expire marking failed: {e}")
+
+    async def _batch_mark_triggered(self, triggered_events: List[SignalTriggerEvent]):
+        """Batch mark multiple signals as triggered."""
+        try:
+            from .signal_creator import mark_signal_status
+            # Mark all triggered signals in parallel
+            tasks = []
+            for event in triggered_events:
+                extra = {
+                    "triggered_at": event.triggered_at,
+                    "indicator_value": event.indicator_value
+                }
+                tasks.append(mark_signal_status(event.condition_id, "triggered", extra=extra))
+
+            await asyncio.gather(*tasks, return_exceptions=True)
+        except Exception as e:
+            logger.debug(f"Batch trigger marking failed: {e}")
+
+    def get_performance_stats(self) -> Dict[str, Any]:
+        """Get performance statistics for monitoring."""
+        return {
+            "signals_checked": self._stats_signals_checked,
+            "signals_triggered": self._stats_signals_triggered,
+            "active_signals": len(self._active_signals),
+            "trigger_rate": self._stats_signals_triggered / max(self._stats_signals_checked, 1),
+            "last_reset": self._stats_last_reset.isoformat()
+        }
+
+    def reset_stats(self):
+        """Reset performance statistics."""
+        self._stats_signals_checked = 0
+        self._stats_signals_triggered = 0
+        self._stats_last_reset = datetime.now()
+
     def _evaluate_condition(self, condition: TradingCondition, indicators: Dict[str, Any]) -> bool:
         """Evaluate if a condition is met.
-        
+
         Args:
             condition: Trading condition to evaluate
             indicators: Current indicator values
-            
+
         Returns:
             True if condition is met, False otherwise
         """
         # Get current value
         current_value = indicators.get(condition.indicator)
         if current_value is None:
+            logger.debug(f"Indicator {condition.indicator} not found in indicators dict. Available: {list(indicators.keys())}")
             return False
         
         try:
             current_value = float(current_value)
         except (ValueError, TypeError):
+            logger.debug(f"Could not convert indicator value to float: {current_value}")
             return False
-        
+
+        logger.debug(f"Evaluating condition: {condition.indicator} {condition.operator.value} {condition.threshold}, current_value: {current_value}")
+
         # Evaluate based on operator
         result = False
         

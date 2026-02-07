@@ -1,5 +1,6 @@
-"""Canonical instrument aliases for NIFTY and BANKNIFTY."""
+"""Canonical instrument aliases for NIFTY, BANKNIFTY, and futures."""
 from typing import Tuple
+import re
 
 canonical_instruments: Tuple[str, str] = ("BANKNIFTY", "NIFTY")
 
@@ -31,6 +32,10 @@ def normalize_instrument(symbol: str) -> str:
     compact = cleaned.replace(" ", "")
     if compact in _alias_map:
         return _alias_map[compact]
+
+    # Handle futures symbols (e.g., BANKNIFTY26JANFUT, NIFTY26JANFUT)
+    if re.match(r'^(BANKNIFTY|NIFTY)\d{2}[A-Z]{3}FUT$', cleaned):
+        return cleaned
 
     raise ValueError(f"Unsupported instrument: {symbol}")
 

@@ -45,7 +45,7 @@ def test_store_and_get_latest_tick_roundtrip():
     redis = FakeRedis()
     store = RedisMarketStore(redis)
     tick = MarketTick(
-        instrument="BANKNIFTY",
+        instrument="BANKNIFTY26JANFUT",
         timestamp=datetime.now(timezone.utc),
         last_price=45050.5,
         volume=10,
@@ -53,11 +53,11 @@ def test_store_and_get_latest_tick_roundtrip():
 
     store.store_tick(tick)
 
-    latest = store.get_latest_tick("BANKNIFTY")
+    latest = store.get_latest_tick("BANKNIFTY26JANFUT")
     assert latest is not None
-    assert latest.instrument == "BANKNIFTY"
+    assert latest.instrument == "BANKNIFTY26JANFUT"
     assert latest.last_price == pytest.approx(45050.5)
-    assert redis.kv.get("price:BANKNIFTY:latest") == str(45050.5)
+    assert redis.kv.get("price:BANKNIFTY26JANFUT:latest") == str(45050.5)
 
 
 def test_store_ohlc_and_retrieve_sorted():
@@ -65,15 +65,15 @@ def test_store_ohlc_and_retrieve_sorted():
     store = RedisMarketStore(redis)
     base = datetime.now(timezone.utc)
     bars = [
-        OHLCBar("BANKNIFTY", "1m", 1, 2, 0.5, 1.5, 10, base),
-        OHLCBar("BANKNIFTY", "1m", 2, 3, 1.5, 2.5, 20, base + timedelta(minutes=1)),
-        OHLCBar("BANKNIFTY", "1m", 3, 4, 2.5, 3.5, 30, base + timedelta(minutes=2)),
+        OHLCBar("BANKNIFTY26JANFUT", "1m", 1, 2, 0.5, 1.5, 10, base),
+        OHLCBar("BANKNIFTY26JANFUT", "1m", 2, 3, 1.5, 2.5, 20, base + timedelta(minutes=1)),
+        OHLCBar("BANKNIFTY26JANFUT", "1m", 3, 4, 2.5, 3.5, 30, base + timedelta(minutes=2)),
     ]
 
     for bar in bars:
         store.store_ohlc(bar)
 
-    fetched = list(store.get_ohlc("BANKNIFTY", "1m", limit=2))
+    fetched = list(store.get_ohlc("BANKNIFTY26JANFUT", "1m", limit=2))
     # Should return the last two bars in time order
     assert len(fetched) == 2
     assert fetched[0].open == 2

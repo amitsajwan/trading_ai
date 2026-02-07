@@ -21,6 +21,7 @@ from typing import Dict, Set, Optional, Any, List
 from uuid import uuid4
 
 import redis.asyncio as redis_async
+from pymongo import MongoClient
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -30,6 +31,8 @@ logger = logging.getLogger(__name__)
 # Configuration
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
+MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
+MONGODB_DATABASE = os.getenv("MONGODB_DATABASE", "zerodha_trading")
 GATEWAY_PORT = int(os.getenv("REDIS_WS_GATEWAY_PORT", "8889"))
 GATEWAY_HOST = os.getenv("REDIS_WS_GATEWAY_HOST", "0.0.0.0")
 
@@ -46,9 +49,14 @@ API_KEY = os.getenv("GATEWAY_API_KEY", "")
 # Format: role -> list of allowed channel prefixes
 CHANNEL_ACL: Dict[str, List[str]] = {
     "user": [
-        "market:tick:*",
-        "market:tick",
-        "indicators:*",
+        # Type-specific tick channels (INDEX, FUT, OPT)
+        "market:tick:*:INDEX",
+        "market:tick:*:FUT",
+        "market:tick:*:OPT",
+        # Type-specific indicator channels
+        "indicators:*:INDEX",
+        "indicators:*:FUT",
+        "indicators:*:OPT",
         # Options chain and market depth data
         "market:options:*",
         "market:options",
@@ -73,8 +81,15 @@ CHANNEL_ACL: Dict[str, List[str]] = {
         "engine:orchestrator:*",
     ],
     "admin": [
-        "market:tick:*",
-        "market:tick",
+        # Type-specific tick channels
+        "market:tick:*:INDEX",
+        "market:tick:*:FUT",
+        "market:tick:*:OPT",
+        # Type-specific indicator channels
+        "indicators:*:INDEX",
+        "indicators:*:FUT",
+        "indicators:*:OPT",
+        # Engine channels
         "engine:signal:*",
         "engine:signal",
         "signals:*",
@@ -82,7 +97,6 @@ CHANNEL_ACL: Dict[str, List[str]] = {
         "market:signals:*",
         "engine:decision:*",
         "engine:decision",
-        "indicators:*",
     ],
     "internal": [
         "*",  # All channels
@@ -134,13 +148,18 @@ class ClientConnection:
         for prefix in allowed_prefixes:
             if prefix == "*":
                 return True
-            if channel.startswith(prefix.rstrip("*")):
+            # Exact match
+            if channel == prefix:
                 return True
-            # Pattern matching for wildcards
+            # Prefix match (for non-wildcard prefixes)
+            if "*" not in prefix and channel.startswith(prefix):
+                return True
+            # Pattern matching for wildcards (e.g., "market:tick:*:INDEX" matches "market:tick:BANKNIFTY:INDEX")
             if "*" in prefix:
-                pattern = prefix.replace("*", ".*")
+                # Convert Redis pattern to regex: * -> .*, ? -> .
+                pattern = prefix.replace("*", ".*").replace("?", ".")
                 import re
-                if re.match(pattern, channel):
+                if re.match(pattern + "$", channel):
                     return True
         
         return False
@@ -165,6 +184,7 @@ class RedisWebSocketGateway:
         self.app = FastAPI(title="Redis WebSocket Gateway", version="1.0.0")
         self.redis_client: Optional[redis_async.Redis] = None
         self.redis_pubsub: Optional[Any] = None
+        self.mongo_client: Optional[MongoClient] = None
         self.clients: Dict[str, ClientConnection] = {}
         self.channel_subscribers: Dict[str, Set[str]] = defaultdict(set)  # channel -> set of client_ids
         self.pattern_subscribers: Dict[str, Set[str]] = defaultdict(set)  # pattern -> set of client_ids
@@ -251,11 +271,11 @@ class RedisWebSocketGateway:
             data = json.loads(message)
             action = data.get("action")
 
-            logger.info(f"📊 WebSocket message from {client.client_id}: {action}, data: {data}")
+            logger.info(f"WebSocket message from {client.client_id}: {action}, data: {data}")
 
             if action == "subscribe":
                 channels = data.get("channels", [])
-                logger.info(f"📊 Client {client.client_id} subscribing to channels: {channels}")
+                logger.info(f"Client {client.client_id} subscribing to channels: {channels}")
                 await self.handle_subscribe(client, channels, data.get("requestId"))
             
             elif action == "unsubscribe":
@@ -280,7 +300,7 @@ class RedisWebSocketGateway:
     
     async def handle_subscribe(self, client: ClientConnection, channels: List[str], request_id: Optional[str]):
         """Handle subscribe request."""
-        logger.info(f"📊 Processing subscribe request for {len(channels)} channels: {channels}")
+        logger.info(f"Processing subscribe request for {len(channels)} channels: {channels}")
         subscribed = []
         errors = []
         
@@ -309,6 +329,10 @@ class RedisWebSocketGateway:
                 self.channel_subscribers[channel].add(client.client_id)
             
             subscribed.append(channel)
+
+            # Replay last decision if applicable
+            if not client.is_wildcard(channel) and (channel.startswith("engine:decision") or channel.startswith("engine:agent")):
+                asyncio.create_task(self.replay_last_decision(client, channel))
         
         # Update Redis subscriptions if needed
         if subscribed and self.redis_pubsub:
@@ -347,6 +371,76 @@ class RedisWebSocketGateway:
             "channels": unsubscribed,
             "requestId": request_id,
         })
+
+    async def replay_last_decision(self, client: ClientConnection, channel: str):
+        """Replay last decision from Redis or MongoDB upon subscription."""
+        if not self.redis_client:
+            return
+
+        try:
+            # 1. Try Redis first (fastest)
+            # Use channel name + :latest as the key
+            redis_key = f"{channel}:latest"
+            last_decision_raw = await self.redis_client.get(redis_key)
+            
+            if last_decision_raw:
+                logger.info(f"Replaying last decision for {channel} from Redis")
+                decision_data = json.loads(last_decision_raw)
+                await self.send_message(client, {
+                    "type": "data",
+                    "channel": channel,
+                    "data": decision_data,
+                    "replayed": True,
+                    "source": "redis"
+                })
+                return
+
+            # 2. Fallback to MongoDB if not in Redis
+            if self.mongo_client:
+                logger.info(f"Last decision for {channel} not in Redis, checking MongoDB")
+                db = self.mongo_client[MONGODB_DATABASE]
+                
+                # Extract instrument from channel (e.g., "engine:decision:BANKNIFTY" -> "BANKNIFTY")
+                instrument = None
+                if channel.startswith("engine:decision:"):
+                    instrument = channel.replace("engine:decision:", "")
+                elif channel.startswith("engine:agent:"):
+                    instrument = channel.replace("engine:agent:", "")
+                
+                if instrument:
+                    # Query MongoDB for the latest decision for this instrument
+                    # For engine:decision, check 'signals' or 'orchestrator_health' or 'agent_discussions'
+                    # Based on engine_module/api_service.py, agent decisions are in 'agent_discussions'
+                    # And signals are in 'signals'
+                    
+                    collection_name = "agent_discussions" if "agent" in channel else "signals"
+                    collection = db[collection_name]
+                    
+                    last_doc = collection.find_one(
+                        {"instrument": instrument.upper()},
+                        sort=[("timestamp", -1), ("created_at", -1)]
+                    )
+                    
+                    if last_doc:
+                        # Convert ObjectId and datetime to string
+                        if "_id" in last_doc:
+                            last_doc["_id"] = str(last_doc["_id"])
+                        for k, v in last_doc.items():
+                            if isinstance(v, datetime):
+                                last_doc[k] = v.isoformat()
+                        
+                        logger.info(f"Replaying last decision for {channel} from MongoDB ({collection_name})")
+                        await self.send_message(client, {
+                            "type": "data",
+                            "channel": channel,
+                            "data": last_doc,
+                            "replayed": True,
+                            "source": "mongodb"
+                        })
+                        return
+
+        except Exception as e:
+            logger.warning(f"Error replaying last decision for {channel}: {e}", exc_info=True)
     
     async def update_redis_subscriptions(self):
         """Update Redis pub/sub subscriptions based on all client subscriptions."""
@@ -456,6 +550,15 @@ class RedisWebSocketGateway:
             self.running = True
             self.redis_task = asyncio.create_task(self._redis_subscriber_loop())
             logger.info("Redis subscriber started (subscriptions will be added as clients connect)")
+
+            # Initialize MongoDB client for replaying last decisions
+            try:
+                self.mongo_client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=2000)
+                # Test connection
+                self.mongo_client.admin.command('ping')
+                logger.info(f"MongoDB connected for replay fallback: {MONGODB_URI}")
+            except Exception as e:
+                logger.warning(f"Failed to connect to MongoDB, replay fallback will be unavailable: {e}")
         
         except Exception as e:
             logger.error(f"Failed to start Redis subscriber: {e}", exc_info=True)
@@ -520,7 +623,7 @@ class RedisWebSocketGateway:
         data = message.get('data', '')
 
         # Debug logging for all messages
-        logger.info(f"📊 Redis message received: channel={channel}, pattern={pattern}")
+        logger.info(f"Redis message received: channel={channel}, pattern={pattern}")
 
         if not data:
             return

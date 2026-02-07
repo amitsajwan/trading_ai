@@ -24,7 +24,7 @@ class TrendAgent(Agent):
             'ma_fast': 20,
             'ma_slow': 50,
             'adx_period': 14,
-            'adx_threshold': 25
+            'adx_threshold': 18  # Reduced from 25 for more trend signals
         }
 
     async def analyze(self, context: Dict[str, Any]) -> AnalysisResult:
@@ -37,8 +37,13 @@ class TrendAgent(Agent):
         - optional 'current_positions': list of current positions
         - optional 'has_long_position': bool
         - optional 'has_short_position': bool
+        - optional 'research_thesis': dict with research manager's primary thesis
         """
         try:
+            # Check for research thesis to align analysis
+            research_thesis = context.get("research_thesis")
+            if research_thesis:
+                logger.debug(f"TrendAgent aligning with research thesis: {research_thesis.get('decision', 'UNKNOWN')}")
             ohlc_data = context.get("ohlc", [])
             if not ohlc_data or len(ohlc_data) < 55:  # Need enough data for slow MA + ADX
                 return AnalysisResult(
@@ -82,6 +87,13 @@ class TrendAgent(Agent):
             except Exception:
                 adx_last = 25.0  # Neutral ADX
 
+            # Calculate ATR for risk management
+            try:
+                atr_series = ta.atr(pd.Series(highs), pd.Series(lows), pd.Series(closes), length=14)
+                atr_last = float(atr_series.iloc[-1]) if not atr_series.empty and not pd.isna(atr_series.iloc[-1]) else None
+            except Exception:
+                atr_last = None
+
             price_last = closes[-1]
 
             # Get position information from context
@@ -89,17 +101,29 @@ class TrendAgent(Agent):
             has_long_position = context.get('has_long_position', False)
             has_short_position = context.get('has_short_position', False)
 
-            # Trend signal logic with position awareness
+            # Trend signal logic with position awareness and research thesis alignment
             decision = "HOLD"
             confidence = 0.5
             reasoning = []
+            thesis_bias = 0.0  # Neutral bias
+
+            # Align with research thesis if available
+            if research_thesis:
+                thesis_decision = research_thesis.get('decision', '').upper()
+                thesis_confidence = research_thesis.get('confidence', 0.5)
+                if 'BUY' in thesis_decision or 'BULL' in thesis_decision:
+                    thesis_bias = thesis_confidence * 0.2  # Boost bullish signals
+                    reasoning.append(f"Research thesis supports bullish trend (bias +{thesis_bias:.2f})")
+                elif 'SELL' in thesis_decision or 'BEAR' in thesis_decision:
+                    thesis_bias = -thesis_confidence * 0.2  # Boost bearish signals
+                    reasoning.append(f"Research thesis supports bearish trend (bias {thesis_bias:.2f})")
 
             # STRONG UPTREND
             if (price_last > ma_fast_last > ma_slow_last and adx_last > self.config['adx_threshold']):
                 if has_long_position:
                     # Strong uptrend with existing long - add to position
                     decision = "BUY"
-                    confidence = 0.75
+                    confidence = min(0.95, 0.75 + thesis_bias)
                     reasoning = [
                         f"Strong uptrend: Price {price_last:.2f} > MA{self.config['ma_fast']} {ma_fast_last:.2f} > MA{self.config['ma_slow']} {ma_slow_last:.2f}",
                         f"ADX {adx_last:.1f} > {self.config['adx_threshold']} (strong trend)",
@@ -108,7 +132,7 @@ class TrendAgent(Agent):
                 else:
                     # No position - open new
                     decision = "BUY"
-                    confidence = 0.80
+                    confidence = min(0.95, 0.80 + thesis_bias)
                     reasoning = [
                         f"Strong uptrend: Price {price_last:.2f} > MA{self.config['ma_fast']} {ma_fast_last:.2f} > MA{self.config['ma_slow']} {ma_slow_last:.2f}",
                         f"ADX {adx_last:.1f} > {self.config['adx_threshold']} (strong trend)",
@@ -120,7 +144,7 @@ class TrendAgent(Agent):
                 if has_short_position:
                     # Strong downtrend with existing short - add to position
                     decision = "SELL"
-                    confidence = 0.75
+                    confidence = min(0.95, 0.75 - thesis_bias)
                     reasoning = [
                         f"Strong downtrend: Price {price_last:.2f} < MA{self.config['ma_fast']} {ma_fast_last:.2f} < MA{self.config['ma_slow']} {ma_slow_last:.2f}",
                         f"ADX {adx_last:.1f} > {self.config['adx_threshold']} (strong trend)",
@@ -129,7 +153,7 @@ class TrendAgent(Agent):
                 else:
                     # No position - open new
                     decision = "SELL"
-                    confidence = 0.80
+                    confidence = min(0.95, 0.80 - thesis_bias)
                     reasoning = [
                         f"Strong downtrend: Price {price_last:.2f} < MA{self.config['ma_fast']} {ma_fast_last:.2f} < MA{self.config['ma_slow']} {ma_slow_last:.2f}",
                         f"ADX {adx_last:.1f} > {self.config['adx_threshold']} (strong trend)",
@@ -168,22 +192,21 @@ class TrendAgent(Agent):
                         reasoning = ["No clear trend direction"]
                         confidence = 0.0
 
-            # Calculate position management levels
-            trend_strength = abs(price_last - ma_fast_last) / ma_fast_last * 100
+            # Calculate trend strength for reference
+            trend_strength = abs(price_last - ma_fast_last) / ma_fast_last * 100 if ma_fast_last != 0 else 0
 
-            if decision == "BUY":
-                stop_loss = ma_slow_last - (ma_slow_last * 0.005)  # 0.5% below slow MA
-                take_profit = price_last + (price_last - stop_loss) * 2  # 2:1 reward ratio
-            elif decision == "SELL":
-                stop_loss = ma_slow_last + (ma_slow_last * 0.005)  # 0.5% above slow MA
-                take_profit = price_last - (stop_loss - price_last) * 2  # 2:1 reward ratio
-            else:
-                stop_loss = price_last * 0.98  # Default 2% stop
-                take_profit = price_last * 1.04  # Default 4% target
+            # Analysis complete - trade parameters will be calculated by SignalCreationAgent
 
+            # Analysis details (no trade parameters - those are for SignalCreationAgent)
             details = {
                 "agent": self._agent_name,
                 "strategy": "trend_following",
+                "analysis": {
+                    "trend_direction": "UP" if decision == "BUY" else "DOWN" if decision == "SELL" else "SIDEWAYS",
+                    "trend_strength": trend_strength,
+                    "adx_signal": adx_last > self.config['adx_threshold'],
+                    "ma_alignment": "bullish" if price_last > ma_fast_last > ma_slow_last else "bearish" if price_last < ma_fast_last < ma_slow_last else "neutral"
+                },
                 "indicators": {
                     "ma_fast": ma_fast_last,
                     "ma_fast_period": self.config['ma_fast'],
@@ -194,17 +217,14 @@ class TrendAgent(Agent):
                     "adx_threshold": self.config['adx_threshold'],
                     "trend_strength_pct": trend_strength
                 },
-                "reasoning": reasoning,
-                "entry_price": price_last,
-                "stop_loss": stop_loss,
-                "take_profit": take_profit,
-                "risk_reward_ratio": 2.0 if decision != "HOLD" else 0.0
+                "reasoning": " ".join(reasoning) if isinstance(reasoning, list) else reasoning
             }
 
             return AnalysisResult(
                 decision=decision,
                 confidence=confidence,
-                details=details
+                details=details,
+                agent=self._agent_name
             )
 
         except Exception as e:
@@ -214,4 +234,55 @@ class TrendAgent(Agent):
                 confidence=0.0,
                 details={"reason": f"ANALYSIS_ERROR: {str(e)}", "agent": self._agent_name}
             )
+
+    def _calculate_position_size(self, entry_price: float, stop_loss: float, risk_reward_ratio: float, adx_value: float) -> Dict[str, Any]:
+        """Calculate position size based on risk management for trend following.
+
+        Trend following uses different sizing logic than momentum:
+        - Higher conviction in strong trends (ADX > 25)
+        - Lower sizing in weak trends
+        - Account for trend-following higher holding periods
+        """
+        if not entry_price or not stop_loss or risk_reward_ratio <= 0:
+            return {"size_multiplier": 1.0, "risk_amount": 0, "reason": "insufficient_data"}
+
+        # Risk per trade (trend following can afford slightly higher risk due to longer holding periods)
+        risk_per_trade_pct = 0.015  # 1.5% vs 1% for momentum
+
+        # Calculate stop loss distance
+        risk_amount_per_unit = abs(entry_price - stop_loss)
+
+        if risk_amount_per_unit <= 0:
+            return {"size_multiplier": 1.0, "risk_amount": 0, "reason": "invalid_stop_loss"}
+
+        # Calculate position size: risk_per_trade / risk_per_unit
+        position_size_multiplier = risk_per_trade_pct / (risk_amount_per_unit / entry_price)
+
+        # Adjust based on trend strength (ADX)
+        if adx_value > 30:
+            # Very strong trend - can afford larger position
+            position_size_multiplier *= 1.3
+        elif adx_value > 25:
+            # Strong trend - slight increase
+            position_size_multiplier *= 1.1
+        elif adx_value < 20:
+            # Weak trend - reduce position size
+            position_size_multiplier *= 0.8
+
+        # Cap position size at reasonable levels for trend following
+        position_size_multiplier = min(position_size_multiplier, 2.5)  # Higher cap than momentum
+
+        # Reduce size if risk-reward ratio is poor
+        if risk_reward_ratio < 2.0:
+            position_size_multiplier *= 0.8
+        elif risk_reward_ratio > 4.0:
+            position_size_multiplier *= 1.1  # Increase for excellent R:R
+
+        return {
+            "size_multiplier": round(position_size_multiplier, 2),
+            "risk_amount_pct": risk_per_trade_pct,
+            "trend_strength_adjustment": adx_value > 25,
+            "max_size_cap": 2.5,
+            "holding_period_expectation": "medium_to_long"  # Trend following holds longer
+        }
 

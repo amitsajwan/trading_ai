@@ -1,240 +1,112 @@
 #!/usr/bin/env python3
-"""
-Basic Trading Dashboard - FastAPI Application
-
-This provides a web interface for monitoring the trading system.
-"""
-
-from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi import Body
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
-from pathlib import Path
-import json
-import asyncio
+"""Minimal dashboard stub for container startup and testing."""
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime
+import asyncio
+import logging
 import os
-from dotenv import load_dotenv
 
-# Load environment variables
-load_dotenv()
+logger = logging.getLogger(__name__)
 
-# Import our modules
-import sys
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from engine_module.options_strategy_engine import evaluate as eval_options_strategy, RuleConfig
-
-# Start historical data replay for mock tick data
-try:
-    # Import the data_niftybank modules
-    import sys
-    project_root = os.path.dirname(os.path.dirname(__file__))
-    data_path = os.path.join(project_root, 'data_niftybank', 'src')
-    if data_path not in sys.path:
-        sys.path.insert(0, data_path)
-
-    from data_niftybank.adapters.redis_store import RedisMarketStore
-    from data_niftybank.adapters.historical_replay import HistoricalDataReplay
-    import redis
-
-    # Initialize Redis store
-    redis_client = redis.Redis(host='localhost', port=6379, db=0)
-    store = RedisMarketStore(redis_client)
-
-    # Start historical data replay
-    replay = HistoricalDataReplay(store, data_source="synthetic")
-    replay.start()
-
-except Exception as e:
-    print(f"Warning: Could not start historical data replay: {e}")
-
-app = FastAPI(title="Trading Dashboard", version="1.0.0")
-
-# Setup templates and static files
-templates_dir = Path(__file__).parent / "templates"
-static_dir = Path(__file__).parent / "static"
-
-templates_dir.mkdir(exist_ok=True)
-static_dir.mkdir(exist_ok=True)
-
-templates = Jinja2Templates(directory=str(templates_dir))
-
-# Mount static files
-try:
-    app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
-    print(f"Static files mounted from: {static_dir}")
-except Exception as e:
-    print(f"Failed to mount static files: {e}")
-    pass  # Static files optional
-
-# In-memory fallback store for paper trades if DB isn't available
-PAPER_TRADES_CACHE: list[dict] = []
-
-async def _get_option_ltp(strike: int, option_type: str) -> float | None:
-    """Lookup current option premium from options chain for given strike/type."""
-    try:
-        chain = await options_chain()
-        rows = chain.get("chain") or []
-        for r in rows:
-            if int(r.get("strike", -1)) == int(strike):
-                if option_type.upper() == "CE":
-                    return float(r.get("ce_ltp")) if r.get("ce_ltp") is not None else None
-                if option_type.upper() == "PE":
-                    return float(r.get("pe_ltp")) if r.get("pe_ltp") is not None else None
-        return None
-    except Exception:
-        return None
-
-# Automation flags/state
-OPTIONS_ALGO_ACTIVE: bool = os.getenv("OPTIONS_ALGO_ENABLED", "0") in ("1", "true", "True")
-_options_algo_task: asyncio.Task | None = None
-# Algo config (env-overridable)
-OPTIONS_MIN_CONF: float = float(os.getenv("OPTIONS_MIN_CONF", "0.6"))
-OPTIONS_ENTRY_COOLDOWN_SEC: int = int(os.getenv("OPTIONS_ENTRY_COOLDOWN_SEC", "300"))
-OPTIONS_ENTRY_MIN_IMBALANCE: float = float(os.getenv("OPTIONS_ENTRY_MIN_IMBALANCE", "0.05"))
-_last_options_entry_ts: float | None = None
-
-def _db_available() -> bool:
-    try:
-        from pymongo import MongoClient
-        client = MongoClient("mongodb://localhost:27017/", serverSelectionTimeoutMS=1000)
-        client.admin.command('ping')
-        return True
-    except Exception:
-        return False
-
-def _get_latest_open_trade() -> dict | None:
-    if _db_available():
-        try:
-            from pymongo import MongoClient
-            client = MongoClient("mongodb://localhost:27017/")
-            db = client.zerodha_trading
-            col = db.paper_trades
-            doc = col.find_one({"status": "open"}, sort=[("timestamp", -1)])
-            if doc:
-                return doc
-        except Exception:
-            pass
-    open_trades = [t for t in PAPER_TRADES_CACHE if t.get("status") == "open"]
-    return open_trades[0] if open_trades else None
-
-def _persist_trade(trade_doc: dict) -> bool:
-    try:
-        if _db_available():
-            from pymongo import MongoClient
-            client = MongoClient("mongodb://localhost:27017/")
-            db = client.zerodha_trading
-            col = db.paper_trades
-            # Insert a copy to avoid PyMongo mutating the dict with ObjectId
-            to_insert = dict(trade_doc)
-            col.insert_one(to_insert)
-            return True
-    except Exception:
-        pass
-    PAPER_TRADES_CACHE.append(trade_doc)
-    return False
-
-def _update_trade(trade_id: str, update_fields: dict) -> bool:
-    try:
-        if _db_available():
-            from pymongo import MongoClient
-            client = MongoClient("mongodb://localhost:27017/")
-            db = client.zerodha_trading
-            col = db.paper_trades
-            col.update_one({"id": trade_id}, {"$set": update_fields})
-            return True
-    except Exception:
-        pass
-    for i, t in enumerate(PAPER_TRADES_CACHE):
-        if t.get("id") == trade_id:
-            PAPER_TRADES_CACHE[i] = {**t, **update_fields}
-            return False
-    return False
+app = FastAPI(title="Trading Dashboard (stub)", version="1.0.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000", "http://localhost:8888", "http://127.0.0.1:8888"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 def add_camel_aliases(data: dict) -> dict:
-    """Add camelCase aliases for snake_case keys (for API compatibility)."""
     if not isinstance(data, dict):
         return data
-
     result = {}
     for key, value in data.items():
         result[key] = add_camel_aliases(value) if isinstance(value, dict) else value
-        # Add camelCase version
-        camel_key = ''.join(word.capitalize() if i > 0 else word.lower()
-                           for i, word in enumerate(key.split('_')))
+        camel_key = ''.join(word.capitalize() if i > 0 else word.lower() for i, word in enumerate(key.split('_')))
         if camel_key != key:
             result[camel_key] = result[key]
     return result
 
+
 @app.get("/")
 async def root():
-    """
-    API root endpoint.
-    
-    NOTE: This FastAPI backend is API-only. The UI is served by:
-    - React app: http://localhost:8888 (Vite dev server in modular_ui/)
-    - Legacy dashboard.html template is deprecated
-    
-    Use /api/* endpoints for API access.
-    """
-    return {
-        "service": "Trading Dashboard API",
-        "version": "1.0.0",
-        "ui": "http://localhost:8888",
-        "api_docs": "/docs",
-        "note": "This is the API backend. UI is served by React app on port 8888."
-    }
+    return {"message": "OK"}
 
-@app.get("/api/health")
-async def health_check():
-    """Basic health check endpoint."""
-    try:
-        # Check database connections
-        mongo_status = "unknown"
-        redis_status = "unknown"
 
-        try:
-            from pymongo import MongoClient
-            client = MongoClient("mongodb://localhost:27017/", serverSelectionTimeoutMS=2000)
-            client.admin.command('ping')
-            mongo_status = "ok"
-        except Exception:
-            mongo_status = "error"
+@app.get("/api/v1/technical/indicators/{instrument}")
+async def get_technical_indicators_v1(instrument: str, timeframe: str = "1min"):
+    now = datetime.now().isoformat()
+    indicators = [
+        {"name": "RSI_14", "value": 0.0, "signal": "neutral", "description": "Relative Strength Index (14)"},
+        {"name": "MACD", "value": 0.0, "signal": "neutral", "description": "MACD Line"},
+        {"name": "ADX_14", "value": 0.0, "signal": "neutral", "description": "Average Directional Index (14)"},
+        {"name": "ATR_14", "value": 0.0, "signal": "neutral", "description": "Average True Range (14)"},
+    ]
+    return {"indicators": indicators, "trend": "unknown", "strength": "unknown", "timestamp": now}
 
-        try:
-            import redis
-            r = redis.Redis(host='localhost', port=6379, db=0)
-            r.ping()
-            redis_status = "ok"
-        except Exception:
-            redis_status = "error"
 
-        # Check if market is open
-        now = datetime.now()
-        market_open = (now.weekday() < 5 and  # Monday-Friday
-                      now.time() >= datetime.strptime("09:15", "%H:%M").time() and
-                      now.time() <= datetime.strptime("15:30", "%H:%M").time())
+@app.get("/api/technical-indicators")
+async def technical_indicators():
+    return await get_technical_indicators_v1(instrument=os.getenv("INSTRUMENT_SYMBOL", "BANKNIFTY"))
 
-        return {
-            "status": "ok" if mongo_status == "ok" and redis_status == "ok" else "degraded",
-            "timestamp": datetime.now().isoformat(),
-            "database": mongo_status,
-            "cache": redis_status,
-            "market_open": market_open,
-            "instrument": "BANKNIFTY"
-        }
-    except Exception as e:
-        return {
-            "status": "error",
-            "error": str(e),
-            "timestamp": datetime.now().isoformat()
-        }
+
+async def start_historical_replay(start_date=None, end_date=None, interval: str = "minute", kite=None):
+    logger.info("Stub start_historical_replay called start_date=%s end_date=%s interval=%s", start_date, end_date, interval)
+    # Minimal no-op that yields control briefly
+    await asyncio.sleep(0.1)
+    return {"started": True, "start_date": str(start_date), "end_date": str(end_date), "interval": interval}
+
+
+async def get_system_status():
+    return {"status": "ok", "timestamp": datetime.now().isoformat(), "database": "unknown", "cache": "unknown"}
+
 
 @app.get("/api/system-health")
 async def system_health():
-    """Comprehensive system health check."""
     return await get_system_status()
+
+
+__all__ = ["app", "add_camel_aliases", "start_historical_replay", "technical_indicators"]
+
+@app.get("/api/auth-status")
+async def auth_status():
+    """Get current authentication status."""
+    try:
+        import redis
+        redis_client = redis.Redis(host="localhost", port=6379, decode_responses=True)
+        
+        # Try to get latest auth status from Redis
+        auth_data = redis_client.get("auth:status:latest")
+        if auth_data:
+            import json
+            return json.loads(auth_data)
+        
+        # Fallback: check if credentials exist
+        import os
+        cred_path = os.path.join(os.getcwd(), "credentials.json")
+        if os.path.exists(cred_path):
+            return {
+                "status": "unknown",
+                "message": "Credentials file exists but status unknown",
+                "timestamp": datetime.now().isoformat()
+            }
+        else:
+            return {
+                "status": "failed",
+                "message": "No credentials file found",
+                "timestamp": datetime.now().isoformat(),
+                "action_required": "manual_login",
+                "url": "http://localhost:8000/auth"
+            }
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": f"Error checking auth status: {str(e)}",
+            "timestamp": datetime.now().isoformat()
+        }
 
 @app.get("/api/latest-analysis")
 async def latest_analysis():
@@ -242,7 +114,7 @@ async def latest_analysis():
     try:
         # Try to get from MongoDB
         from pymongo import MongoClient
-        client = MongoClient("mongodb://localhost:27017/")
+        client = MongoClient("mongodb://mongodb:27017/")
         db = client.zerodha_trading
         collection = db.agent_decisions
 
@@ -278,7 +150,7 @@ async def latest_signal():
         
         # Try to get real signal from MongoDB
         from pymongo import MongoClient
-        client = MongoClient("mongodb://localhost:27017/")
+        client = MongoClient("mongodb://mongodb:27017/")
         db = client.zerodha_trading
         collection = db.agent_decisions
 
@@ -330,34 +202,39 @@ async def latest_signal():
 _kite_client = None
 
 # Mount modular routers
-try:
-    from dashboard.api import control_router, trading_router, market_router  # type: ignore
-    app.include_router(control_router)
-    app.include_router(trading_router)
-    app.include_router(market_router)
-    # Include risk router if available
-    try:
-        from dashboard.api.risk import router as risk_router
-        app.include_router(risk_router)
-        print(f"✅ Risk router included: {risk_router.prefix} with {len(risk_router.routes)} routes")
-    except ImportError as e:
-        print(f"Warning: Risk router not available (Layer 8 components may not be installed): {e}")
-    except Exception as e:
-        print(f"Error: Failed to include risk router: {e}")
-        import traceback
-        traceback.print_exc()
-except Exception as e:  # pragma: no cover - best effort to include routers
-    print(f"Warning: could not mount modular routers: {e}")
-    import traceback
-    traceback.print_exc()
+# try:
+#     from dashboard.api import control_router, trading_router, market_router  # type: ignore
+#     app.include_router(control_router)
+#     app.include_router(trading_router)
+#     app.include_router(market_router)
+#     # Include risk router if available
+#     # try:
+#     #     from dashboard.api.risk import router as risk_router
+#     #     app.include_router(risk_router)
+#     #     print(f"[OK] Risk router included: {risk_router.prefix} with {len(risk_router.routes)} routes")
+#     # except ImportError as e:
+#     #     print(f"Warning: Risk router not available (Layer 8 components may not be installed): {e}")
+#     # except Exception as e:
+#     #     print(f"Error: Failed to include risk router: {e}")
+#     #     import traceback
+#     #     traceback.print_exc()
+# except Exception as e:  # pragma: no cover - best effort to include routers
+#     print(f"Warning: could not mount modular routers: {e}")
+#     import traceback
+#     traceback.print_exc()
 
 
-def calculate_vwap(instrument: str = "BANKNIFTY", hours: int = 24) -> float | None:
+def calculate_vwap(instrument: str = None, hours: int = 24) -> float | None:
     """Calculate VWAP from stored tick data in Redis."""
     try:
         import redis
         import json
         from datetime import datetime, timedelta
+
+        # Get config for instrument if not provided
+        if instrument is None:
+            config = get_config()
+            instrument = config.instrument_symbol.upper()
 
         # Connect to Redis
         r = redis.Redis(host='localhost', port=6379, db=0)
@@ -419,11 +296,14 @@ def calculate_vwap(instrument: str = "BANKNIFTY", hours: int = 24) -> float | No
 async def market_data():
     """Get current market data."""
     try:
+        # Get config for instrument
+        config = get_config()
+        instrument = config.instrument_symbol.upper()
+        
         # Try to get real data from Redis first
         import redis
-        r = redis.Redis(host='localhost', port=6379, db=0)
+        r = redis.Redis(host='redis', port=6379, db=0)
 
-        instrument = "BANKNIFTY"
         current_price = None
         volume_24h = None
 
@@ -443,17 +323,29 @@ async def market_data():
         # Calculate VWAP from tick data
         vwap = calculate_vwap(instrument)
 
-        # Fallback to mock data if no real data
-        if current_price is None:
-            current_price = 45250.50
-        if volume_24h is None:
-            volume_24h = 12450000
-        if vwap is None:
-            vwap = 45125.25  # fallback to mock
+        # Check if we have any real data
+        has_real_data = current_price is not None or volume_24h is not None or vwap is not None
 
-        # Calculate mock 24h change (in real system this would be from historical data)
-        change_24h = 125.50
-        change_percent_24h = 0.28
+        if not has_real_data:
+            # No live market data available - return clear indication
+            return {
+                "instrument": instrument,
+                "status": "no_data",
+                "message": "Live market data not available",
+                "current_price": None,
+                "change_24h": None,
+                "change_percent_24h": None,
+                "volume_24h": None,
+                "high_24h": None,
+                "low_24h": None,
+                "vwap": None,
+                "timestamp": datetime.now().isoformat(),
+                "error": "Market data feed unavailable"
+            }
+
+        # Use available real data, set None for missing fields
+        change_24h = None  # Would be calculated from historical data
+        change_percent_24h = None
 
         return {
             "instrument": instrument,
@@ -461,11 +353,11 @@ async def market_data():
             "change_24h": change_24h,
             "change_percent_24h": change_percent_24h,
             "volume_24h": volume_24h,
-            "high_24h": 45350.00,  # Would calculate from real data
-            "low_24h": 44900.00,   # Would calculate from real data
-            "vwap": round(vwap, 2),
+            "high_24h": None,  # Would calculate from real data
+            "low_24h": None,   # Would calculate from real data
+            "vwap": round(vwap, 2) if vwap else None,
             "timestamp": datetime.now().isoformat(),
-            "status": "active"
+            "status": "partial" if not all([current_price, volume_24h, vwap]) else "active"
         }
     except Exception as e:
         return {"error": str(e)}
@@ -474,42 +366,139 @@ async def market_data():
 async def trading_metrics():
     """Get trading performance metrics."""
     try:
-        # Mock trading metrics
+        # Try to get real trading data from database
+        from pymongo import MongoClient
+        client = MongoClient("mongodb://mongodb:27017/")
+        db = client.zerodha_trading
+        collection = db.trades
+
+        # Get all completed trades
+        trades = list(collection.find({"status": "completed"}))
+        
+        if not trades:
+            return {
+                "status": "no_data",
+                "message": "No trading data available",
+                "total_pnl": 0,
+                "win_rate": 0,
+                "total_trades": 0,
+                "avg_win": 0,
+                "avg_loss": 0,
+                "largest_win": 0,
+                "largest_loss": 0,
+                "current_streak": 0,
+                "best_streak": 0,
+                "worst_streak": 0,
+                "timestamp": datetime.now().isoformat()
+            }
+
+        # Calculate real metrics from trade data
+        pnls = [trade.get("pnl", 0) for trade in trades]
+        wins = [p for p in pnls if p > 0]
+        losses = [p for p in pnls if p < 0]
+        
+        total_pnl = sum(pnls)
+        win_rate = len(wins) / len(pnls) if pnls else 0
+        total_trades = len(trades)
+        avg_win = sum(wins) / len(wins) if wins else 0
+        avg_loss = sum(losses) / len(losses) if losses else 0
+        largest_win = max(wins) if wins else 0
+        largest_loss = min(losses) if losses else 0
+
+        # Calculate streaks
+        current_streak = 0
+        best_streak = 0
+        worst_streak = 0
+        temp_streak = 0
+        
+        for pnl in pnls:
+            if pnl > 0:
+                temp_streak = max(temp_streak + 1, 1)
+                best_streak = max(best_streak, temp_streak)
+            elif pnl < 0:
+                temp_streak = min(temp_streak - 1, -1)
+                worst_streak = min(worst_streak, temp_streak)
+            else:
+                temp_streak = 0
+        
+        current_streak = temp_streak
+
         return {
-            "total_pnl": 2500.50,
-            "win_rate": 0.667,
-            "total_trades": 3,
-            "avg_win": 1250.25,
-            "avg_loss": -750.15,
-            "largest_win": 1500.00,
-            "largest_loss": -800.00,
-            "current_streak": 2,
-            "best_streak": 3,
-            "worst_streak": -1
+            "total_pnl": round(total_pnl, 2),
+            "win_rate": round(win_rate, 3),
+            "total_trades": total_trades,
+            "avg_win": round(avg_win, 2),
+            "avg_loss": round(avg_loss, 2),
+            "largest_win": round(largest_win, 2),
+            "largest_loss": round(largest_loss, 2),
+            "current_streak": current_streak,
+            "best_streak": best_streak,
+            "worst_streak": worst_streak,
+            "timestamp": datetime.now().isoformat()
         }
     except Exception as e:
-        return {"error": str(e)}
+        return {
+            "status": "error",
+            "message": "Trading metrics unavailable",
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
 
 @app.get("/metrics/risk")
 async def risk_metrics():
     """Get risk management metrics."""
     try:
-        # Mock risk metrics
+        # Try to get real risk data from database
+        from pymongo import MongoClient
+        client = MongoClient("mongodb://mongodb:27017/")
+        db = client.zerodha_trading
+        collection = db.trades
+
+        # Get all trades for risk calculation
+        trades = list(collection.find({}))
+        
+        if not trades:
+            return {
+                "status": "no_data",
+                "message": "No trading data available for risk calculation",
+                "sharpe_ratio": 0,
+                "max_drawdown": 0,
+                "var_95": 0,
+                "total_exposure": 0,
+                "portfolio_value": 0,
+                "daily_var": 0,
+                "stress_test_loss": 0,
+                "correlation_matrix": {},
+                "timestamp": datetime.now().isoformat()
+            }
+
+        # Calculate basic risk metrics from real data
+        pnls = [trade.get("pnl", 0) for trade in trades]
+        total_pnl = sum(pnls)
+        max_drawdown = min(pnls) if pnls else 0
+        
+        # For now, return calculated metrics without mock values
         return {
-            "sharpe_ratio": 1.25,
-            "max_drawdown": -1200.50,
-            "var_95": -850.25,
-            "total_exposure": 45000.00,
-            "portfolio_value": 248862.50,
-            "daily_var": -425.00,
-            "stress_test_loss": -2500.00,
+            "sharpe_ratio": 0,  # Would need more sophisticated calculation
+            "max_drawdown": round(max_drawdown, 2),
+            "var_95": 0,  # Would need historical data for VaR calculation
+            "total_exposure": 0,  # Would need position data
+            "portfolio_value": round(100000 + total_pnl, 2),  # Base portfolio + pnl
+            "daily_var": 0,  # Would need daily P&L data
+            "stress_test_loss": 0,  # Would need stress testing
             "correlation_matrix": {
                 "BANKNIFTY": 1.0,
-                "NIFTY": 0.75
-            }
+                "NIFTY": 0.0  # No correlation data available
+            },
+            "timestamp": datetime.now().isoformat()
         }
     except Exception as e:
-        return {"error": str(e)}
+        return {
+            "status": "error", 
+            "message": "Risk metrics unavailable",
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
 
 @app.get("/api/analytics/performance")
 async def analytics_performance():
@@ -615,30 +604,24 @@ async def analytics_risk():
                 "correlation_matrix": {}
             }
         
-        # Calculate metrics
+        # Calculate metrics from real data
         total_pnl = sum(pnls)
         max_drawdown = min(pnls) if pnls else 0
-        var_95 = -850.25  # Mock for now
-        total_exposure = 45000.00  # Mock
-        portfolio_value = 248862.50 + total_pnl  # Mock base + pnl
-        daily_var = -425.00  # Mock
-        stress_test_loss = -2500.00  # Mock
-        sharpe_ratio = 1.25  # Mock
         
-        correlation_matrix = {
-            "BANKNIFTY": 1.0,
-            "NIFTY": 0.75
-        }
-        
+        # Return real calculated metrics, no mock values
         return {
-            "sharpe_ratio": sharpe_ratio,
-            "max_drawdown": max_drawdown,
-            "var_95": var_95,
-            "total_exposure": total_exposure,
-            "portfolio_value": portfolio_value,
-            "daily_var": daily_var,
-            "stress_test_loss": stress_test_loss,
-            "correlation_matrix": correlation_matrix
+            "sharpe_ratio": 0,  # Would need time-series data for proper calculation
+            "max_drawdown": round(max_drawdown, 2),
+            "var_95": 0,  # Would need historical distribution
+            "total_exposure": 0,  # Would need position sizing data
+            "portfolio_value": round(100000 + total_pnl, 2),  # Base + calculated pnl
+            "daily_var": 0,  # Would need daily returns
+            "stress_test_loss": 0,  # Would need stress testing framework
+            "correlation_matrix": {
+                "BANKNIFTY": 1.0,
+                "NIFTY": 0.0  # No correlation data available
+            },
+            "timestamp": datetime.now().isoformat()
         }
     except Exception as e:
         return {"error": str(e)}
@@ -696,159 +679,184 @@ async def recent_trades(limit: int = 20):
     except Exception as e:
         return {"error": str(e)}
 
+def _map_agent_to_ui_key(agent_name: str) -> str:
+    """Map agent names to UI keys."""
+    mapping = {
+        'EnhancedResearchManager': 'enhancedresearchmanager',
+        'BullResearcher': 'bullresearcher',
+        'BearResearcher': 'bearresearcher',
+        'TechnicalAgent': 'technical',
+        'SentimentAgent': 'sentiment',
+        'MacroAgent': 'macro',
+        'FundamentalAgent': 'fundamental',
+        'MomentumAgent': 'momentum',
+        'TrendAgent': 'trend',
+        'VolumeAgent': 'volume',
+        'MeanReversionAgent': 'reversion',
+        'OptionsStrategyAgent': 'options',
+        'SignalCreationAgent': 'signalcreation',
+        'ExecutionAgent': 'execution',
+        'NeutralRiskAgent': 'neutralrisk',
+        'RiskManager': 'risk'
+    }
+    return mapping.get(agent_name, '')
+
 @app.get("/api/agent-status")
 async def agent_status():
     """Get status of all trading agents."""
     try:
-        # Mock agent status
-        agents = {
-            "technical": {
-                "status": "active",
-                "last_update": datetime.now().isoformat(),
-                "signal": "BUY",
-                "confidence": 0.82,
-                "indicators": ["RSI", "MACD", "Moving Averages"],
-                "summary": {
-                    "signal": "BUY",
-                    "confidence": 0.82,
-                    "reasoning": "RSI at 68.5 (bullish), MACD positive crossover, price above 20-SMA.",
-                    "metrics": {
-                        "rsi": 68.5,
-                        "macd": 125.50,
-                        "sma_20": 45125.25
-                    }
-                }
-            },
-            "sentiment": {
-                "status": "active",
-                "last_update": datetime.now().isoformat(),
-                "signal": "BUY",
-                "confidence": 0.71,
-                "indicators": ["News", "Social Media", "Market Mood"],
-                "summary": {
-                    "signal": "BUY",
-                    "confidence": 0.71,
-                    "reasoning": "Positive market coverage and improving social momentum support mild bullish bias.",
-                    "metrics": {
-                        "news_score": 0.74,
-                        "social_score": 0.69
-                    }
-                }
-            },
-            "macro": {
-                "status": "active",
-                "last_update": datetime.now().isoformat(),
-                "signal": "HOLD",
-                "confidence": 0.55,
-                "indicators": ["Inflation", "RBI Policy", "GDP"],
-                "summary": {
-                    "signal": "HOLD",
-                    "confidence": 0.55,
-                    "reasoning": "Macro environment stable; awaiting next RBI guidance and inflation print.",
-                    "metrics": {
-                        "inflation_trend": "stable",
-                        "policy_bias": "neutral"
-                    }
-                }
-            },
-            "risk": {
-                "status": "active",
-                "last_update": datetime.now().isoformat(),
-                "signal": "APPROVED",
-                "confidence": 0.88,
-                "indicators": ["VaR", "Position Size", "Drawdown"],
-                "summary": {
-                    "signal": "APPROVED",
-                    "confidence": 0.88,
-                    "reasoning": "Position sizing within limits; VaR and drawdown acceptable for entry.",
-                    "metrics": {
-                        "var_95": -850.25,
-                        "max_drawdown": -1200.50
-                    }
-                }
-            },
-            "execution": {
-                "status": "active",
-                "last_update": datetime.now().isoformat(),
-                "signal": "READY",
-                "confidence": 0.95,
-                "indicators": ["Slippage", "Market Impact", "Timing"],
-                "summary": {
-                    "signal": "READY",
-                    "confidence": 0.95,
-                    "reasoning": "Liquidity sufficient; spreads tight; order flow balanced—good execution window.",
-                    "metrics": {
-                        "spread": 0.25,
-                        "imbalance": 0.15
-                    }
-                }
+        from datetime import datetime
+
+        # Try to get real agent status from Redis
+        import redis
+        r = redis.Redis(host='redis', port=6379, db=0)
+
+        # Check for agent status keys
+        agent_keys = r.keys("agent:*:status")
+        
+        if not agent_keys:
+            return {
+                "status": "no_data",
+                "message": "No agent status data available - agents may not be running",
+                "agents": {},
+                "timestamp": datetime.now().isoformat()
             }
-        }
 
-        consensus = {
-            "signal": "BUY",
-            "confidence": 0.78,
-            "agents_agreeing": 3,
-            "total_agents": 5
-        }
+        # Get real agent data from Redis
+        agents = {}
+        for key in agent_keys:
+            agent_name = key.decode().split(":")[1]
+            agent_data = r.get(key)
+            if agent_data:
+                agents[agent_name] = json.loads(agent_data.decode())
 
-        # Build a concise executive summary (Markdown supported in UI)
-        def fmt_agent_line(name: str, a: dict) -> str:
-            sig = a.get("signal", "HOLD")
-            conf = a.get("confidence", 0.0)
-            status = a.get("status", "unknown")
-            return f"- **{name.title()}**: {sig} ({conf:.0%}) · {status}"
-
-        lines = [
-            "### Multi-Agent Executive Summary",
-            fmt_agent_line("technical", agents["technical"]),
-            fmt_agent_line("sentiment", agents["sentiment"]),
-            fmt_agent_line("macro", agents["macro"]),
-            fmt_agent_line("risk", agents["risk"]),
-            fmt_agent_line("execution", agents["execution"]),
-            "",
-            f"**Consensus**: {consensus['signal']} ({consensus['confidence']:.0%}) with "
-            f"{consensus['agents_agreeing']}/{consensus['total_agents']} agents aligned."
-        ]
-
-        executive_summary = "\n".join(lines)
+        if not agents:
+            return {
+                "status": "no_data", 
+                "message": "Agent status data unavailable",
+                "agents": {},
+                "timestamp": datetime.now().isoformat()
+            }
 
         return {
             "agents": agents,
-            "consensus": consensus,
-            "executive_summary": executive_summary,
-            "last_analysis": datetime.now().isoformat()
+            "timestamp": datetime.now().isoformat()
         }
     except Exception as e:
-        return {"error": str(e)}
+        return {
+            "status": "error",
+            "message": "Agent status unavailable",
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
 
 @app.get("/api/portfolio")
 async def portfolio():
     """Get current portfolio positions."""
     try:
-        # Mock portfolio data
-        return {
-            "positions": [
-                {
-                    "instrument": "BANKNIFTY",
-                    "quantity": 25,
-                    "entry_price": 45200.00,
-                    "current_price": 45250.50,
-                    "unrealized_pnl": 1250.25,
-                    "pnl_percentage": 2.77,
-                    "market_value": 1131262.50
-                }
-            ],
-            "summary": {
-                "total_value": 1131262.50,
-                "cash_balance": 488862.50,
-                "total_equity": 1620125.00,
-                "day_pnl": 1250.25,
-                "total_pnl": 1250.25
+        # Try to get real portfolio data from database
+        from pymongo import MongoClient
+        client = MongoClient("mongodb://mongodb:27017/")
+        db = client.zerodha_trading
+        collection = db.positions
+
+        # Get all open positions
+        positions = list(collection.find({"status": "open"}))
+        
+        if not positions:
+            return {
+                "status": "no_data",
+                "message": "No open positions in portfolio",
+                "positions": [],
+                "summary": {
+                    "total_value": 0,
+                    "cash_balance": 100000,  # Default cash balance
+                    "total_pnl": 0,
+                    "day_pnl": 0
+                },
+                "timestamp": datetime.now().isoformat()
             }
+
+        # Calculate portfolio summary from real positions
+        total_value = sum(pos.get("market_value", 0) for pos in positions)
+        total_pnl = sum(pos.get("unrealized_pnl", 0) for pos in positions)
+        
+        return {
+            "positions": positions,
+            "summary": {
+                "total_value": round(total_value, 2),
+                "cash_balance": 100000,  # Would need cash balance tracking
+                "total_pnl": round(total_pnl, 2),
+                "day_pnl": 0  # Would need daily P&L calculation
+            },
+            "timestamp": datetime.now().isoformat()
         }
     except Exception as e:
-        return {"error": str(e)}
+        return {
+            "status": "error",
+            "message": "Portfolio data unavailable",
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
+
+@app.get("/api/orchestrator-decisions")
+async def orchestrator_decisions(limit: int = 20):
+    """Get stored orchestrator decisions from Redis."""
+    try:
+        import redis
+        import json
+        from datetime import datetime
+
+        r = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
+
+        # Get current instrument
+        instrument = os.getenv("INSTRUMENT_SYMBOL", "BANKNIFTY").upper()
+
+        decisions = []
+
+        # Try to get the latest decisions from Redis
+        latest_keys = [
+            f"engine:orchestrator_decision:{instrument}:latest",
+            "engine:orchestrator_decision:latest",
+            f"engine:orchestrator_decision:{instrument.replace('26JANFUT', '')}:latest"
+        ]
+
+        for key in latest_keys:
+            try:
+                decision_json = r.get(key)
+                if decision_json:
+                    decision_data = json.loads(decision_json)
+
+                    # Format for UI consumption
+                    formatted_decision = {
+                        "decision_id": f"decision_{int(datetime.fromisoformat(decision_data.get('timestamp', datetime.now().isoformat())).timestamp() * 1000)}",
+                        "instrument": decision_data.get("instrument", instrument),
+                        "final_decision": decision_data.get("final_decision", "UNKNOWN"),
+                        "confidence": decision_data.get("confidence", 0.0),
+                        "timestamp": decision_data.get("timestamp", datetime.now().isoformat()),
+                        "reasoning": decision_data.get("reasoning", ""),
+                        "agent_responses": decision_data.get("agent_responses", []),
+                        "details": decision_data.get("details", {})
+                    }
+
+                    decisions.append(formatted_decision)
+                    if len(decisions) >= limit:
+                        break
+
+            except Exception as e:
+                continue
+
+        # Sort by timestamp (most recent first)
+        decisions.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+
+        return {
+            "decisions": decisions[:limit],
+            "total": len(decisions),
+            "instrument": instrument
+        }
+
+    except Exception as e:
+        return {"error": str(e), "decisions": [], "total": 0}
 
 @app.get("/api/technical-indicators")
 async def technical_indicators():
@@ -1017,6 +1025,22 @@ async def technical_indicators():
             "timestamp": datetime.now().isoformat()
         }
     except Exception as e:
+        print(f"Error in technical_indicators: {e}")
+        return {
+            "indicators": [],
+            "trend": "unknown",
+            "strength": "unknown",
+            "timestamp": datetime.now().isoformat()
+        }
+        
+@app.get("/api/v1/technical/indicators/{instrument}")
+async def get_technical_indicators_v1(instrument: str, timeframe: str = "1min"):
+    """Get technical indicators for an instrument (v1 API)."""
+    try:
+        # Call the existing technical_indicators function
+        result = await technical_indicators()
+        return result
+    except Exception as e:
         return {"error": str(e)}
 
 async def get_system_status():
@@ -1071,1019 +1095,12 @@ async def get_system_status():
             "timestamp": datetime.now().isoformat()
         }
 
-# Create basic HTML template
-template_content = """
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Trading Dashboard</title>
-    <style>
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            margin: 0;
-            padding: 20px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-        }
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-            background: white;
-            border-radius: 10px;
-            box-shadow: 0 10px 30px rgba(0,0,0,0.1);
-            overflow: hidden;
-        }
-        .header {
-            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
-            color: white;
-            padding: 30px;
-            text-align: center;
-        }
-        .header h1 {
-            margin: 0;
-            font-size: 2.5em;
-            font-weight: 300;
-        }
-        .status {
-            padding: 30px;
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-            gap: 20px;
-        }
-        .card {
-            background: #f8f9fa;
-            border-radius: 8px;
-            padding: 20px;
-            border-left: 4px solid #007bff;
-        }
-        .card.success {
-            border-left-color: #28a745;
-        }
-        .card.warning {
-            border-left-color: #ffc107;
-        }
-        .card.error {
-            border-left-color: #dc3545;
-        }
-        .card h3 {
-            margin: 0 0 15px 0;
-            color: #333;
-            font-size: 1.2em;
-        }
-        .metric {
-            display: flex;
-            justify-content: space-between;
-            margin: 10px 0;
-            padding: 8px 0;
-            border-bottom: 1px solid #eee;
-        }
-        .metric:last-child {
-            border-bottom: none;
-        }
-        .value {
-            font-weight: bold;
-            color: #007bff;
-        }
-        .status-indicator {
-            display: inline-block;
-            width: 12px;
-            height: 12px;
-            border-radius: 50%;
-            margin-right: 8px;
-        }
-        .status-ok { background: #28a745; }
-        .status-error { background: #dc3545; }
-        .status-degraded { background: #ffc107; }
-        .footer {
-            background: #f8f9fa;
-            padding: 20px;
-            text-align: center;
-            color: #666;
-            border-top: 1px solid #dee2e6;
-        }
-        .refresh-btn {
-            background: #007bff;
-            color: white;
-            border: none;
-            padding: 10px 20px;
-            border-radius: 5px;
-            cursor: pointer;
-            font-size: 16px;
-            margin: 10px;
-        }
-        .refresh-btn:hover {
-            background: #0056b3;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>Automated Trading Dashboard</h1>
-            <p>Real-time monitoring of your AI trading system</p>
-            <button class="refresh-btn" onclick="location.reload()">Refresh</button>
-        </div>
-
-        <div class="status">
-            <div class="card {{ 'success' if system_status.status == 'ok' else 'warning' if system_status.status == 'degraded' else 'error' }}">
-                <h3>
-                    <span class="status-indicator status-{{ 'ok' if system_status.status == 'ok' else 'error' if system_status.status == 'error' else 'degraded' }}"></span>
-                    System Status
-                </h3>
-                <div class="metric">
-                    <span>Overall Health:</span>
-                    <span class="value">{{ system_status.status.upper() }}</span>
-                </div>
-                <div class="metric">
-                    <span>Market Status:</span>
-                    <span class="value">{{ 'OPEN' if system_status.market_open else 'CLOSED' }}</span>
-                </div>
-                <div class="metric">
-                    <span>Last Update:</span>
-                    <span class="value">{{ timestamp }}</span>
-                </div>
-            </div>
-
-            <div class="card {{ 'success' if system_status.database == 'ok' else 'error' }}">
-                <h3>
-                    <span class="status-indicator status-{{ 'ok' if system_status.database == 'ok' else 'error' }}"></span>
-                    Database
-                </h3>
-                <div class="metric">
-                    <span>MongoDB:</span>
-                    <span class="value">{{ system_status.database.upper() }}</span>
-                </div>
-                <div class="metric">
-                    <span>Redis Cache:</span>
-                    <span class="value">{{ system_status.cache.upper() }}</span>
-                </div>
-            </div>
-
-            <div class="card success">
-                <h3>
-                    <span class="status-indicator status-ok"></span>
-                    Trading Modules
-                </h3>
-                <div class="metric">
-                    <span>Data Module:</span>
-                    <span class="value">OPERATIONAL</span>
-                </div>
-                <div class="metric">
-                    <span>GenAI Module:</span>
-                    <span class="value">OPERATIONAL</span>
-                </div>
-                <div class="metric">
-                    <span>User Module:</span>
-                    <span class="value">OPERATIONAL</span>
-                </div>
-                <div class="metric">
-                    <span>Engine Module:</span>
-                    <span class="value">OPERATIONAL</span>
-                </div>
-            </div>
-
-            <div class="card {{ 'success' if system_status.market_open else 'warning' }}">
-                <h3>
-                    <span class="status-indicator status-{{ 'ok' if system_status.market_open else 'degraded' }}"></span>
-                    Market Information
-                </h3>
-                <div class="metric">
-                    <span>Instrument:</span>
-                    <span class="value">BANKNIFTY</span>
-                </div>
-                <div class="metric">
-                    <span>Trading Hours:</span>
-                    <span class="value">9:15 AM - 3:30 PM IST</span>
-                </div>
-                <div class="metric">
-                    <span>Current Status:</span>
-                    <span class="value">{{ 'MARKET OPEN' if system_status.market_open else 'AFTER HOURS' }}</span>
-                </div>
-            </div>
-        </div>
-
-        <div class="footer">
-            <p><strong>Automated Trading System v1.0.0</strong></p>
-            <p>Multi-agent AI trading with risk management | Real-time monitoring active</p>
-            <p>Dashboard running on localhost:8888 | Last updated: {{ timestamp }}</p>
-        </div>
-    </div>
-
-    <script>
-        // Auto-refresh every 30 seconds
-        setTimeout(() => {
-            location.reload();
-        }, 30000);
-    </script>
-</body>
-</html>
-"""
-
-# Use the restored template files
-
-@app.get("/api/metrics/llm")
-async def llm_metrics():
-    """Get LLM provider metrics."""
-    try:
-        # Check which providers are actually configured
-        import os
-        configured_providers = {}
-
-        provider_configs = {
-            "groq": {
-                "rate_limit_per_minute": 30,
-                "rate_limit_per_day": 14400,
-                "daily_token_quota": 1000000,
-                "status": "active" if groq_key else "unavailable"
-            },
-            "openai": {
-                "rate_limit_per_minute": 60,
-                "rate_limit_per_day": 10000,
-                "daily_token_quota": 100000,
-                "status": "available" if openai_key else "unavailable"
-            },
-            "google": {
-                "rate_limit_per_minute": 60,
-                "rate_limit_per_day": 1000,
-                "daily_token_quota": 1000000,
-                "status": "available" if google_key else "unavailable"
-            },
-            "anthropic": {
-                "rate_limit_per_minute": 50,
-                "rate_limit_per_day": 5000,
-                "daily_token_quota": 100000,
-                "status": "available" if anthropic_key else "unavailable"
-            }
-        }
-
-        # Only include providers that are configured
-        for provider_name, config in provider_configs.items():
-            if config["status"] != "unavailable":
-                configured_providers[provider_name] = {
-                    **config,
-                    "requests_today": 145 if provider_name == "groq" else 0,  # Mock usage data
-                    "requests_per_minute": 2.1 if provider_name == "groq" else 0.0,
-                    "tokens_today": 125000 if provider_name == "groq" else 0,
-                    "last_error": None,
-                    "last_error_time": None
-                }
-
-        return {"providers": configured_providers}
-    except Exception as e:
-        return {"error": str(e)}
-
-@app.get("/api/order-flow")
-async def order_flow():
-    """Get order flow and market depth data."""
-    try:
-        # Mock order flow data
-        return {
-            "available": True,
-            "last_price": 45245.50,
-            "imbalance": 0.15,
-            "spread": 0.25,
-            "total_depth_bid": 1250,
-            "total_depth_ask": 1100,
-            "depth_ladder": [
-                {"bid_qty": 50, "bid_price": 45245.00, "ask_price": 45245.25, "ask_qty": 45},
-                {"bid_qty": 75, "bid_price": 45244.75, "ask_price": 45245.50, "ask_qty": 60},
-                {"bid_qty": 100, "bid_price": 45244.50, "ask_price": 45245.75, "ask_qty": 80},
-                {"bid_qty": 125, "bid_price": 45244.25, "ask_price": 45246.00, "ask_qty": 90},
-                {"bid_qty": 150, "bid_price": 45244.00, "ask_price": 45246.25, "ask_qty": 110}
-            ],
-            "timestamp": datetime.now().isoformat()
-        }
-    except Exception as e:
-        return {"available": False, "error": str(e)}
-
-@app.get("/api/options-chain")
-async def options_chain():
-    """Get options chain data."""
-    try:
-        # Mock options chain data
-        return {
-            "available": True,
-            "futures_price": 45250.00,
-            "expiry": "2026-01-30",
-            "chain": [
-                {
-                    "strike": 44500,
-                    "ce_ltp": 850.50,
-                    "ce_oi": 125000,
-                    "pe_ltp": 45.25,
-                    "pe_oi": 98000,
-                    "ce_iv": 22.5,
-                    "pe_iv": 18.3,
-                    "ce_delta": 0.65,
-                    "pe_delta": -0.12
-                },
-                {
-                    "strike": 45000,
-                    "ce_ltp": 425.75,
-                    "ce_oi": 145000,
-                    "pe_ltp": 125.50,
-                    "pe_oi": 112000,
-                    "ce_iv": 20.8,
-                    "pe_iv": 21.2,
-                    "ce_delta": 0.45,
-                    "pe_delta": -0.28
-                },
-                {
-                    "strike": 45250,
-                    "ce_ltp": 225.25,
-                    "ce_oi": 180000,
-                    "pe_ltp": 285.75,
-                    "pe_oi": 165000,
-                    "ce_iv": 19.6,
-                    "pe_iv": 23.0,
-                    "ce_delta": 0.35,
-                    "pe_delta": -0.36
-                },
-                {
-                    "strike": 45500,
-                    "ce_ltp": 95.50,
-                    "ce_oi": 95000,
-                    "pe_ltp": 525.25,
-                    "pe_oi": 78000,
-                    "ce_iv": 18.9,
-                    "pe_iv": 24.5,
-                    "ce_delta": 0.22,
-                    "pe_delta": -0.52
-                },
-                {
-                    "strike": 46000,
-                    "ce_ltp": 25.75,
-                    "ce_oi": 45000,
-                    "pe_ltp": 875.50,
-                    "pe_oi": 52000,
-                    "ce_iv": 17.2,
-                    "pe_iv": 26.8,
-                    "ce_delta": 0.10,
-                    "pe_delta": -0.65
-                }
-            ],
-            "pcr": 1.15,
-            "max_pain": 45250,
-            "timestamp": datetime.now().isoformat()
-        }
-    except Exception as e:
-        return {"available": False, "error": str(e)}
-
-@app.get("/api/options-strategy")
-async def options_strategy():
-    """Suggest a simple Options Buy/Sell strategy based on latest signal, options chain and order flow.
-
-    - If signal is BUY: recommend buying ATM/near-ATM CE
-    - If signal is SELL: recommend buying ATM/near-ATM PE
-    - Incorporates simple order-flow imbalance tilt
-    """
-    try:
-        # Get latest signal
-        try:
-            from pymongo import MongoClient
-            client = MongoClient("mongodb://localhost:27017/")
-            db = client.zerodha_trading
-            collection = db.agent_decisions
-            latest = collection.find_one(sort=[("timestamp", -1)])
-            if latest:
-                signal = str(latest.get("final_signal", "HOLD")).upper()
-                confidence = float(latest.get("confidence", 0.5))
-            else:
-                signal, confidence = "HOLD", 0.0
-        except Exception:
-            # Fallback
-            signal, confidence = "HOLD", 0.0
-
-        # Get options chain and order flow
-        chain = await options_chain()
-        oflow = await order_flow()
-
-        if not chain or chain.get("available") is False:
-            return {"available": False, "reason": "Options chain unavailable"}
-
-        fut_price = chain.get("futures_price")
-        strikes = chain.get("chain", [])
-        if not fut_price or not strikes:
-            return {"available": False, "reason": "Insufficient chain data"}
-
-        # Pick nearest strike to futures price
-        def nearest(row):
-            try:
-                return abs((row.get("strike") or 0) - fut_price)
-            except Exception:
-                return float("inf")
-
-        strikes_sorted = sorted(strikes, key=nearest)
-        best_row = strikes_sorted[0]
-
-        rec = None
-        if signal == "BUY":
-            rec = {
-                "side": "BUY",
-                "option_type": "CE",
-                "strike": best_row.get("strike"),
-                "premium": best_row.get("ce_ltp"),
-            }
-        elif signal == "SELL":
-            rec = {
-                "side": "BUY",
-                "option_type": "PE",
-                "strike": best_row.get("strike"),
-                "premium": best_row.get("pe_ltp"),
-            }
-
-        if not rec or rec.get("premium") in (None, 0):
-            return {
-                "available": False,
-                "reason": "No actionable premium at nearest strike",
-                "signal": signal,
-                "confidence": confidence,
-            }
-
-        # Simple quantity and risk framing for BANKNIFTY
-        lot_size = 25
-        premium = float(rec["premium"]) or 0.0
-
-        # Order-flow tilt: if imbalance strongly positive/negative, nudge strike one step
-        try:
-            imbalance = oflow.get("imbalance")
-            imb_val = imbalance.get("imbalance_pct") if isinstance(imbalance, dict) else imbalance
-            if imb_val is not None:
-                # If bullish (> +0.10), prefer slightly OTM CE; if bearish (< -0.10), slightly OTM PE
-                if rec["option_type"] == "CE" and float(imb_val) > 0.10:
-                    # pick next higher strike if available
-                    for row in strikes_sorted:
-                        if row.get("strike", 0) >= rec["strike"] and row.get("ce_ltp"):
-                            best_row = row
-                            premium = float(row.get("ce_ltp"))
-                            rec["strike"] = row.get("strike")
-                            rec["premium"] = premium
-                            break
-                elif rec["option_type"] == "PE" and float(imb_val) < -0.10:
-                    # pick next lower strike if available
-                    for row in strikes_sorted:
-                        if row.get("strike", 0) <= rec["strike"] and row.get("pe_ltp"):
-                            best_row = row
-                            premium = float(row.get("pe_ltp"))
-                            rec["strike"] = row.get("strike")
-                            rec["premium"] = premium
-                            break
-        except Exception:
-            pass
-
-        # Risk: 40% stop loss on premium, 40% take profit
-        sl_price = round(premium * 0.60, 2)
-        tp_price = round(premium * 1.40, 2)
-
-        reasoning = []
-        reasoning.append(f"Signal {signal} with confidence {confidence:.0%}")
-        reasoning.append("ATM/near-ATM selection based on futures price")
-        if oflow and oflow.get("imbalance") is not None:
-            reasoning.append("Order-flow imbalance considered for strike tilt")
-
-        return {
-            "available": True,
-            "timestamp": datetime.now().isoformat(),
-            "instrument": "BANKNIFTY",
-            "expiry": chain.get("expiry"),
-            "recommendation": {
-                **rec,
-                "quantity": lot_size,
-                "stop_loss_price": sl_price,
-                "take_profit_price": tp_price,
-                "reasoning": "; ".join(reasoning)
-            }
-        }
-    except Exception as e:
-        return {"available": False, "error": str(e)}
-
-@app.get("/api/options-strategy-advanced")
-async def options_strategy_advanced(min_oi: int = 75000, prefer_expiry: str | None = None, target_delta: float = 0.35, max_iv: float | None = None):
-    """Advanced options strategy using rule config.
-
-    Query params:
-    - min_oi: minimum open interest per leg
-    - prefer_expiry: target expiry date (YYYY-MM-DD)
-    """
-    try:
-        # Determine latest signal
-        try:
-            from pymongo import MongoClient
-            client = MongoClient("mongodb://localhost:27017/")
-            db = client.zerodha_trading
-            collection = db.agent_decisions
-            latest = collection.find_one(sort=[("timestamp", -1)])
-            signal = str(latest.get("final_signal", "HOLD")).upper() if latest else "HOLD"
-        except Exception:
-            signal = "HOLD"
-
-        chain = await options_chain()
-        oflow = await order_flow()
-
-        cfg = RuleConfig(min_oi=min_oi, prefer_expiry=prefer_expiry, target_delta=target_delta, max_iv=max_iv)
-        result = eval_options_strategy(signal, chain, oflow, cfg)
-        return result
-    except Exception as e:
-        return {"available": False, "error": str(e)}
-
-def _generate_trade_id(prefix: str = "PT") -> str:
-    return f"{prefix}-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')[:-3]}"
-
-@app.post("/api/paper-trade/options")
-async def paper_trade_options(payload: dict = Body(None)):
-    """Execute a paper trade for the recommended options leg.
-
-    If `payload` is omitted or incomplete, evaluates the advanced options strategy and uses its recommendation.
-    Persists to MongoDB when available; otherwise stores in memory.
-    """
-    try:
-        # Obtain recommendation or advanced spread
-        rec = None
-        expiry = None
-        instrument = "BANKNIFTY"
-        legs = None
-        strategy_type = None
-        net_debit = None
-
-        if payload and isinstance(payload, dict):
-            if payload.get("recommendation"):
-                rec = payload["recommendation"]
-            expiry = payload.get("expiry")
-            instrument = payload.get("instrument", instrument)
-            legs = payload.get("legs")
-            strategy_type = payload.get("strategy_type")
-            net_debit = payload.get("net_debit")
-
-        if rec is None and legs is None:
-            adv = await options_strategy_advanced()
-            if adv.get("available"):
-                rec = adv.get("recommendation")
-                expiry = adv.get("expiry")
-                instrument = adv.get("instrument", instrument)
-                legs = adv.get("legs")
-                strategy_type = adv.get("strategy_type")
-                net_debit = adv.get("net_debit")
-
-        if rec is None and not legs:
-            return JSONResponse(status_code=400, content={"error": "No recommendation available"})
-
-        # If spread legs provided, create multiple trade docs with a shared group id
-        if legs and isinstance(legs, list) and len(legs) > 0:
-            group_id = _generate_trade_id("SP")
-            trades_created = []
-            for leg in legs:
-                doc = {
-                    "id": _generate_trade_id(),
-                    "group_id": group_id,
-                    "timestamp": datetime.now().isoformat(),
-                    "instrument": instrument,
-                    "expiry": expiry,
-                    "side": leg.get("side", "BUY"),
-                    "option_type": leg.get("option_type"),
-                    "strike": leg.get("strike"),
-                    "quantity": int(leg.get("quantity", 25)),
-                    "entry_price": float(leg.get("premium", 0.0)),
-                    "exit_price": None,
-                    "pnl": 0.0,
-                    "status": "open",
-                    "meta": {
-                        "reasoning": (rec or {}).get("reasoning"),
-                        "strategy_type": strategy_type,
-                        "net_debit": net_debit
-                    }
-                }
-                _persist_trade(doc)
-                trades_created.append(doc)
-            return {"ok": True, "group_id": group_id, "trades": trades_created}
-
-        # Single-leg fallback
-        trade_doc = {
-            "id": _generate_trade_id(),
-            "timestamp": datetime.now().isoformat(),
-            "instrument": instrument,
-            "expiry": expiry,
-            "side": rec.get("side", "BUY"),
-            "option_type": rec.get("option_type"),
-            "strike": rec.get("strike"),
-            "quantity": int(rec.get("quantity", 25)),
-            "entry_price": float(rec.get("premium", 0.0)),
-            "exit_price": None,
-            "pnl": 0.0,
-            "status": "open",
-            "meta": {"reasoning": rec.get("reasoning")}
-        }
-        persisted = _persist_trade(trade_doc)
-        return {"ok": True, "trade": trade_doc, "persisted": persisted}
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"error": str(e)})
-
-@app.post("/api/paper-trade/close")
-async def paper_trade_close(payload: dict = Body(None)):
-    """Close a paper trade.
-
-    Payload (optional): { id: string, exit_price?: float }
-    If `id` is omitted, closes the latest open trade. If `exit_price` is omitted,
-    attempts to fetch current premium from options chain using stored strike/type.
-    Computes P&L: BUY -> (exit-entry)*qty, SELL -> (entry-exit)*qty.
-    """
-    try:
-        target_id = (payload or {}).get("id") if isinstance(payload, dict) else None
-        explicit_exit = (payload or {}).get("exit_price") if isinstance(payload, dict) else None
-
-        # Try MongoDB first
-        doc = None
-        used_db = False
-        try:
-            from pymongo import MongoClient
-            client = MongoClient("mongodb://localhost:27017/")
-            db = client.zerodha_trading
-            col = db.paper_trades
-            if target_id:
-                doc = col.find_one({"id": target_id})
-            else:
-                doc = col.find_one({"status": "open"}, sort=[("timestamp", -1)])
-            used_db = doc is not None
-        except Exception:
-            used_db = False
-
-        # Fallback to in-memory cache
-        if doc is None:
-            open_trades = [t for t in PAPER_TRADES_CACHE if t.get("status") == "open"]
-            if target_id:
-                match = [t for t in PAPER_TRADES_CACHE if t.get("id") == target_id]
-                doc = match[0] if match else (open_trades[0] if open_trades else None)
-            else:
-                doc = open_trades[0] if open_trades else None
-
-        if doc is None:
-            return JSONResponse(status_code=404, content={"error": "No open trade found"})
-
-        # Determine exit price
-        exit_price = explicit_exit
-        if exit_price is None:
-            strike = doc.get("strike")
-            opt_type = doc.get("option_type")
-            if strike and opt_type:
-                exit_price = await _get_option_ltp(strike, opt_type)
-        if exit_price is None:
-            return JSONResponse(status_code=400, content={"error": "Exit price unavailable"})
-
-        exit_price = float(exit_price)
-        entry = float(doc.get("entry_price", 0.0))
-        qty = int(doc.get("quantity", 0))
-        side = str(doc.get("side", "BUY")).upper()
-        pnl = (exit_price - entry) * qty if side == "BUY" else (entry - exit_price) * qty
-
-        # Update document
-        update_fields = {
-            "exit_price": exit_price,
-            "exit_timestamp": datetime.now().isoformat(),
-            "pnl": round(pnl, 2),
-            "status": "closed"
-        }
-
-        persisted = _update_trade(doc.get("id"), update_fields)
-
-        return {"ok": True, "id": doc.get("id"), "pnl": round(pnl, 2), "persisted": persisted}
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"error": str(e)})
-
-@app.get("/api/options-algo/state")
-async def options_algo_state():
-    return {"active": OPTIONS_ALGO_ACTIVE}
-
-@app.post("/api/options-algo/state")
-async def options_algo_toggle(payload: dict = Body(None)):
-    global OPTIONS_ALGO_ACTIVE, _options_algo_task
-    desired = bool((payload or {}).get("active", False))
-    OPTIONS_ALGO_ACTIVE = desired
-    if desired and _options_algo_task is None:
-        _options_algo_task = asyncio.create_task(_options_algo_loop())
-    elif not desired and _options_algo_task:
-        _options_algo_task.cancel()
-        _options_algo_task = None
-    return {"active": OPTIONS_ALGO_ACTIVE}
-
-async def _options_algo_loop():
-    try:
-        while OPTIONS_ALGO_ACTIVE:
-            now = datetime.now()
-            market_open = (now.weekday() < 5 and
-                           now.time() >= datetime.strptime("09:15", "%H:%M").time() and
-                           now.time() <= datetime.strptime("15:30", "%H:%M").time())
-            if market_open:
-                open_trade = _get_latest_open_trade()
-                if open_trade:
-                    strike = open_trade.get("strike")
-                    opt_type = open_trade.get("option_type")
-                    ltp = await _get_option_ltp(strike, opt_type) if (strike and opt_type) else None
-                    if ltp is not None:
-                        entry = float(open_trade.get("entry_price", 0.0))
-                        meta = open_trade.get("meta", {})
-                        sl = float(meta.get("stop_loss_price", entry * 0.6))
-                        tp = float(meta.get("take_profit_price", entry * 1.4))
-                        side = str(open_trade.get("side", "BUY")).upper()
-                        should_close = False
-                        if side == "BUY":
-                            if ltp <= sl or ltp >= tp:
-                                should_close = True
-                        else:
-                            if ltp >= sl or ltp <= tp:
-                                should_close = True
-                        if should_close:
-                            qty = int(open_trade.get("quantity", 0))
-                            pnl = (ltp - entry) * qty if side == "BUY" else (entry - ltp) * qty
-                            _update_trade(open_trade.get("id"), {
-                                "exit_price": float(ltp),
-                                "exit_timestamp": datetime.now().isoformat(),
-                                "pnl": round(pnl, 2),
-                                "status": "closed"
-                            })
-                else:
-                    # Entry gating: respect cooldown and signal confidence & order-flow sign
-                    import time
-                    global _last_options_entry_ts
-                    if _last_options_entry_ts is not None:
-                        if time.time() - _last_options_entry_ts < OPTIONS_ENTRY_COOLDOWN_SEC:
-                            await asyncio.sleep(15)
-                            continue
-
-                    # Check latest signal and confidence
-                    latest = await latest_signal()
-                    sig = str(latest.get("signal", "HOLD")).upper()
-                    conf = float(latest.get("confidence", 0.0) or 0.0)
-                    # Require actionable signal and minimum confidence
-                    if sig not in ("BUY", "SELL") or conf < OPTIONS_MIN_CONF:
-                        await asyncio.sleep(15)
-                        continue
-
-                    # Require supportive order-flow imbalance sign
-                    oflow = await order_flow()
-                    imb = oflow.get("imbalance")
-                    imb_val = imb.get("imbalance_pct") if isinstance(imb, dict) else imb
-                    if imb_val is None:
-                        await asyncio.sleep(15)
-                        continue
-                    if sig == "BUY" and float(imb_val) < OPTIONS_ENTRY_MIN_IMBALANCE:
-                        await asyncio.sleep(15)
-                        continue
-                    if sig == "SELL" and float(imb_val) > -OPTIONS_ENTRY_MIN_IMBALANCE:
-                        await asyncio.sleep(15)
-                        continue
-
-                    # Evaluate advanced strategy and open
-                    adv = await options_strategy_advanced()
-                    if adv.get("available") and adv.get("recommendation"):
-                        rec = adv["recommendation"]
-                        trade_doc = {
-                            "id": _generate_trade_id(),
-                            "timestamp": datetime.now().isoformat(),
-                            "instrument": adv.get("instrument", "BANKNIFTY"),
-                            "expiry": adv.get("expiry"),
-                            "side": rec.get("side", "BUY"),
-                            "option_type": rec.get("option_type"),
-                            "strike": rec.get("strike"),
-                            "quantity": rec.get("quantity", 25),
-                            "entry_price": float(rec.get("premium", 0.0)),
-                            "exit_price": None,
-                            "pnl": 0.0,
-                            "status": "open",
-                            "meta": {
-                                "reasoning": rec.get("reasoning"),
-                                "stop_loss_price": rec.get("stop_loss_price"),
-                                "take_profit_price": rec.get("take_profit_price")
-                            }
-                        }
-                        _persist_trade(trade_doc)
-                        _last_options_entry_ts = time.time()
-            await asyncio.sleep(15)
-    except asyncio.CancelledError:
-        pass
-
-@app.on_event("startup")
-async def _start_algo_if_enabled():
-    global _options_algo_task
-    if OPTIONS_ALGO_ACTIVE and _options_algo_task is None:
-        _options_algo_task = asyncio.create_task(_options_algo_loop())
-
-@app.get("/api/options-strategy-agent")
-async def options_strategy_agent():
-    """Get the latest options strategy from the multi-agent system.
-
-    Returns complex multi-leg strategies like condors and spreads with full risk/reward analysis.
-    """
-    try:
-        # Get latest agent decision from MongoDB
-        from pymongo import MongoClient
-        client = MongoClient("mongodb://localhost:27017/")
-        db = client.zerodha_trading
-        collection = db.agent_decisions
-
-        # Find the most recent decision with options strategy
-        latest = collection.find_one(
-            {"options_strategy": {"$exists": True}},
-            sort=[("timestamp", -1)]
-        )
-
-        if not latest:
-            return {
-                "available": False,
-                "reason": "No options strategy available from agents",
-                "timestamp": datetime.now().isoformat()
-            }
-
-        options_strategy = latest.get("options_strategy")
-        if not options_strategy:
-            return {
-                "available": False,
-                "reason": "No options strategy in latest decision",
-                "timestamp": datetime.now().isoformat()
-            }
-
-        # Format the response with full strategy details
-        strategy_details = {
-            "available": True,
-            "timestamp": latest.get("timestamp", datetime.now().isoformat()),
-            "strategy_type": options_strategy.get("strategy_type"),
-            "underlying": options_strategy.get("underlying"),
-            "expiry": options_strategy.get("expiry"),
-            "confidence": latest.get("confidence", 0.0),
-            "agent": latest.get("agent", "unknown"),
-            "legs": options_strategy.get("legs", []),
-            "risk_analysis": {
-                "max_profit": options_strategy.get("max_profit", 0.0),
-                "max_loss": options_strategy.get("max_loss", 0.0),
-                "breakeven_points": options_strategy.get("breakeven_points", []),
-                "risk_reward_ratio": options_strategy.get("risk_reward_ratio", 0.0),
-                "margin_required": options_strategy.get("margin_required", 0.0)
-            },
-            "reasoning": latest.get("details", {}).get("reasoning", "Generated by options strategy agent")
-        }
-
-        return strategy_details
-
-    except Exception as e:
-        logger.error(f"Failed to get agent options strategy: {e}")
-        return {
-            "available": False,
-            "error": str(e),
-            "timestamp": datetime.now().isoformat()
-        }
-
-@app.post("/api/options-strategy-execute")
-async def execute_options_strategy(payload: dict = Body(None)):
-    """Execute a complex multi-leg options strategy.
-
-    Expects payload with strategy details or fetches latest from agents if not provided.
-    """
-    try:
-        strategy_data = payload
-
-        # If no payload provided, get latest from agents
-        if not strategy_data:
-            latest_strategy = await options_strategy_agent()
-            if not latest_strategy.get("available"):
-                return {"success": False, "error": "No strategy available to execute"}
-            strategy_data = latest_strategy
-
-        # Validate strategy data
-        if not strategy_data.get("legs"):
-            return {"success": False, "error": "No legs found in strategy"}
-
-        # Execute each leg of the strategy
-        executed_legs = []
-        total_margin = 0.0
-        total_premium = 0.0
-
-        for leg in strategy_data["legs"]:
-            try:
-                # Get current premium for this leg
-                premium = await _get_option_ltp(leg["strike_price"], leg["option_type"])
-                if premium is None:
-                    return {"success": False, "error": f"No premium available for {leg['option_type']} {leg['strike_price']}"}
-
-                # Calculate quantity (assuming 1 lot per leg for now)
-                quantity = leg.get("quantity", 1) * 25  # BANKNIFTY lot size
-
-                # Create trade record
-                trade_id = _generate_trade_id("OPT")
-                trade_doc = {
-                    "trade_id": trade_id,
-                    "timestamp": datetime.now().isoformat(),
-                    "instrument": f"BANKNIFTY{strategy_data['expiry'].replace('-', '')}{leg['option_type']}{leg['strike_price']}",
-                    "side": leg["position"],
-                    "quantity": quantity,
-                    "price": premium,
-                    "strategy_type": strategy_data["strategy_type"],
-                    "leg_info": leg,
-                    "strategy_id": strategy_data.get("timestamp", datetime.now().isoformat()),
-                    "margin_required": strategy_data.get("risk_analysis", {}).get("margin_required", 0.0) / len(strategy_data["legs"])
-                }
-
-                # Persist trade
-                _persist_trade(trade_doc)
-
-                executed_legs.append({
-                    "leg_id": f"{leg['position']}_{leg['option_type']}_{leg['strike_price']}",
-                    "instrument": trade_doc["instrument"],
-                    "side": leg["position"],
-                    "quantity": quantity,
-                    "price": premium,
-                    "trade_id": trade_id
-                })
-
-                # Track totals
-                if leg["position"] == "BUY":
-                    total_premium -= premium * quantity
-                else:  # SELL
-                    total_premium += premium * quantity
-
-                total_margin += trade_doc["margin_required"]
-
-            except Exception as e:
-                logger.error(f"Failed to execute leg {leg}: {e}")
-                return {"success": False, "error": f"Failed to execute leg: {str(e)}"}
-
-        return {
-            "success": True,
-            "strategy_type": strategy_data["strategy_type"],
-            "executed_legs": executed_legs,
-            "net_premium": total_premium,
-            "total_margin": total_margin,
-            "risk_analysis": strategy_data.get("risk_analysis", {}),
-            "timestamp": datetime.now().isoformat()
-        }
-
-    except Exception as e:
-        logger.error(f"Failed to execute options strategy: {e}")
-        return {"success": False, "error": str(e)}
-
-@app.get("/api/options-strategy-history")
-async def options_strategy_history(limit: int = 10):
-    """Get history of executed options strategies."""
-    try:
-        # Query MongoDB for options strategy trades
-        from pymongo import MongoClient
-        client = MongoClient("mongodb://localhost:27017/")
-        db = client.zerodha_trading
-        collection = db.paper_trades
-
-        # Find trades with strategy_type (options strategies)
-        strategies = list(collection.find(
-            {"strategy_type": {"$exists": True}},
-            sort=[("timestamp", -1)],
-            limit=limit
-        ))
-
-        # Group by strategy_id
-        strategy_groups = {}
-        for trade in strategies:
-            strategy_id = trade.get("strategy_id", trade.get("timestamp"))
-            if strategy_id not in strategy_groups:
-                strategy_groups[strategy_id] = {
-                    "strategy_id": strategy_id,
-                    "strategy_type": trade.get("strategy_type"),
-                    "timestamp": trade.get("timestamp"),
-                    "legs": [],
-                    "total_margin": 0.0,
-                    "net_premium": 0.0
-                }
-
-            strategy_groups[strategy_id]["legs"].append({
-                "instrument": trade.get("instrument"),
-                "side": trade.get("side"),
-                "quantity": trade.get("quantity"),
-                "price": trade.get("price"),
-                "leg_info": trade.get("leg_info", {})
-            })
-
-            # Calculate net premium
-            price = trade.get("price", 0)
-            quantity = trade.get("quantity", 0)
-            if trade.get("side") == "BUY":
-                strategy_groups[strategy_id]["net_premium"] -= price * quantity
-            else:
-                strategy_groups[strategy_id]["net_premium"] += price * quantity
-
-            strategy_groups[strategy_id]["total_margin"] += trade.get("margin_required", 0.0)
-
-        return {
-            "strategies": list(strategy_groups.values()),
-            "count": len(strategy_groups)
-        }
-
-    except Exception as e:
-        logger.error(f"Failed to get strategy history: {e}")
-        return {"error": str(e), "strategies": [], "count": 0}
-
 if __name__ == "__main__":
     import uvicorn
     import os
     # FastAPI backend should run on port 8000 (API only, no UI template)
     # React UI runs on port 8888 via Vite
-    # WebSocket Gateway runs on port 8889
+    # WebSocket Gateway runs separately on port 8889
     port = int(os.getenv("DASHBOARD_API_PORT", "8000"))
     print(f"Starting FastAPI backend API on http://localhost:{port}")
     print("NOTE: UI is served by Vite dev server on port 8888 (modular_ui/)")

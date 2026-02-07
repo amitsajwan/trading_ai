@@ -1,9 +1,11 @@
 import React, { useMemo, useEffect } from 'react'
-import { useSelector } from 'react-redux'
+import { useSelector, useDispatch } from 'react-redux'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, BarChart, Bar } from 'recharts'
 import { TrendingUp, TrendingDown, BarChart3 } from 'lucide-react'
 import { RootState } from '../../store'
 import { useWebSocket } from '../../hooks/useWebSocket'
+import { formatTimestampForDisplay } from '../../utils/dateUtils'
+import { fetchOHLCData } from '../../store/slices/marketDataSlice'
 
 interface AdvancedChartWidgetProps {
   instrument?: string
@@ -14,9 +16,15 @@ export const AdvancedChartWidget: React.FC<AdvancedChartWidgetProps> = ({
   instrument = 'BANKNIFTY',
   timeframe: initialTimeframe = '1min'
 }) => {
+  const dispatch = useDispatch()
   const [selectedTimeframe, setSelectedTimeframe] = React.useState(initialTimeframe)
   const { ohlcData, currentTick } = useSelector((state: RootState) => state.marketData)
   const { connected: wsConnected, subscribe } = useWebSocket()
+
+  // Fetch OHLC data when component mounts or instrument/timeframe changes
+  useEffect(() => {
+    dispatch(fetchOHLCData({ instrument, timeframe: selectedTimeframe, limit: 200 }) as any)
+  }, [dispatch, instrument, selectedTimeframe])
 
   // Subscribe to OHLC data for the selected timeframe
   useEffect(() => {
@@ -34,8 +42,8 @@ export const AdvancedChartWidget: React.FC<AdvancedChartWidgetProps> = ({
       // Use real OHLC data for the selected timeframe
       return timeframeData.slice(-200).map(bar => ({
         timestamp: selectedTimeframe === 'daily'
-          ? new Date(bar.timestamp || bar.start_at || '').toLocaleDateString()
-          : new Date(bar.timestamp || bar.start_at || '').toLocaleTimeString(),
+          ? new Date(bar.timestamp || bar.start_at || '').toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' })
+          : formatTimestampForDisplay(bar.timestamp || bar.start_at),
         open: bar.open,
         high: bar.high,
         low: bar.low,
@@ -47,7 +55,8 @@ export const AdvancedChartWidget: React.FC<AdvancedChartWidgetProps> = ({
 
     // Generate mock data if no real data available for this timeframe
     const mockData = []
-    const basePrice = currentTick?.last_price || 45000
+    // Use a reasonable base price for the instrument, not currentTick (which might be for different instrument)
+    const basePrice = instrument === 'BANKNIFTY' ? 59875 : instrument === 'BANKNIFTY26JANFUT' ? 59992 : 45000
 
     // Adjust time intervals based on selected timeframe
     let intervalMs = 60000 // 1 minute default
@@ -67,7 +76,7 @@ export const AdvancedChartWidget: React.FC<AdvancedChartWidgetProps> = ({
       const volume = Math.floor(Math.random() * 10000) + 1000
 
       mockData.push({
-        timestamp: selectedTimeframe === 'daily' ? timestamp.toLocaleDateString() : timestamp.toLocaleTimeString(),
+        timestamp: selectedTimeframe === 'daily' ? timestamp.toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata' }) : formatTimestampForDisplay(timestamp.toISOString()),
         open: Math.round(open * 100) / 100,
         high: Math.round(high * 100) / 100,
         low: Math.round(low * 100) / 100,
@@ -100,13 +109,17 @@ export const AdvancedChartWidget: React.FC<AdvancedChartWidgetProps> = ({
   const latestData = chartData[chartData.length - 1]
   const previousData = chartData[chartData.length - 2]
 
+  // Calculate price change from chart data, or use current tick if no chart data
   const priceChange = latestData && previousData
     ? latestData.close - previousData.close
     : 0
 
-  const priceChangePercent = previousData
+  const priceChangePercent = previousData && previousData.close !== 0
     ? (priceChange / previousData.close) * 100
     : 0
+
+  // Get current price for display (prefer chart data over tick data for consistency)
+  const currentPrice = latestData?.close || currentTick?.last_price || 0
 
   return (
     <div className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-6">
@@ -135,10 +148,10 @@ export const AdvancedChartWidget: React.FC<AdvancedChartWidgetProps> = ({
           </select>
         </div>
         <div className="flex items-center space-x-4">
-          {latestData && (
+          {currentPrice > 0 && (
             <div className="text-right">
               <div className="text-lg font-bold text-gray-900 dark:text-white">
-                ₹{latestData.close.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
+                ₹{currentPrice.toLocaleString('en-IN', { minimumFractionDigits: 2 })}
               </div>
               <div className={`text-sm flex items-center ${priceChange >= 0 ? 'text-green-600' : 'text-red-600'}`}>
                 {priceChange >= 0 ? <TrendingUp className="w-4 h-4 mr-1" /> : <TrendingDown className="w-4 h-4 mr-1" />}

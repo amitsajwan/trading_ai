@@ -1,7 +1,10 @@
 """Market hours utility for Indian equity markets."""
 
-from datetime import datetime, time
+from datetime import datetime, time, timezone, timedelta
 from typing import Tuple
+
+# IST timezone
+IST = timezone(timedelta(hours=5, minutes=30))
 
 
 def is_market_open(now: datetime = None) -> bool:

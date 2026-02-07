@@ -67,6 +67,23 @@ class VolumeAgent(Agent):
             # Calculate volume average (excluding current period)
             vol_avg = volumes[-self.config['volume_period']-1:-1].mean()
             current_volume = volumes[-1]
+            
+            # Avoid division by zero and handle NaN
+            vol_avg = 0 if pd.isna(vol_avg) else vol_avg
+            current_volume = 0 if pd.isna(current_volume) else current_volume
+            
+            if vol_avg == 0:
+                return AnalysisResult(
+                    decision="HOLD",
+                    confidence=0.0,
+                    details={
+                        "reason": "ZERO_VOLUME_AVG",
+                        "agent": self._agent_name,
+                        "current_volume": current_volume,
+                        "avg_volume": vol_avg
+                    }
+                )
+
             volume_spike = current_volume > (vol_avg * self.config['volume_spike_multiplier'])
 
             if not volume_spike:

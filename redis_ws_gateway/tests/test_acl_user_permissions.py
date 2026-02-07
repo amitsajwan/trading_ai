@@ -6,7 +6,7 @@ def test_user_can_subscribe_engine_channels():
     assert client.can_subscribe('engine:signal') is True
     assert client.can_subscribe('engine:signal:BANKNIFTY') is True
     assert client.can_subscribe('engine:decision:XYZ') is True
-    assert client.can_subscribe('indicators:BANKNIFTY') is True
+    assert client.can_subscribe('indicators:BANKNIFTY:INDEX') is True
 
 
 def test_user_cannot_subscribe_admin_only():

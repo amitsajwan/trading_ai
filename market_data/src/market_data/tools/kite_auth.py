@@ -178,7 +178,8 @@ def login_via_browser(api_key: Optional[str] = None,
                       api_secret: Optional[str] = None,
                       verify_mode: bool = False,
                       force_mode: bool = False,
-                      timeout: int = 120):
+                      timeout: int = 120,
+                      docker_mode: bool = False):
     """Perform the browser-based Kite Connect login flow.
 
     Returns a tuple: (credentials_dict | None, exit_code)
@@ -258,14 +259,30 @@ def login_via_browser(api_key: Optional[str] = None,
     print(f"   2. Edit your app (API Key: {api_key[:8]}...)")
     print(f"   3. Add/verify redirect URI: {redirect_uri}")
     print(f"   4. Also try: http://127.0.0.1:{server_port}/ (without /login)")
-    print("\nOpening browser... please log in and authorize the app")
+    print("\nPlease open the following URL in your browser and log in:")
+    print(f"   {login_url}")
     print(f"   (You have {timeout} seconds to complete the login)\n")
 
+    # Try to open browser automatically, even in Docker
+    # If it fails, fall back to manual instructions
     try:
         webbrowser.open(login_url)
+        print("Browser opened automatically. Please complete the login.")
     except Exception as e:
         print(f"Could not open browser automatically: {e}")
-        print("   Please open the URL manually in your browser")
+        print("Please open the following URL manually in your browser:")
+        print(f"   {login_url}")
+
+    if docker_mode:
+        print("\n" + "="*80)
+        print("DOCKER MODE: Authentication URL")
+        print("="*80)
+        print("Copy and open this URL in your browser:")
+        print(f"   {login_url}")
+        print("2. Log in with your Zerodha credentials")
+        print("3. Complete the authentication flow")
+        print("4. The system will automatically detect when authentication is complete")
+        print("="*80 + "\n")
 
     # Wait for request_token with timeout
     print("Waiting for authentication...")
@@ -340,8 +357,9 @@ def main():
     # CLI wrapper preserves original behavior (exit codes)
     verify_mode = "--verify" in sys.argv
     force_mode = "--force" in sys.argv
+    docker_mode = "--docker" in sys.argv or os.environ.get('DOCKER_CONTAINER') == 'true'
 
-    creds, code = login_via_browser(verify_mode=verify_mode, force_mode=force_mode)
+    creds, code = login_via_browser(verify_mode=verify_mode, force_mode=force_mode, docker_mode=docker_mode)
     return code
 
 

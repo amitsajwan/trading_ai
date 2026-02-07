@@ -9,6 +9,9 @@ logger = logging.getLogger(__name__)
 
 
 class PortfolioManagerAgent(Agent):
+    def __init__(self):
+        self._agent_name = "PortfolioManagerAgent"
+
     async def analyze(self, context: Dict[str, Any]) -> AnalysisResult:
         # context expected to include agent outputs: technical, sentiment, macro, fundamental
         technical = context.get("technical", {})

@@ -290,48 +290,48 @@ class EnhancedOptionsChainAdapter(ZerodhaOptionsChainAdapter):
         return option_data
     
     def _organize_by_strikes(
-        self, 
-        options_df: pd.DataFrame, 
-        price_data: Dict[str, Dict]
+        self,
+        options_df: pd.DataFrame,
+        price_data: Dict[str, Dict],
+        underlying_price: Optional[float] = None
     ) -> List[Dict]:
         """Organize options data by strike prices with enhanced fields.
         
         Overrides parent method to add IV and Greeks.
         """
         strikes_data = []
-        underlying_price = None
-        
-        # Try to get underlying price from futures or spot
-        try:
-            if self.kite:
-                # Try to get futures price first
-                month_names = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN',
-                              'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC']
-                now = datetime.now()
-                month_str = month_names[now.month - 1]
-                year_str = str(now.year)[-2:]
-                fut_symbol = f"{self.instrument_symbol}{year_str}{month_str}FUT"
-                
-                try:
-                    fut_quote = self.kite.quote([f"NFO:{fut_symbol}"])
-                    if fut_quote:
-                        fut_data = list(fut_quote.values())[0]
-                        if hasattr(fut_data, 'to_dict'):
-                            fut_data = fut_data.to_dict()
-                        underlying_price = fut_data.get('last_price') or fut_data.get('ohlc', {}).get('close')
-                except Exception:
-                    # Try underlying spot
+        # If underlying price provided by caller, use it. Otherwise, attempt to fetch from kite.
+        if underlying_price is None:
+            try:
+                if self.kite:
+                    # Try to get futures price first
+                    month_names = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN',
+                                  'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC']
+                    now = datetime.now()
+                    month_str = month_names[now.month - 1]
+                    year_str = str(now.year)[-2:]
+                    fut_symbol = f"{self.instrument_symbol}{year_str}{month_str}FUT"
+                    
                     try:
-                        spot_quote = self.kite.quote([f"NSE:{self.instrument_symbol}"])
-                        if spot_quote:
-                            spot_data = list(spot_quote.values())[0]
-                            if hasattr(spot_data, 'to_dict'):
-                                spot_data = spot_data.to_dict()
-                            underlying_price = spot_data.get('last_price') or spot_data.get('ohlc', {}).get('close')
+                        fut_quote = self.kite.quote([f"NFO:{fut_symbol}"])
+                        if fut_quote:
+                            fut_data = list(fut_quote.values())[0]
+                            if hasattr(fut_data, 'to_dict'):
+                                fut_data = fut_data.to_dict()
+                            underlying_price = fut_data.get('last_price') or fut_data.get('ohlc', {}).get('close')
                     except Exception:
-                        pass
-        except Exception:
-            pass
+                        # Try underlying spot
+                        try:
+                            spot_quote = self.kite.quote([f"NSE:{self.instrument_symbol}"])
+                            if spot_quote:
+                                spot_data = list(spot_quote.values())[0]
+                                if hasattr(spot_data, 'to_dict'):
+                                    spot_data = spot_data.to_dict()
+                                underlying_price = spot_data.get('last_price') or spot_data.get('ohlc', {}).get('close')
+                        except Exception:
+                            pass
+            except Exception:
+                pass
         
         # Group by strike
         for strike in sorted(options_df['strike'].unique()):

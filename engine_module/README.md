@@ -1,10 +1,12 @@
-# engine_module — README consolidated
+# ENGINE_MODULE - Trading Decision Engine
 
-**Docs consolidated:** 2026-01-09 — this file now points to a concise entry point and archived deep dives.
+**Status: ✅ PRODUCTION READY** - Complete multi-agent trading decision system with LLM integration and comprehensive data providers.
 
-See `README_CONCISE.md` for a short, actionable overview and `docs/archived/` for preserved long-form design notes.
+A comprehensive trading decision engine orchestrating market data analysis, multi-agent consensus, and LLM-powered final decisions for automated trading.
 
-## Quick access
+**📚 Documentation:** See [docs/index.md](docs/index.md) for complete documentation index.
+
+## 🎯 Purpose & Architecture
 
 The engine module orchestrates the complete trading decision process:
 
@@ -14,20 +16,170 @@ Market Data → Agent Analysis → Signal Aggregation → LLM Decision → Trade
 
 ### **Core Components:**
 - **TradingOrchestrator**: Coordinates the entire analysis pipeline
-- **9 Specialized Agents**: Technical, sentiment, macro, risk, execution, etc.
+- **Multi-Agent Suite**: Technical, sentiment, macro, research, risk, execution, portfolio, options agents
 - **Signal Aggregation**: Combines agent opinions into consensus
 - **LLM Integration**: Final decision making with reasoning
 - **15-Minute Cycles**: Real-time analysis cadence
-- **Direct Redis Access**: Reads market data and technical indicators directly from Redis for maximum performance
+- **Direct Redis Access**: Reads market data and technical indicators directly from Redis
 
-### **Data Access Options:**
-- **Redis Direct** (Recommended): Reads OHLC data and technical indicators directly from Redis for maximum performance
-- **API Fallback**: Uses market_data and news_module APIs for compatibility
-- **API Fallback**: Uses market_data and news_module APIs for compatibility
+## 🚀 Quick Start
+
+### Prerequisites
+- Python 3.8+
+- Redis (running)
+- MongoDB (for signal storage)
+- LLM API keys (Groq/Cohere/AI21)
+
+### Installation
+```bash
+# Install dependencies
+pip install -r requirements.txt
+```
+
+### Basic Usage
+```python
+from engine_module.api import build_orchestrator
+
+# Create orchestrator
+orchestrator = build_orchestrator()
+
+# Run analysis cycle
+decision = await orchestrator.run_analysis_cycle()
+print(f"Decision: {decision.action}, Confidence: {decision.confidence}")
+```
+
+## 🆕 Recent Updates (January 2026)
+
+### ✅ Data Provider Fixes
+- **Fixed EnhancedTradingOrchestrator**: Added OHLC data fetching for TechnicalAgent and VolumeAgent
+- **Added Missing Data Providers**: News, Fundamental, and Macro data providers for complete agent support
+- **Integrated OptionsAnalysisAgent**: Ensured proper options data flow
+
+### ✅ Documentation Improvements
+- **Created DATA_REFERENCE.md**: Comprehensive data structures and API reference
+- **Organized Documentation**: Clean index structure in [docs/index.md](docs/index.md)
+- **Added Data Flow Diagrams**: Complete system architecture documentation
+
+### ✅ Agent Compatibility
+All agents now have proper data access:
+- ✅ **TechnicalAgent**: OHLC data from market_data_provider
+- ✅ **VolumeAgent**: OHLC data from market_data_provider
+- ✅ **SentimentAgent**: News data from news_data_provider
+- ✅ **FundamentalAgent**: Fundamental data from fundamental_data_provider
+- ✅ **MacroAgent**: Macro data from macro_data_provider
+- ✅ **OptionsAnalysisAgent**: Options data from options_data_provider
+
+## 🔧 API Reference
+
+### Factory Functions
+```python
+from engine_module.api import (
+    build_orchestrator,       # Main orchestrator factory
+    create_agent_suite,       # Agent collection creation
+    get_analysis_status      # Analysis cycle status
+)
+```
+
+### Key Classes
+```python
+class TradingOrchestrator:
+    """Coordinates the entire trading analysis pipeline."""
+
+    async def run_analysis_cycle(self) -> Decision:
+        """Execute complete analysis cycle."""
+
+    async def get_agent_signals(self) -> Dict[str, Signal]:
+        """Get signals from all agents."""
+```
+
+### Endpoints
+- `GET /api/v1/analysis/status` - Current analysis status
+- `POST /api/v1/analysis/run` - Trigger analysis cycle
+- `GET /api/v1/agents/{agent_id}/signal` - Individual agent signals
+
+## 🧪 Testing
+
+### Run Tests
+```bash
+# From engine_module directory
+cd engine_module
+pytest tests/
+
+# Run agent tests
+pytest tests/test_agents.py
+
+# With coverage
+pytest --cov=src --cov-report=html
+```
+
+### Test Structure
+- `tests/test_orchestrator.py` - Orchestrator tests
+- `tests/test_agents.py` - Individual agent tests
+- `tests/test_integration.py` - Full pipeline integration tests
+
+## 🏗️ Development
+
+### Project Structure
+```
+engine_module/
+├── src/
+│   ├── __init__.py
+│   ├── orchestrator.py      # TradingOrchestrator
+│   ├── agents/             # Agent implementations
+│   └── signals.py          # Signal processing
+├── tests/
+│   ├── __init__.py
+│   ├── test_orchestrator.py
+│   └── test_agents.py
+├── contracts/             # Agent protocols
+├── tools/                 # Analysis utilities
+└── README.md             # This file
+```
+
+### Adding New Agents
+1. Define agent protocol in `contracts/`
+2. Implement agent in `src/agents/`
+3. Add to orchestrator agent suite
+4. Add tests in `tests/`
+5. Update this README
+
+## 📊 Dependencies
+
+### Internal Dependencies
+- `core_kernel` - Service container
+- `market_data` - Market data access
+- `genai_module` - LLM integration
+- `news_module` - News sentiment
+
+### External Dependencies
+- `redis` - Redis client
+- `pymongo` - MongoDB driver
+- `httpx` - HTTP client for APIs
+
+## 🔍 Troubleshooting
+
+### Common Issues
+- **Redis connection failed**: Ensure Redis is running on port 6379
+- **LLM API errors**: Check API keys and rate limits
+- **Agent timeouts**: Review agent implementation for blocking calls
+
+### Debug Mode
+```bash
+# Enable debug logging
+export LOG_LEVEL=DEBUG
+python -c "from engine_module.api import build_orchestrator; print('Engine ready')"
+```
+
+## 🤝 Contributing
+
+1. Follow the existing code style
+2. Add tests for new agents
+3. Update agent documentation
+4. Submit PR with clear description
 
 ## 🤖 Agent Ecosystem
 
-### **Analysis Agents (8 Agents)**
+### **Analysis Agents (Core Set)**
 
 #### **1. TechnicalAgent** - Price Action & Indicators
 ```python
@@ -400,7 +552,7 @@ print(f"Trend: {result.details.get('trend_direction')}")
 
 ## 🧪 Testing & Validation
 
-### **Test Coverage: 22 Tests**
+### **Test Coverage: 22+ Tests**
 ```bash
 # Run all engine module tests
 pytest engine_module/tests/ -v
@@ -523,7 +675,7 @@ await ui_provider.update_latest_decision(result)
 ## 🚦 Status & Roadmap
 
 ### **✅ Current Implementation**
-- **9 Agents**: Fully implemented with comprehensive logic
+- **Rich Agent Ecosystem**: 20+ agents across technical, sentiment, macro, research, options, portfolio, risk, and execution (see `engine_module/AGENTS.md`)
 - **Orchestrator**: Complete 15-minute analysis pipeline
 - **LLM Integration**: Sophisticated prompt engineering
 - **Signal Aggregation**: Intelligent consensus algorithms
@@ -553,7 +705,7 @@ engine_module/
 │   ├── contracts.py          # AnalysisResult, Agent, Orchestrator
 │   ├── orchestrator_stub.py  # TradingOrchestrator implementation
 │   ├── api.py               # Factory functions
-│   ├── agents/              # 9 agent implementations
+│   ├── agents/              # Agent implementations (20+ concrete agents; see AGENTS.md)
 │   │   ├── technical_agent.py
 │   │   ├── sentiment_agent.py
 │   │   ├── macro_agent.py

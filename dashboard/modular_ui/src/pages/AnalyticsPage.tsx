@@ -11,13 +11,34 @@ import { TrendingUp, TrendingDown, DollarSign, BarChart3, PieChart as PieChartIc
 
 export const AnalyticsPage: React.FC = () => {
   const dispatch = useDispatch()
-  const { performance: performanceMetrics, risk: riskMetrics, llm: llmMetrics, loading } = useSelector((state: RootState) => state.analytics)
+  const { performance: performanceMetrics, risk: riskMetrics, llm: llmMetrics, loading, error } = useSelector((state: RootState) => state.analytics)
+  const [forceShowContent, setForceShowContent] = React.useState(false)
 
   useEffect(() => {
+    console.log('📊 AnalyticsPage: Fetching analytics data...')
     dispatch(fetchPerformanceMetrics())
     dispatch(fetchRiskMetrics())
     dispatch(fetchLLMMetrics())
   }, [dispatch])
+
+  // Debug logging
+  useEffect(() => {
+    console.log('📊 AnalyticsPage state:', { loading, error, hasPerformance: !!performanceMetrics, hasRisk: !!riskMetrics, hasLLM: !!llmMetrics })
+  }, [loading, error, performanceMetrics, riskMetrics, llmMetrics])
+
+  // Force show content after 15 seconds to prevent infinite loading
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (loading) {
+        console.log('📊 AnalyticsPage: Forcing content display after timeout')
+        setForceShowContent(true)
+      }
+    }, 15000)
+    return () => clearTimeout(timer)
+  }, [loading])
+
+  // Show content if we have data or if loading has timed out
+  const shouldShowContent = !loading || forceShowContent || (performanceMetrics && riskMetrics)
 
   const performanceData = [
     { date: '2024-01-01', pnl: 1200, trades: 45 },
@@ -40,10 +61,14 @@ export const AnalyticsPage: React.FC = () => {
     { strategy: 'Scalping', winRate: 78, totalTrades: 150 },
   ]
 
-  if (loading) {
+  if (!shouldShowContent) {
     return (
       <div className="flex items-center justify-center h-64">
         <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500"></div>
+        <p className="mt-4 text-gray-600 dark:text-gray-400">Loading analytics data...</p>
+        {forceShowContent && (
+          <p className="mt-2 text-sm text-amber-600 dark:text-amber-400">Loading timed out - showing available data</p>
+        )}
       </div>
     )
   }
@@ -78,7 +103,7 @@ export const AnalyticsPage: React.FC = () => {
             <div className="ml-4">
               <p className="text-sm font-medium text-gray-600 dark:text-gray-400">Total P&L</p>
               <p className="text-2xl font-bold text-green-600 dark:text-green-400">
-                +₹{performanceMetrics?.total_pnl?.toLocaleString() || '8,700'}
+                ₹{(performanceMetrics?.total_pnl || 0).toLocaleString('en-IN', { minimumFractionDigits: 2 })}
               </p>
             </div>
           </div>
@@ -92,7 +117,7 @@ export const AnalyticsPage: React.FC = () => {
             <div className="ml-4">
               <p className="text-sm font-medium text-gray-600 dark:text-gray-400">Win Rate</p>
               <p className="text-2xl font-bold text-blue-600 dark:text-blue-400">
-                {performanceMetrics?.win_rate ?? '72.5'}%
+                {((performanceMetrics?.win_rate || 0) * 100).toFixed(1)}%
               </p>
             </div>
           </div>

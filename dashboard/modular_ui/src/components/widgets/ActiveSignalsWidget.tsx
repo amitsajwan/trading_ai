@@ -144,7 +144,7 @@ export const ActiveSignalsWidget: React.FC = () => {
                       </span>
                     )}
 
-                    {signal.entry_price !== undefined && (
+                    {signal.entry_price !== undefined && signal.entry_price !== null && (
                       <span className="mr-3">Entry: ₹{signal.entry_price.toLocaleString('en-IN', { minimumFractionDigits: 2 })} <small className="text-xs text-gray-400">({signal.entry_price_source || (signal.metadata?.entry_price_source) || 'unknown'})</small></span>
                     )}
 
@@ -161,13 +161,77 @@ export const ActiveSignalsWidget: React.FC = () => {
 
                   {/* Parsed conditions */}
                   {signal.parsed_conditions && signal.parsed_conditions.length > 0 && (
-                    <div className="mt-2 text-xs text-gray-600 dark:text-gray-400">
-                      <div className="font-medium text-xs mb-1">Conditions:</div>
-                      <ul className="list-disc pl-4">
-                        {signal.parsed_conditions.map((c, idx) => (
-                          <li key={idx}>{c.indicator} {c.operator} {c.threshold}</li>
-                        ))}
-                      </ul>
+                    <div className="mt-2 space-y-1">
+                      <div className="font-medium text-xs text-gray-900 dark:text-white mb-2">Entry Conditions:</div>
+                      {signal.parsed_conditions.map((condition: any, idx: number) => {
+                        const { indicator, operator, threshold, current_value } = condition
+                        let status = 'waiting'
+                        let statusText = 'Waiting'
+                        let statusColor = 'text-yellow-600'
+
+                        if (current_value !== undefined) {
+                          let met = false
+                          switch (operator) {
+                            case '>':
+                              met = current_value > threshold
+                              break
+                            case '<':
+                              met = current_value < threshold
+                              break
+                            case '>=':
+                              met = current_value >= threshold
+                              break
+                            case '<=':
+                              met = current_value <= threshold
+                              break
+                            case '==':
+                            case 'EQUALS':
+                              met = current_value === threshold
+                              break
+                            case 'BETWEEN':
+                              met = Array.isArray(threshold) && current_value >= threshold[0] && current_value <= threshold[1]
+                              break
+                            default:
+                              met = false
+                          }
+
+                          if (met) {
+                            status = 'met'
+                            statusText = '✓ Met'
+                            statusColor = 'text-green-600'
+                          } else {
+                            status = 'not_met'
+                            statusText = '✗ Not met'
+                            statusColor = 'text-red-600'
+                          }
+                        }
+
+                        return (
+                          <div key={idx} className="text-xs bg-gray-50 dark:bg-gray-900 px-2 py-1 rounded border">
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center space-x-2">
+                                <span className="font-medium text-gray-900 dark:text-white">
+                                  {indicator.replace('_', ' ').toUpperCase()}
+                                </span>
+                                <span className={`font-semibold ${statusColor}`}>
+                                  {statusText}
+                                </span>
+                              </div>
+                              <span className="text-gray-500">
+                                {operator === 'BETWEEN' && Array.isArray(threshold)
+                                  ? `${threshold[0]} - ${threshold[1]}`
+                                  : `${operator} ${threshold}`
+                                }
+                              </span>
+                            </div>
+                            {current_value !== undefined && (
+                              <div className="text-gray-700 dark:text-gray-300 font-mono mt-1">
+                                Current: {typeof current_value === 'number' ? current_value.toFixed(2) : current_value}
+                              </div>
+                            )}
+                          </div>
+                        )
+                      })}
                     </div>
                   )}
 
@@ -180,7 +244,7 @@ export const ActiveSignalsWidget: React.FC = () => {
                     )}
                     {signal.timestamp && (
                       <span>
-                        {new Date(signal.timestamp).toLocaleTimeString()}
+                        {new Date(signal.timestamp).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' })}
                       </span>
                     )}
 

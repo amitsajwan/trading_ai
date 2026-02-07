@@ -805,6 +805,10 @@
                             <span>Token Expiry:</span>
                             <span class="value" id="auth-token-expiry">N/A</span>
                         </div>
+                        <div class="metric">
+                            <span>Last Updated:</span>
+                            <span class="value" id="auth-status-timestamp">Never</span>
+                        </div>
                     </div>
                     
                     <div style="display: flex; gap: 10px; margin-bottom: 15px;">
@@ -3579,6 +3583,9 @@
             loadMarketData();
             loadTechnicalData();
 
+            // Initialize WebSocket connection for real-time updates
+            initializeWebSocket();
+
             // Set up periodic updates every 30 seconds
             setInterval(() => {
                 loadMarketData();
@@ -3589,6 +3596,48 @@
                 updateDataFreshness();
             }, 5000);
         });
+
+        // WebSocket connection for real-time updates
+        let websocket = null;
+
+        function initializeWebSocket() {
+            try {
+                // Connect to WebSocket gateway
+                websocket = new WebSocket('ws://localhost:8003/ws');
+
+                websocket.onopen = function(event) {
+                    console.log('WebSocket connected');
+                    // Subscribe to auth status updates
+                    websocket.send(JSON.stringify({
+                        type: 'subscribe',
+                        channel: 'auth:status'
+                    }));
+                };
+
+                websocket.onmessage = function(event) {
+                    try {
+                        const data = JSON.parse(event.data);
+                        if (data.channel === 'auth:status' && data.data) {
+                            updateAuthStatus(data.data);
+                        }
+                    } catch (error) {
+                        console.error('Error parsing WebSocket message:', error);
+                    }
+                };
+
+                websocket.onclose = function(event) {
+                    console.log('WebSocket disconnected, reconnecting in 5 seconds...');
+                    setTimeout(initializeWebSocket, 5000);
+                };
+
+                websocket.onerror = function(error) {
+                    console.error('WebSocket error:', error);
+                };
+
+            } catch (error) {
+                console.error('Failed to initialize WebSocket:', error);
+            }
+        }
     </script>
     <script>
         const SERVER_PAPER_CONFIG = {{ paper_trading | tojson }};

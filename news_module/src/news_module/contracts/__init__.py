@@ -117,6 +117,8 @@ class NewsSource:
     update_interval_minutes: int = 15
     enabled: bool = True
     categories: List[str] = None
+    priority: int = 2  # 1=high, 2=medium, 3=low (for fallback ordering)
+    retry_count: int = 3  # Number of retries for failed requests
 
     def __post_init__(self):
         if self.categories is None:

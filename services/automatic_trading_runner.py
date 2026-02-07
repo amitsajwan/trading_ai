@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import os
 
-from automatic_trading_service import AutomaticTradingService
+from services.automatic_trading_service import AutomaticTradingService
 
 
 async def main() -> None:

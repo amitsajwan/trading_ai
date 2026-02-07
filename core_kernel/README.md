@@ -18,36 +18,128 @@ Service Registration → Dependency Resolution → Lifecycle Management → Comp
 - **LifecycleManager**: Service initialization and cleanup
 - **DependencyResolver**: Automatic dependency injection resolution
 
-## 🏗️ Service Container Architecture
+## 🚀 Quick Start
 
-### **ServiceContainer** - Dependency Registry
+### Prerequisites
+- Python 3.8+
+- MongoDB (for persistence features)
 
+### Installation
+```bash
+# Install dependencies
+pip install -r requirements.txt
+```
+
+### Basic Usage
+```python
+from core_kernel.api import build_service_container
+
+# Create service container
+container = build_service_container()
+
+# Register a service
+container.register('database', lambda: create_database_connection())
+
+# Resolve dependencies
+db = container.resolve('database')
+```
+
+## 🔧 API Reference
+
+### Factory Functions
+```python
+from core_kernel.api import (
+    build_service_container,    # Main container factory
+    create_component_factory,   # Component creation
+    get_service_status         # Service health check
+)
+```
+
+### Key Classes
 ```python
 class ServiceContainer:
-    def __init__(self):
-        self._services = {}  # Service registry
-        self._singletons = {}  # Cached singleton instances
-        self._factories = {}   # Factory functions
+    """Central registry for services and dependencies."""
 
     def register(self, name: str, factory: Callable, singleton: bool = True):
-        """Register a service factory"""
-        self._factories[name] = factory
-        if singleton:
-            self._singletons[name] = None  # Lazy initialization
+        """Register a service factory."""
 
     def resolve(self, name: str):
-        """Resolve service by name with dependency injection"""
-        if name not in self._factories:
-            raise ValueError(f"Service '{name}' not registered")
+        """Resolve service by name with dependency injection."""
+```
 
-        if name in self._singletons and self._singletons[name] is not None:
-            return self._singletons[name]
+## 🧪 Testing
 
-        # Resolve dependencies and create instance
-        instance = self._resolve_dependencies(self._factories[name])
+### Run Tests
+```bash
+# From core_kernel directory
+cd core_kernel
+pytest tests/
 
-        if name in self._singletons:
-            self._singletons[name] = instance
+# Run specific test
+pytest tests/test_container.py::test_service_registration
+
+# With coverage
+pytest --cov=src --cov-report=html
+```
+
+### Test Structure
+- `tests/test_container.py` - Service container tests
+- `tests/test_lifecycle.py` - Lifecycle management tests
+- `tests/test_dependencies.py` - Dependency resolution tests
+
+## 🏗️ Development
+
+### Project Structure
+```
+core_kernel/
+├── src/
+│   ├── __init__.py
+│   ├── container.py         # ServiceContainer implementation
+│   └── lifecycle.py         # Lifecycle management
+├── tests/
+│   ├── __init__.py
+│   ├── test_container.py
+│   └── test_lifecycle.py
+├── contracts/               # Protocol definitions
+├── config/                  # Configuration management
+└── README.md               # This file
+```
+
+### Adding New Features
+1. Define contracts in `contracts/`
+2. Implement in `src/`
+3. Add tests in `tests/`
+4. Update this README
+
+## 📊 Dependencies
+
+### Internal Dependencies
+- None (foundation module)
+
+### External Dependencies
+- `pymongo` - MongoDB driver (for schema features)
+- `redis` - Redis client (for caching)
+
+## 🔍 Troubleshooting
+
+### Common Issues
+- **Service not found**: Ensure service is registered before resolving
+- **Circular dependencies**: Check dependency graph for cycles
+- **Singleton conflicts**: Verify singleton registration logic
+
+### Debug Mode
+```bash
+# Enable debug logging
+export LOG_LEVEL=DEBUG
+python -c "from core_kernel.api import build_service_container; print('Container ready')"
+```
+
+## 🤝 Contributing
+
+1. Follow the existing code style
+2. Add tests for new features
+3. Update documentation
+4. Submit PR with clear description
 
         return instance
 ```

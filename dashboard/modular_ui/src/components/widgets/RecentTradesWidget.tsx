@@ -1,10 +1,12 @@
 import React from 'react'
-import { useGetRecentTradesQuery } from '../../api/dashboardApi'
+import { useSelector } from 'react-redux'
+import { RootState } from '../../store'
+import { formatTimestampForDisplay } from '../../utils/dateUtils'
 
 export const RecentTradesWidget: React.FC = () => {
-  const { data = [], isLoading, isError, isFetching } = useGetRecentTradesQuery({ limit: 20 })
+  const { recentTrades, loading } = useSelector((state: RootState) => state.trading)
 
-  if (isLoading) {
+  if (loading.trades) {
     return (
       <section aria-labelledby="recent-trades-heading" className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-6">
         <h3 id="recent-trades-heading" className="text-lg font-semibold text-gray-900 dark:text-white">Recent Trades</h3>
@@ -16,27 +18,20 @@ export const RecentTradesWidget: React.FC = () => {
     )
   }
 
-  if (isError) {
-    return (
-      <section aria-labelledby="recent-trades-heading" className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-6">
-        <h3 id="recent-trades-heading" className="text-lg font-semibold text-gray-900 dark:text-white">Recent Trades</h3>
-        <div className="mt-4 text-sm text-gray-500">Unable to load recent trades</div>
-      </section>
-    )
-  }
+  const trades = recentTrades.slice(0, 20) // Show last 20 trades
 
   return (
     <section aria-labelledby="recent-trades-heading" className="bg-white dark:bg-gray-800 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 p-6">
       <div className="flex items-center justify-between">
         <h3 id="recent-trades-heading" className="text-lg font-semibold text-gray-900 dark:text-white">Recent Trades</h3>
-        {isFetching && <span className="text-xs text-gray-500">Refreshing…</span>}
+        <span className="text-xs text-gray-500">From Engine API</span>
       </div>
 
-      {data.length === 0 ? (
-        <div className="mt-4 text-sm text-gray-500">No trades yet</div>
+      {trades.length === 0 ? (
+        <div className="mt-4 text-sm text-gray-500">No trades executed yet</div>
       ) : (
         <ul className="mt-3 space-y-2 max-h-56 overflow-auto" aria-live="polite">
-          {data.map((t: any) => (
+          {trades.map((t: any) => (
             <li key={t.id} className="flex items-center justify-between p-2 rounded hover:bg-gray-50 dark:hover:bg-gray-700">
               <div>
                 <div className="text-sm font-medium text-gray-900 dark:text-white">{t.instrument}</div>
@@ -58,7 +53,7 @@ export const RecentTradesWidget: React.FC = () => {
         </ul>
       )}
 
-      <div className="mt-3 text-xs text-gray-500">Showing latest {data.length} trades</div>
+      <div className="mt-3 text-xs text-gray-500">Showing latest {trades.length} trades</div>
     </section>
   )
 }

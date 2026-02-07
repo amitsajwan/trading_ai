@@ -1,5 +1,5 @@
 from typing import Any, Dict, List, Optional
-from schemas import Quote
+from .schemas import Quote
 
 class ProviderBase:
     """Abstract provider interface for broker/market-data providers.

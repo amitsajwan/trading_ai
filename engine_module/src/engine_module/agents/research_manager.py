@@ -11,6 +11,7 @@ class ResearchManager(Agent):
     """Manages research debate between bull and bear researchers."""
 
     def __init__(self, llm_client=None):
+        self._agent_name = "ResearchManager"
         self.llm_client = llm_client  # For debate synthesis
 
     async def analyze(self, context: Dict[str, Any]) -> AnalysisResult:
@@ -26,6 +27,21 @@ class ResearchManager(Agent):
             # Synthesize final research plan
             final_decision = self._synthesize_research(debate_result, bull_result, bear_result)
 
+            # Generate comprehensive reasoning summary
+            reasoning_parts = []
+
+            if bull_result and bear_result:
+                bull_conf = bull_result.confidence
+                bear_conf = bear_result.confidence
+                winner = debate_result.get("winner", "neutral")
+
+                reasoning_parts.append(f"Research debate analysis: Bull perspective ({bull_conf:.1f}) vs Bear perspective ({bear_conf:.1f}).")
+                reasoning_parts.append(f"Debate outcome: {winner} perspective prevails with summary '{debate_result.get('summary', 'N/A')}'.")
+                reasoning_parts.append(f"Final recommendation: {final_decision['decision']} with {final_decision['confidence']:.1f} confidence.")
+                reasoning_parts.append(f"Strategic rationale: {final_decision['plan']}")
+
+            reasoning = " ".join(reasoning_parts)
+
             return AnalysisResult(
                 decision=final_decision["decision"],
                 confidence=final_decision["confidence"],
@@ -33,7 +49,9 @@ class ResearchManager(Agent):
                     "bull_thesis": bull_result.details if bull_result else {},
                     "bear_thesis": bear_result.details if bear_result else {},
                     "debate_summary": debate_result,
-                    "research_plan": final_decision["plan"]
+                    "research_plan": final_decision["plan"],
+                    "reasoning": reasoning,
+                    "analysis_summary": f"Research analysis shows {final_decision['decision'].lower()} opportunity with {final_decision['confidence']:.1f} confidence from bull/bear debate."
                 }
             )
 

@@ -3,6 +3,7 @@ import { useDispatch, useSelector } from 'react-redux'
 import { Activity, AlertCircle, CheckCircle2 } from 'lucide-react'
 import { RootState } from '../store'
 import { fetchMarketOverview, clearError } from '../store/slices/marketDataSlice'
+import { formatTimestampForDisplay } from '../utils/dateUtils'
 // Selectively enabling components - only WebSocket-based ones
 import { LiveTickDataWidgetV2 } from '../components/widgets/market/LiveTickDataWidgetV2'
 // ENABLED: Options Chain widget (WebSocket-based)
@@ -21,9 +22,9 @@ export const MarketDataPage: React.FC = () => {
   const [selectedInstrument, setSelectedInstrument] = useState<string>('BANKNIFTY')
 
   useEffect(() => {
-    // DISABLED: No backend API calls to prevent errors
-    // dispatch(fetchMarketOverview() as any)
-  }, [dispatch])
+    // ENABLED: Fetch market overview data for selected instrument
+    dispatch(fetchMarketOverview(selectedInstrument) as any)
+  }, [dispatch, selectedInstrument])
 
   useEffect(() => {
     // Clear errors after 5 seconds
@@ -135,7 +136,7 @@ export const MarketDataPage: React.FC = () => {
           </div>
           {lastUpdated && (
             <p className="text-xs text-gray-500 dark:text-gray-400 mt-3 text-right">
-              Last updated: {new Date(lastUpdated).toLocaleTimeString()}
+              Last updated: {formatTimestampForDisplay(lastUpdated)}
             </p>
           )}
         </div>

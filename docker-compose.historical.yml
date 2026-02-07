@@ -1,0 +1,40 @@
+# Docker Compose override for historical data loading
+# Use with: python mode_manager.py --mode historical --date 2026-01-28 --start
+# Or: docker-compose -f docker-compose.yml -f docker-compose.historical.yml up -d
+#
+# Parameterized - date comes from .mode_config.json or environment variable
+
+services:
+  historical-replay-service:
+    environment:
+      # Read from mode config or use default
+      TRADING_MODE: historical
+      # These will be overridden by environment at runtime
+      HISTORICAL_DATE: ${HISTORICAL_DATE:-2026-01-28}
+      HISTORICAL_INTERVAL: minute
+      HISTORICAL_SPEED: ${HISTORICAL_SPEED:-0.0}  # 0.0 = instant, 1.0 = real-time, 10.0 = 10x speed
+      USE_SPOT_VOLUME: ${USE_SPOT_VOLUME:-true}  # Fetch volume from spot index if futures has none
+
+  market-data-api:
+    environment:
+      TRADING_MODE: historical
+      HISTORICAL_MODE: "true"
+      HISTORICAL_DATE: ${HISTORICAL_DATE:-2026-01-28}
+
+  ltp-collector-banknifty:
+    environment:
+      TRADING_MODE: historical
+      HISTORICAL_MODE: "true"
+      HISTORICAL_DATE: ${HISTORICAL_DATE:-2026-01-28}
+
+  ltp-collector-nifty:
+    environment:
+      TRADING_MODE: historical
+      HISTORICAL_MODE: "true"
+      HISTORICAL_DATE: ${HISTORICAL_DATE:-2026-01-28}
+
+  websocket-tick-collector-banknifty:
+    environment:
+      TRADING_MODE: historical
+      HISTORICAL_MODE: "true"
+      HISTORICAL_DATE: ${HISTORICAL_DATE:-2026-01-28}

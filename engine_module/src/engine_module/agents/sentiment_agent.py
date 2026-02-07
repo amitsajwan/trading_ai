@@ -5,6 +5,7 @@ exposes an async `analyze(context)` method returning `AnalysisResult`.
 """
 
 import logging
+from datetime import datetime
 from typing import Dict, Any
 
 from engine_module.contracts import Agent, AnalysisResult
@@ -34,9 +35,66 @@ class SentimentAgent(Agent):
             "status": "INSUFFICIENT_DATA"
         }
 
+        # Check data availability and freshness
+        current_time = context.get("timestamp", datetime.now())
         if not latest_news:
-            details = {**default_analysis, "note": "No recent news"}
-            return AnalysisResult(decision="HOLD", confidence=details["confidence_score"], details=details)
+            details = {
+                "retail_sentiment": 0.0,
+                "institutional_sentiment": 0.0,
+                "sentiment_divergence": "UNKNOWN",
+                "options_flow_signal": "UNKNOWN",
+                "fear_greed_index": 50.0,
+                "confidence_score": 0.0,
+                "note": "NO_NEWS_DATA_AVAILABLE",
+                "data_available": False,
+                "missing_data": ["latest_news"],
+                "data_freshness": "UNKNOWN"
+            }
+            return AnalysisResult(
+                decision="EXCLUDED",
+                confidence=0.0,
+                details=details,
+                excluded=True,
+                exclusion_reason="No news data available for sentiment analysis"
+            )
+
+        # Check data freshness - news should be from last 24 hours
+        news_timestamps = []
+        for item in latest_news:
+            if isinstance(item, dict) and 'published_at' in item:
+                try:
+                    # Try to parse timestamp
+                    if isinstance(item['published_at'], str):
+                        # Assume ISO format or similar
+                        from dateutil import parser
+                        news_time = parser.parse(item['published_at'])
+                        news_timestamps.append(news_time)
+                except:
+                    pass
+
+        if news_timestamps:
+            latest_news_time = max(news_timestamps)
+            time_diff = (current_time - latest_news_time).total_seconds() / 3600  # hours
+            if time_diff > 24:
+                details = {
+                    "retail_sentiment": 0.0,
+                    "institutional_sentiment": 0.0,
+                    "sentiment_divergence": "UNKNOWN",
+                    "options_flow_signal": "UNKNOWN",
+                    "fear_greed_index": 50.0,
+                    "confidence_score": 0.0,
+                    "note": f"NEWS_DATA_STALE_{time_diff:.1f}H_OLD",
+                    "data_available": False,
+                    "data_freshness": f"STALE_{time_diff:.1f}H",
+                    "latest_news_time": latest_news_time.isoformat()
+                }
+                return AnalysisResult(
+                    decision="EXCLUDED",
+                    confidence=0.0,
+                    details=details,
+                    excluded=True,
+                    exclusion_reason=f"News data is {time_diff:.1f} hours old (stale)"
+                )
 
         # Build a simple prompt (not used by default); _call_llm_structured can be monkeypatched in tests
         news_headlines = "\n".join([f"- {item.get('title', '')}" for item in latest_news])
@@ -50,6 +108,19 @@ class SentimentAgent(Agent):
             retail_sent = aggregate_sentiment
             inst_sent = 0.0
             confidence = 0.3
+
+            # Create fallback reasoning even without LLM
+            reasoning_parts = [
+                "Sentiment analysis using fallback aggregation due to LLM service unavailability.",
+                f"News analysis: Sample headlines indicate {len(latest_news)} news items with aggregate sentiment {aggregate_sentiment:.2f}.",
+                f"Retail sentiment interpretation: {'Bullish' if retail_sent > 0.1 else 'Bearish' if retail_sent < -0.1 else 'Neutral'} market sentiment ({retail_sent:.2f}).",
+                "Institutional sentiment: Neutral position (0.0) - no strong directional bias detected.",
+                "Sentiment divergence: None - retail and institutional sentiment aligned.",
+                "Fear & Greed Index context: Neutral (50.0) indicating balanced market psychology.",
+                "Options flow: Neutral - no significant directional pressure from options trading.",
+                f"Decision rationale: HOLD recommended as market shows {confidence:.1f} confidence in neutral sentiment analysis."
+            ]
+
             analysis = {
                 "retail_sentiment": retail_sent,
                 "institutional_sentiment": inst_sent,
@@ -57,7 +128,11 @@ class SentimentAgent(Agent):
                 "options_flow_signal": "NEUTRAL",
                 "fear_greed_index": 50.0,
                 "confidence_score": confidence,
-                "status": "ACTIVE"
+                "status": "FALLBACK",
+                "reasoning": " ".join(reasoning_parts),
+                "analysis_summary": f"Sentiment analysis reveals neutral market mood with {confidence:.1f} confidence using fallback aggregation.",
+                "news_coverage": len(latest_news),
+                "market_psychology": f"Fear & Greed: 50.0, Retail: {retail_sent:.2f}, Institutional: {inst_sent:.2f}"
             }
 
         # Ensure numeric types
@@ -92,6 +167,68 @@ class SentimentAgent(Agent):
         else:
             decision = "HOLD"
 
+        # Generate rich natural language reasoning
+        reasoning_parts = []
+
+        # News analysis
+        if latest_news:
+            news_count = len(latest_news)
+            reasoning_parts.append(f"Analyzed {news_count} recent news items to gauge market sentiment.")
+            if news_count > 0:
+                # Sample some headlines for context
+                sample_headlines = [item.get('title', '') for item in latest_news[:3]]
+                reasoning_parts.append(f"Key headlines include: {', '.join(sample_headlines)}.")
+        else:
+            reasoning_parts.append("No recent news data available for sentiment analysis.")
+
+        # Sentiment interpretation
+        if retail_sent > 0.2:
+            reasoning_parts.append(f"Retail sentiment is strongly positive ({retail_sent:.2f}), indicating bullish enthusiasm from individual investors.")
+        elif retail_sent < -0.2:
+            reasoning_parts.append(f"Retail sentiment is strongly negative ({retail_sent:.2f}), suggesting widespread pessimism among individual traders.")
+        else:
+            reasoning_parts.append(f"Retail sentiment is neutral ({retail_sent:.2f}), showing balanced market participation.")
+
+        if abs(inst_sent) > 0.1:
+            reasoning_parts.append(f"Institutional sentiment shows {inst_sent:.2f} bias, indicating professional positioning.")
+        else:
+            reasoning_parts.append(f"Institutional sentiment remains neutral ({inst_sent:.2f}), suggesting professional caution.")
+
+        # Divergence analysis
+        if divergence == "BULLISH_DIVERGENCE":
+            reasoning_parts.append("Bullish divergence detected between retail and institutional sentiment, often signaling market bottoms.")
+        elif divergence == "BEARISH_DIVERGENCE":
+            reasoning_parts.append("Bearish divergence observed, with institutional caution contrasting retail optimism.")
+        else:
+            reasoning_parts.append("No significant sentiment divergence between retail and institutional participants.")
+
+        # Fear & Greed context
+        if fear_greed < 25:
+            reasoning_parts.append(f"Fear & Greed Index at {fear_greed:.0f} indicates extreme fear, which historically precedes market reversals.")
+        elif fear_greed > 75:
+            reasoning_parts.append(f"Fear & Greed Index at {fear_greed:.0f} shows extreme greed, potentially signaling market peaks.")
+        else:
+            reasoning_parts.append(f"Fear & Greed Index at {fear_greed:.0f} reflects balanced market psychology.")
+
+        # Options flow context
+        if options_flow == "BULLISH":
+            reasoning_parts.append("Options flow shows bullish positioning with call buying dominating.")
+        elif options_flow == "BEARISH":
+            reasoning_parts.append("Options flow indicates bearish positioning with put buying prevalent.")
+        else:
+            reasoning_parts.append("Options flow remains neutral with balanced call/put activity.")
+
+        # Decision rationale
+        if sentiment_bias == "BULLISH":
+            reasoning_parts.append(f"BUY signal generated from positive sentiment convergence with retail enthusiasm ({retail_sent:.2f}) and neutral institutional stance.")
+        elif sentiment_bias == "BEARISH":
+            reasoning_parts.append(f"SELL signal triggered by negative sentiment alignment with retail pessimism ({retail_sent:.2f}) and institutional caution.")
+        else:
+            reasoning_parts.append(f"HOLD recommended due to neutral sentiment landscape with balanced market psychology and no clear directional bias.")
+
+        # Market psychology context
+        reasoning_parts.append(f"Overall market psychology suggests {sentiment_bias.lower()} sentiment with {confidence:.1f} confidence in this assessment.")
+
         details = {
             "retail_sentiment": retail_sent,
             "institutional_sentiment": inst_sent,
@@ -101,7 +238,10 @@ class SentimentAgent(Agent):
             "confidence_score": confidence,
             "status": status,
             "sentiment_bias": sentiment_bias,
-            "note": "Analyzed via LLM" if status == "ACTIVE" else "Fallback"
+            "reasoning": " ".join(reasoning_parts),
+            "analysis_summary": f"Sentiment analysis reveals {sentiment_bias.lower()} market mood with {confidence:.1f} confidence based on news and social data.",
+            "news_coverage": len(latest_news),
+            "market_psychology": f"Fear & Greed: {fear_greed:.0f}, Retail: {retail_sent:.2f}, Institutional: {inst_sent:.2f}"
         }
 
         return AnalysisResult(decision=decision, confidence=confidence, details=details)

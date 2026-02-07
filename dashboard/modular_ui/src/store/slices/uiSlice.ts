@@ -32,6 +32,10 @@ interface UIState {
   sidebarCollapsed: boolean
   notifications: NotificationItem[]
   dashboardLayout: DashboardLayout
+  executionMode: {
+    mode: string
+    runId: string
+  }
   loading: {
     global: boolean
     sidebar: boolean
@@ -49,6 +53,10 @@ const initialState: UIState = {
   theme: 'auto',
   sidebarCollapsed: false,
   notifications: [],
+  executionMode: {
+    mode: 'LIVE',
+    runId: ''
+  },
   dashboardLayout: {
     widgets: [
       {
@@ -124,6 +132,10 @@ const uiSlice = createSlice({
       state.dashboardLayout.theme = action.payload
       localStorage.setItem('theme', action.payload)
     },
+    setExecutionMode: (state, action: PayloadAction<{ mode: string; runId: string }>) => {
+      state.executionMode.mode = action.payload.mode
+      state.executionMode.runId = action.payload.runId
+    },
     toggleSidebar: (state) => {
       state.sidebarCollapsed = !state.sidebarCollapsed
     },
@@ -196,6 +208,7 @@ const uiSlice = createSlice({
 
 export const {
   setTheme,
+  setExecutionMode,
   toggleSidebar,
   setSidebarCollapsed,
   addNotification,

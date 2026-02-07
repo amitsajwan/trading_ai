@@ -75,6 +75,9 @@ export interface AgentResponse {
     take_profit?: number
     [key: string]: any
   }
+  input_data?: {
+    [key: string]: any
+  }
   structured_report?: any
 }
 
@@ -178,7 +181,7 @@ export interface TradingSignal {
   confidence: number
   reasoning: string
   timestamp: string
-  status?: 'pending' | 'triggered' | 'executed' | 'expired' | 'cancelled'
+  status?: 'pending' | 'triggered' | 'executed' | 'expired' | 'cancelled' | 'monitoring'
   indicator?: string
   operator?: string
   threshold?: number
@@ -188,6 +191,15 @@ export interface TradingSignal {
   take_profit?: number
   strategy_type?: string
   expires_at?: string
+  execution_mode?: string
+  parsed_conditions?: Array<{
+    indicator: string
+    operator: string
+    threshold: number | number[]
+    source?: string
+    current_value?: number
+  }>
+  metadata?: any
 }
 
 interface TradingState {
@@ -264,7 +276,7 @@ export const fetchPortfolio = createAsyncThunk(
 export const fetchRecentTrades = createAsyncThunk(
   'trading/fetchRecentTrades',
   async (limit: number = 20) => {
-    const response = await axios.get('/api/engine/trades', { params: { limit } })
+    const response = await axios.get(`${ENGINE_BASE}/api/engine/trades`, { params: { limit } })
     return response.data
   }
 )
@@ -272,15 +284,118 @@ export const fetchRecentTrades = createAsyncThunk(
 export const fetchAgentStatuses = createAsyncThunk(
   'trading/fetchAgentStatuses',
   async () => {
-    const response = await axios.get('/api/engine/agents/status')
-    return response.data
+    const response = await axios.get(`${DASHBOARD_BASE}/api/agent-status`)
+    const data = response.data
+
+    // Transform the data to match the expected AgentStatus format
+    if (data.agents) {
+      return Object.values(data.agents).map((agent: any) => ({
+        name: agent.name,
+        status: agent.status,
+        last_update: agent.last_update,
+        signal: agent.signal,
+        confidence: agent.confidence,
+        summary: agent.summary
+      }))
+    }
+    return []
+  }
+)
+
+// New thunks for agent inspection (details, history, memory)
+export interface AgentDetails {
+  agent_name: string
+  latest_decision?: any
+  config?: any
+}
+
+export interface AgentMemoryItem {
+  document: string
+  metadata: any
+  similarity?: number
+}
+
+const ENGINE_BASE = (import.meta.env.VITE_ENGINE_API_URL as string) || ''
+const DASHBOARD_BASE = (import.meta.env.VITE_DASHBOARD_API_URL as string) || ''
+
+export const fetchAgentDetails = createAsyncThunk(
+  'trading/fetchAgentDetails',
+  async (agentName: string, { rejectWithValue }) => {
+    try {
+      const response = await axios.get(`${ENGINE_BASE}/api/engine/agents/${encodeURIComponent(agentName)}/details`)
+      return response.data as AgentDetails
+    } catch (err: any) {
+      return rejectWithValue(err.response?.data?.detail || err.message || 'Failed to fetch agent details')
+    }
+  }
+)
+
+export const fetchAgentHistory = createAsyncThunk(
+  'trading/fetchAgentHistory',
+  async ({ agentName, limit = 50 }: { agentName: string; limit?: number }, { rejectWithValue }) => {
+    try {
+      const response = await axios.get(`${ENGINE_BASE}/api/engine/agents/${encodeURIComponent(agentName)}/history`, { params: { limit } })
+      return response.data as any[]
+    } catch (err: any) {
+      return rejectWithValue(err.response?.data?.detail || err.message || 'Failed to fetch agent history')
+    }
+  }
+)
+
+export const fetchAgentMemory = createAsyncThunk(
+  'trading/fetchAgentMemory',
+  async ({ agentName, q, limit = 10 }: { agentName: string; q?: string; limit?: number }, { rejectWithValue }) => {
+    try {
+      const params: any = { limit }
+      if (q) params.q = q
+      const response = await axios.get(`${ENGINE_BASE}/api/engine/agents/${encodeURIComponent(agentName)}/memory`, { params })
+      return response.data as AgentMemoryItem[]
+    } catch (err: any) {
+      return rejectWithValue(err.response?.data?.detail || err.message || 'Failed to fetch agent memory')
+    }
+  }
+)
+
+export const fetchAgentResponse = createAsyncThunk(
+  'trading/fetchAgentResponse',
+  async ({ agentName, responseId }: { agentName: string; responseId: string }, { rejectWithValue }) => {
+    try {
+      const response = await axios.get(`${ENGINE_BASE}/api/engine/agents/${encodeURIComponent(agentName)}/responses/${encodeURIComponent(responseId)}`)
+      return response.data as any
+    } catch (err: any) {
+      return rejectWithValue(err.response?.data?.detail || err.message || 'Failed to fetch agent response')
+    }
+  }
+)
+
+export const fetchAgentDependencies = createAsyncThunk(
+  'trading/fetchAgentDependencies',
+  async (_, { rejectWithValue }) => {
+    try {
+      const response = await axios.get(`${ENGINE_BASE}/api/engine/agents/dependencies`)
+      return response.data as any
+    } catch (err: any) {
+      return rejectWithValue(err.response?.data?.detail || err.message || 'Failed to fetch agent dependencies')
+    }
+  }
+)
+
+export const updateAgentConfig = createAsyncThunk(
+  'trading/updateAgentConfig',
+  async ({ agentName, config }: { agentName: string; config: any }, { rejectWithValue }) => {
+    try {
+      const response = await axios.post(`/api/engine/agents/${encodeURIComponent(agentName)}/config`, config)
+      return response.data as any
+    } catch (err: any) {
+      return rejectWithValue(err.response?.data?.detail || err.message || 'Failed to update agent config')
+    }
   }
 )
 
 export const fetchStrategyRecommendation = createAsyncThunk(
   'trading/fetchStrategyRecommendation',
   async () => {
-    const response = await axios.get('/api/engine/strategy/recommendation')
+    const response = await axios.get(`${ENGINE_BASE}/api/engine/strategy/recommendation`)
     return response.data
   }
 )
@@ -319,10 +434,28 @@ export const toggleOptionsAlgo = createAsyncThunk(
 
 export const fetchSignals = createAsyncThunk(
   'trading/fetchSignals',
-  async (instrument: string = 'BANKNIFTY', { rejectWithValue }) => {
+  async (instrument: string = import.meta.env.VITE_INSTRUMENT_SYMBOL || 'BANKNIFTY26JANFUT', { rejectWithValue }) => {
     try {
-      const response = await axios.get(`/api/trading/signals?instrument=${instrument}`)
-      return response.data.signals || []
+      const response = await axios.get(`${ENGINE_BASE}/api/v1/signals/${instrument}`)
+      // Transform the data to match expected format
+      const signals = Array.isArray(response.data) ? response.data : []
+      return signals.map((signal: any) => ({
+        id: signal._id || signal.signal_id,
+        signal_id: signal.signal_id,
+        strategy: signal.action || signal.strategy || 'unknown', // Use action field for strategy
+        instrument: signal.instrument,
+        entry_price: signal.entry_price,
+        stop_loss: signal.stop_loss,
+        take_profit: signal.take_profit,
+        confidence: signal.confidence || 0,
+        status: signal.status || 'pending',
+        timestamp: signal.timestamp,
+        conditions: signal.conditions || [],
+        reasoning: signal.reasoning || '',
+        execution_mode: signal.execution_mode,
+        parsed_conditions: signal.parsed_conditions,
+        metadata: signal.metadata
+      }))
     } catch (err: any) {
       return rejectWithValue(err.response?.data?.error || err.message || 'Failed to fetch signals')
     }
@@ -369,7 +502,7 @@ export const fetchOptionsStrategy = createAsyncThunk(
   'trading/fetchOptionsStrategy',
   async (_, { rejectWithValue }) => {
     try {
-      const response = await axios.get('/api/options-strategy-agent')
+      const response = await axios.get(`${ENGINE_BASE}/api/options-strategy-agent`)
       return response.data
     } catch (err: any) {
       return rejectWithValue(err.response?.data?.error || err.message || 'Failed to fetch options strategy')
@@ -381,7 +514,7 @@ export const executeOptionsStrategy = createAsyncThunk(
   'trading/executeOptionsStrategy',
   async (strategyData?: any, { rejectWithValue }) => {
     try {
-      const response = await axios.post('/api/options-strategy-execute', strategyData || {})
+      const response = await axios.post(`${ENGINE_BASE}/api/options-strategy-execute`, strategyData || {})
       return response.data
     } catch (err: any) {
       return rejectWithValue(err.response?.data?.error || err.message || 'Failed to execute options strategy')
@@ -397,6 +530,30 @@ export const fetchOptionsStrategyHistory = createAsyncThunk(
       return response.data
     } catch (err: any) {
       return rejectWithValue(err.response?.data?.error || err.message || 'Failed to fetch options strategy history')
+    }
+  }
+)
+
+export const fetchOrchestratorAnalysis = createAsyncThunk(
+  'trading/fetchOrchestratorAnalysis',
+  async ({ instrument, context }: { instrument: string; context?: any }, { rejectWithValue }) => {
+    try {
+      const response = await axios.post(`${ENGINE_BASE}/api/v1/analyze`)
+      return response.data
+    } catch (err: any) {
+      return rejectWithValue(err.response?.data?.error || err.message || 'Failed to run orchestrator analysis')
+    }
+  }
+)
+
+export const fetchOrchestratorDecisions = createAsyncThunk(
+  'trading/fetchOrchestratorDecisions',
+  async (limit: number = 20, { rejectWithValue }) => {
+    try {
+      const response = await axios.get('/api/orchestrator-decisions', { params: { limit } })
+      return response.data.decisions || []
+    } catch (err: any) {
+      return rejectWithValue(err.response?.data?.error || err.message || 'Failed to fetch orchestrator decisions')
     }
   }
 )
@@ -474,6 +631,18 @@ const tradingSlice = createSlice({
       }
       state.lastUpdated = new Date().toISOString()
     },
+    updateAgentStatus: (state, action: PayloadAction<AgentStatus>) => {
+      const status = action.payload
+      const existingIndex = state.agentStatuses.findIndex(s => s.name === status.name)
+      if (existingIndex >= 0) {
+        state.agentStatuses[existingIndex] = status
+      } else {
+        state.agentStatuses.push(status)
+        // Keep only last 20 agent statuses
+        if (state.agentStatuses.length > 20) state.agentStatuses = state.agentStatuses.slice(-20)
+      }
+      state.lastUpdated = new Date().toISOString()
+    },
     updateOrchestratorDecision: (state, action: PayloadAction<OrchestratorDecision>) => {
       const decision = action.payload
       state.orchestratorDecisions.unshift(decision)
@@ -539,11 +708,159 @@ const tradingSlice = createSlice({
       })
       .addCase(fetchAgentStatuses.fulfilled, (state, action) => {
         state.loading.agents = false
-        state.agentStatuses = action.payload.agents || []
+        state.agentStatuses = action.payload || []
       })
       .addCase(fetchAgentStatuses.rejected, (state, action) => {
         state.loading.agents = false
         state.error = action.error.message || 'Failed to fetch agent statuses'
+      })
+
+    // Agent details / history / memory
+    builder
+      .addCase(fetchAgentDetails.pending, (state) => {
+        state.loading.agents = true
+        state.error = null
+      })
+      .addCase(fetchAgentDetails.fulfilled, (state, action: PayloadAction<AgentDetails>) => {
+        state.loading.agents = false
+        ;(state as any).agentDetails = action.payload
+      })
+      .addCase(fetchAgentDetails.rejected, (state, action) => {
+        state.loading.agents = false
+        state.error = String(action.payload || action.error?.message || 'Failed to fetch agent details')
+      })
+
+    builder
+      .addCase(fetchAgentHistory.pending, (state) => {
+        state.loading.agentResponses = true
+        state.error = null
+      })
+      .addCase(fetchAgentHistory.fulfilled, (state, action: PayloadAction<any[]>) => {
+        state.loading.agentResponses = false
+        ;(state as any).agentHistory = action.payload
+      })
+      .addCase(fetchAgentHistory.rejected, (state, action) => {
+        state.loading.agentResponses = false
+        state.error = String(action.payload || action.error?.message || 'Failed to fetch agent history')
+      })
+
+    builder
+      .addCase(fetchAgentMemory.pending, (state) => {
+        state.loading.agentResponses = true
+      })
+      .addCase(fetchAgentMemory.fulfilled, (state, action: PayloadAction<AgentMemoryItem[]>) => {
+        state.loading.agentResponses = false
+        ;(state as any).agentMemory = action.payload
+      })
+      .addCase(fetchAgentMemory.rejected, (state, action) => {
+        state.loading.agentResponses = false
+        state.error = String(action.payload || action.error?.message || 'Failed to fetch agent memory')
+      })
+
+    // Single agent response
+    builder
+      .addCase(fetchAgentResponse.pending, (state) => {
+        state.loading.agentResponses = true
+      })
+      .addCase(fetchAgentResponse.fulfilled, (state, action: PayloadAction<any>) => {
+        state.loading.agentResponses = false
+        ;(state as any).agentFullResponse = action.payload
+      })
+      .addCase(fetchAgentResponse.rejected, (state, action) => {
+        state.loading.agentResponses = false
+        state.error = String(action.payload || action.error?.message || 'Failed to fetch agent response')
+      })
+
+    // Agent dependencies and config update
+    builder
+      .addCase(fetchAgentDependencies.pending, (state) => {
+        ;(state as any).loadingDependencies = true
+      })
+      .addCase(fetchAgentDependencies.fulfilled, (state, action: PayloadAction<any>) => {
+        ;(state as any).loadingDependencies = false
+        ;(state as any).agentDependencies = action.payload
+      })
+      .addCase(fetchAgentDependencies.rejected, (state, action) => {
+        ;(state as any).loadingDependencies = false
+        state.error = String(action.payload || action.error?.message || 'Failed to fetch agent dependencies')
+      })
+
+    builder
+      .addCase(updateAgentConfig.pending, (state) => {
+        ;(state as any).updatingConfig = true
+      })
+      .addCase(updateAgentConfig.fulfilled, (state, action: PayloadAction<any>) => {
+        ;(state as any).updatingConfig = false
+        ;(state as any).lastConfigUpdate = action.payload
+      })
+      .addCase(updateAgentConfig.rejected, (state, action) => {
+        ;(state as any).updatingConfig = false
+        state.error = String(action.payload || action.error?.message || 'Failed to update agent config')
+      })
+
+    // Orchestrator analysis (manual Run Analysis from UI)
+    builder
+      .addCase(fetchOrchestratorAnalysis.pending, (state) => {
+        state.loading.orchestrator = true
+        state.error = null
+      })
+      .addCase(fetchOrchestratorAnalysis.fulfilled, (state, action: any) => {
+        state.loading.orchestrator = false
+        // Normalize engine response into OrchestratorDecision
+        const payload = action.payload || {}
+        const arg = (action.meta && (action.meta.arg as any)) || {}
+        const instrument = arg.instrument || payload.instrument || 'UNKNOWN'
+        const newDecision: OrchestratorDecision = {
+          decision_id: String(Date.now()),
+          timestamp: new Date().toISOString(),
+          instrument,
+          final_decision: (payload.decision || 'HOLD') as any,
+          confidence: payload.confidence || 0,
+          agent_responses: payload.agent_responses || [],
+          reasoning: payload.message || '',
+          signal_created: false
+        }
+        state.orchestratorDecisions.unshift(newDecision)
+        if (state.orchestratorDecisions.length > 20) {
+          state.orchestratorDecisions = state.orchestratorDecisions.slice(0, 20)
+        }
+        state.lastUpdated = new Date().toISOString()
+      })
+      .addCase(fetchOrchestratorAnalysis.rejected, (state, action) => {
+        state.loading.orchestrator = false
+        state.error = String(action.payload || action.error?.message || 'Failed to run orchestrator analysis')
+      })
+
+    // Fetch Orchestrator Decisions (load existing decisions)
+    builder
+      .addCase(fetchOrchestratorDecisions.pending, (state) => {
+        state.loading.orchestrator = true
+        state.error = null
+      })
+      .addCase(fetchOrchestratorDecisions.fulfilled, (state, action: any) => {
+        state.loading.orchestrator = false
+        // Load existing decisions from API (don't duplicate with WebSocket updates)
+        const decisions = action.payload || []
+        // Only add decisions that don't already exist
+        decisions.forEach((decision: OrchestratorDecision) => {
+          const exists = state.orchestratorDecisions.some(d => d.decision_id === decision.decision_id)
+          if (!exists) {
+            state.orchestratorDecisions.unshift(decision)
+          }
+        })
+        // Sort by timestamp (most recent first)
+        state.orchestratorDecisions.sort((a, b) =>
+          new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+        )
+        // Keep only last 20
+        if (state.orchestratorDecisions.length > 20) {
+          state.orchestratorDecisions = state.orchestratorDecisions.slice(0, 20)
+        }
+        state.lastUpdated = new Date().toISOString()
+      })
+      .addCase(fetchOrchestratorDecisions.rejected, (state, action) => {
+        state.loading.orchestrator = false
+        state.error = String(action.payload || action.error?.message || 'Failed to fetch orchestrator decisions')
       })
 
     // Strategy Recommendation
@@ -700,5 +1017,5 @@ const tradingSlice = createSlice({
   },
 })
 
-export const { updateDecision, updatePortfolio, addTrade, clearError, addOrUpdateSignal, setSignals, updateAgentResponse, updateOrchestratorDecision } = tradingSlice.actions
+export const { updateDecision, updatePortfolio, addTrade, clearError, addOrUpdateSignal, setSignals, updateAgentResponse, updateAgentStatus, updateOrchestratorDecision } = tradingSlice.actions
 export default tradingSlice.reducer

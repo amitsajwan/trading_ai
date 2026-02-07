@@ -296,7 +296,7 @@ class OptionsAnalysisAgent(Agent):
             max_loss=max_loss,
             breakeven=[breakeven],
             reasoning=f"Bullish outlook: Buy {buy_leg.strike} CE, Sell {sell_leg.strike} CE. "
-                     f"Net debit: ₹{net_debit:.2f}, Max profit: ₹{max_profit:.2f}",
+                     f"Net debit: Rs.{net_debit:.2f}, Max profit: Rs.{max_profit:.2f}",
             confidence=0.75
         )
 
@@ -348,7 +348,7 @@ class OptionsAnalysisAgent(Agent):
             max_loss=max_loss,
             breakeven=[breakeven],
             reasoning=f"Bearish outlook: Buy {buy_leg.strike} PE, Sell {sell_leg.strike} PE. "
-                     f"Net debit: ₹{net_debit:.2f}, Max profit: ₹{max_profit:.2f}",
+                     f"Net debit: Rs.{net_debit:.2f}, Max profit: Rs.{max_profit:.2f}",
             confidence=0.75
         )
 
@@ -395,7 +395,7 @@ class OptionsAnalysisAgent(Agent):
             max_loss=max_loss,
             breakeven=[sell_put["strike"] - net_credit/25, sell_call["strike"] + net_credit/25],
             reasoning=f"Range-bound market: Sell {sell_call['strike']} CE, Buy {buy_call['strike']} CE, "
-                     f"Sell {sell_put['strike']} PE, Buy {buy_put['strike']} PE. Net credit: ₹{net_credit:.2f}",
+                     f"Sell {sell_put['strike']} PE, Buy {buy_put['strike']} PE. Net credit: Rs.{net_credit:.2f}",
             confidence=0.70
         )
 
@@ -423,7 +423,7 @@ class OptionsAnalysisAgent(Agent):
             max_loss=float('inf'),  # Unlimited
             breakeven=[atm_strike - (atm_call["price"] + atm_put["price"]),
                       atm_strike + (atm_call["price"] + atm_put["price"])],
-            reasoning=f"Low volatility expected: Sell {atm_strike} CE + PE. Net credit: ₹{net_credit:.2f}",
+            reasoning=f"Low volatility expected: Sell {atm_strike} CE + PE. Net credit: Rs.{net_credit:.2f}",
             confidence=0.65
         )
 

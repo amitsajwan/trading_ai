@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Body, HTTPException
 import os
+from typing import Optional
 
 control_router = APIRouter(prefix="/api/control", tags=["control"])
 
@@ -14,7 +15,41 @@ async def control_status():
 
 @control_router.get("/mode/info")
 async def control_mode_info():
-    return {"mode": CONTROL_STATE["mode"], "database": "mock"}
+    """
+    UI uses this endpoint to decide whether to subscribe in LIVE vs HISTORICAL mode.
+
+    Source of truth:
+    - Redis keys set by start_local / historical runner:
+      - system:execution_mode (LIVE/HISTORICAL)
+      - system:run_id
+    Fallback:
+    - CONTROL_STATE for legacy/dev
+    """
+    try:
+        import redis
+
+        r = redis.Redis(host=os.getenv("REDIS_HOST", "localhost"),
+                        port=int(os.getenv("REDIS_PORT", "6379")),
+                        decode_responses=True)
+
+        mode: str = (r.get("system:execution_mode") or "").upper() or str(CONTROL_STATE["mode"]).upper()
+        run_id: Optional[str] = r.get("system:run_id")
+        instrument: str = r.get("system:instrument") or "BANKNIFTY"
+
+        return {
+            "mode": mode,
+            "run_id": run_id or "",
+            "instrument": instrument,
+            "source": "redis"
+        }
+    except Exception:
+        # Don’t error → UI must not fall back to LIVE due to a 500/JSON parse error.
+        return {
+            "mode": str(CONTROL_STATE["mode"]).upper(),
+            "run_id": "",
+            "instrument": "BANKNIFTY",
+            "source": "fallback"
+        }
 
 
 @control_router.get("/mode/auto-switch")

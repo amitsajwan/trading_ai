@@ -1,0 +1,111 @@
+services:
+  # Development overrides - disable health checks for faster startup
+
+  # Keep redis and mongodb health checks for data integrity
+  # redis and mongodb health checks remain enabled
+
+  # Disable health checks for application services
+  market-data-api:
+    healthcheck:
+      disable: true
+
+  dashboard-backend:
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      # Temporarily remove market-data-api dependency for faster dev startup
+      # market-data-api:
+      #   condition: service_healthy
+    healthcheck:
+      disable: true
+
+  engine-api:
+    healthcheck:
+      disable: true
+
+  news-api:
+    healthcheck:
+      disable: true
+
+  kite-auth-service:
+    healthcheck:
+      disable: true
+
+  # Trading services
+  trading-bot-banknifty:
+    healthcheck:
+      disable: true
+
+  trading-bot-nifty:
+    healthcheck:
+      disable: true
+
+  trading-bot-btc:
+    healthcheck:
+      disable: true
+
+  automatic-trading-service:
+    healthcheck:
+      disable: true
+
+  orchestrator-service:
+    healthcheck:
+      disable: true
+
+  # Backend services
+  backend-banknifty:
+    healthcheck:
+      disable: true
+
+  backend-nifty:
+    healthcheck:
+      disable: true
+
+  backend-btc:
+    healthcheck:
+      disable: true
+
+  # Collector services
+  ltp-collector-banknifty:
+    healthcheck:
+      disable: true
+
+  depth-collector-banknifty:
+    healthcheck:
+      disable: true
+
+  ltp-collector-nifty:
+    healthcheck:
+      disable: true
+
+  depth-collector-nifty:
+    healthcheck:
+      disable: true
+
+  # Other services
+  news-collector:
+    healthcheck:
+      disable: true
+
+  redis-ws-gateway:
+    healthcheck:
+      disable: true
+
+  market-data-dashboard:
+    depends_on:
+      market-data-api:
+        condition: service_started  # Change from service_healthy for dev
+    healthcheck:
+      disable: true
+
+  dashboard-frontend:
+    depends_on:
+      # Remove dependencies for faster dev startup
+    healthcheck:
+      disable: true
+
+  historical-replay-service:
+    healthcheck:
+      disable: true

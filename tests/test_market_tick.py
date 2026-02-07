@@ -28,9 +28,9 @@ def main():
     print(f'Tick data: {json.dumps(tick_data, indent=2)}')
 
     try:
-        # Publish to market tick channel
-        r.publish("market:tick:BANKNIFTY", json.dumps(tick_data))
-        print(f"[OK] Published to market:tick:BANKNIFTY: {r.pubsub_numsub('market:tick:BANKNIFTY')[0][1]} subscribers")
+        # Publish to market tick channel (type-specific)
+        r.publish("market:tick:BANKNIFTY:INDEX", json.dumps(tick_data))
+        print(f"[OK] Published to market:tick:BANKNIFTY:INDEX: {r.pubsub_numsub('market:tick:BANKNIFTY:INDEX')[0][1]} subscribers")
 
         print("[SUCCESS] Test market tick sent! Check browser console for WebSocket reception.")
     except Exception as e:

@@ -430,7 +430,9 @@ class PositionManager:
         """
         symbol = instrument  # Use instrument as symbol
         quantity = analysis_details.get('quantity', 1)  # Default quantity
-        entry_price = analysis_details.get('entry_price', 0)
+        # Prefer current_price as execution price; fall back to entry_price if provided
+        current_price = analysis_details.get('current_price')
+        entry_price = analysis_details.get('entry_price') or current_price or 0
         stop_loss = analysis_details.get('stop_loss')
         take_profit = analysis_details.get('take_profit')
 
@@ -457,11 +459,11 @@ class PositionManager:
                     'confidence': confidence
                 }
 
-        elif action in ['CLOSE_LONG', 'CLOSE_SHORT']:
+        elif decision in ['CLOSE_LONG', 'CLOSE_SHORT']:
             # Close existing position
             # Find the position to close based on symbol and action
             positions = self.portfolio.get_positions_by_symbol(symbol)
-            target_action = 'BUY' if action == 'CLOSE_LONG' else 'SELL'
+            target_action = 'BUY' if decision == 'CLOSE_LONG' else 'SELL'
 
             for pos in positions:
                 if pos.action == target_action and pos.status == 'active':

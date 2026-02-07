@@ -39,11 +39,12 @@ def main():
                 "oi": 15678000 + random.randint(-1000, 1000)  # Realistic OI
             }
 
-            # Publish to Redis pub/sub
+            # Publish to Redis pub/sub (type-specific channel only)
             try:
-                redis_client.publish("market:tick:BANKNIFTY", json.dumps(tick_data))
-                redis_client.publish("market:tick", json.dumps(tick_data))
-                print(f"Published tick: Rs.{current_price:.2f} (Vol: {volume})")
+                # Use type-specific channel (default to INDEX for synthetic data)
+                type_specific_channel = "market:tick:BANKNIFTY:INDEX"
+                redis_client.publish(type_specific_channel, json.dumps(tick_data))
+                print(f"Published tick: Rs.{current_price:.2f} (Vol: {volume}) to {type_specific_channel}")
             except Exception as e:
                 print(f"❌ Publish error: {e}")
 

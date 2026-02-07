@@ -4,49 +4,169 @@
 
 A modular UI layer that provides clean separation between user interfaces and the trading engine, enabling multiple UI implementations (web dashboard, CLI, mobile apps, etc.).
 
-## 🎯 Purpose & Responsibilities
+## 🎯 Purpose & Architecture
 
-The `ui_shell` module serves as the **boundary layer** between users and the trading system:
+The ui_shell module serves as the boundary layer between users and the trading system:
 
-### **Data Flow (Inbound to UI)**
+```
+User Input → UI Shell → Engine Actions ← Data Providers ← Trading Engine
+```
+
+### **Core Components:**
 - **UIDataProvider**: Supplies data to UI components from the trading engine
-- Real-time decision updates, portfolio status, market overview
-- Historical decision logs and performance metrics
-
-### **Action Flow (Outbound from UI)**
 - **UIDispatcher**: Processes user actions and sends them to the trading engine
-- Buy/sell overrides, stop loss updates, risk limit changes
-- Trading pause/resume, emergency stops
+- **UI Contracts**: Protocol-based interfaces for UI implementations
+- **Event System**: Real-time updates and notifications
+- **Multi-UI Support**: Web dashboard, CLI, and mobile app compatibility
 
-### **Key Benefits**
-- **UI Agnostic**: Same interface works for web dashboards, CLI tools, mobile apps
-- **Engine Independent**: Can work with mock engines for development/testing
-- **Event-Driven**: Supports real-time updates and notifications
-- **Type Safe**: Full protocol-based contracts ensure interface consistency
+## 🚀 Quick Start
 
-## 🏗️ Architecture
+### Prerequisites
+- Python 3.8+
+- Trading engine modules (engine_module, user_module, etc.)
 
-```
-┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
-│   Web Dashboard │    │   UI_SHELL       │    │  Trading Engine │
-│   CLI Tool      │───▶│                  │───▶│                 │
-│   Mobile App    │    │ • UIDataProvider │    │ • Orchestrator  │
-└─────────────────┘    │ • UIDispatcher   │    │ • Agents        │
-                       └──────────────────┘    └─────────────────┘
+### Installation
+```bash
+# Install dependencies
+pip install -r requirements.txt
 ```
 
-### **Contracts & Interfaces**
+### Basic Usage
+```python
+from ui_shell.api import build_ui_data_provider, build_ui_dispatcher
 
-#### **UIDataProvider Protocol**
+# Create UI components
+data_provider = build_ui_data_provider()
+dispatcher = build_ui_dispatcher()
+
+# Get latest decision
+decision = await data_provider.get_latest_decision()
+print(f"Latest decision: {decision.action}")
+
+# Execute user action
+await dispatcher.execute_trade(trade_request)
+```
+
+## 🔧 API Reference
+
+### Factory Functions
+```python
+from ui_shell.api import (
+    build_ui_data_provider,   # Data provider factory
+    build_ui_dispatcher,      # Action dispatcher factory
+    build_ui_shell           # Complete UI shell factory
+)
+```
+
+### Key Classes
 ```python
 class UIDataProvider(Protocol):
-    async def get_latest_decision(self) -> Optional[DecisionDisplay]
-    async def get_portfolio_summary(self) -> PortfolioSummary
-    async def get_market_overview(self) -> MarketOverview
-    async def get_recent_decisions(self, limit: int = 10) -> list[DecisionDisplay]
-    async def get_snapshot(self) -> Dict[str, Any]  # Complete system state
-    async def get_metrics(self) -> Dict[str, Any]   # Performance metrics
+    """Supplies data to UI components."""
+
+    async def get_latest_decision(self) -> Optional[DecisionDisplay]:
+        """Get latest trading decision."""
+
+    async def get_portfolio_summary(self) -> PortfolioSummary:
+        """Get user portfolio summary."""
+
+    async def get_market_overview(self) -> MarketOverview:
+        """Get market data overview."""
+
+class UIDispatcher(Protocol):
+    """Processes user actions."""
+
+    async def execute_trade(self, trade: TradeRequest) -> TradeResult:
+        """Execute trading action."""
+
+    async def update_settings(self, settings: Dict[str, Any]):
+        """Update system settings."""
 ```
+
+### Endpoints (Dashboard Integration)
+- `GET /api/dashboard/decision` - Get latest decision
+- `POST /api/dashboard/override` - Execute manual override
+- `GET /api/dashboard/portfolio` - Get portfolio data
+- `GET /api/dashboard/market` - Get market overview
+
+## 🧪 Testing
+
+### Run Tests
+```bash
+# From ui_shell directory
+cd ui_shell
+pytest tests/
+
+# Run API tests
+pytest tests/test_api.py
+
+# With coverage
+pytest --cov=src --cov-report=html
+```
+
+### Test Structure
+- `tests/test_api.py` - Factory function tests
+- `tests/test_protocols.py` - Protocol implementation tests
+- `tests/test_integration.py` - End-to-end UI tests
+
+## 🏗️ Development
+
+### Project Structure
+```
+ui_shell/
+├── src/
+│   ├── __init__.py
+│   ├── data_provider.py    # UIDataProvider implementation
+│   ├── dispatcher.py       # UIDispatcher implementation
+│   └── api.py              # Public API
+├── tests/
+│   ├── __init__.py
+│   ├── test_api.py
+│   └── test_protocols.py
+├── contracts/             # UI protocol definitions
+├── tools/                 # UI utilities
+└── README.md             # This file
+```
+
+### Adding New UI Implementations
+1. Define UI contracts in `contracts/`
+2. Implement protocols in `src/`
+3. Add factory functions to `api.py`
+4. Add tests in `tests/`
+5. Update this README
+
+## 📊 Dependencies
+
+### Internal Dependencies
+- `core_kernel` - Service container
+- `engine_module` - Trading decisions
+- `user_module` - User accounts and trades
+- `market_data` - Market data access
+
+### External Dependencies
+- `fastapi` - Web framework
+- `pydantic` - Data validation
+- `websockets` - Real-time communication
+
+## 🔍 Troubleshooting
+
+### Common Issues
+- **Engine connection failed**: Ensure trading engine modules are running
+- **Protocol implementation errors**: Check contract compliance
+- **Real-time updates not working**: Verify WebSocket configuration
+
+### Debug Mode
+```bash
+# Enable debug logging
+export LOG_LEVEL=DEBUG
+python -c "from ui_shell.api import build_ui_shell; print('UI shell ready')"
+```
+
+## 🤝 Contributing
+
+1. Follow the existing code style
+2. Add tests for new UI features
+3. Update protocol documentation
+4. Submit PR with clear description
 
 #### **UIDispatcher Protocol**
 ```python

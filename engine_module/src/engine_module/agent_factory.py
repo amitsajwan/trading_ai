@@ -172,13 +172,22 @@ class AgentFactory:
             logger.warning(f"Could not import BearResearcher: {e}")
         
         try:
-            from engine_module.agents.research_manager import ResearchManager
-            agent = ResearchManager()
-            agent._agent_name = "ResearchManager"
+            from engine_module.agents.enhanced_research_manager import EnhancedResearchManager
+            agent = EnhancedResearchManager()
+            agent._agent_name = "EnhancedResearchManager"
             agents.append(agent)
-            logger.debug("Added ResearchManager")
+            logger.debug("Added EnhancedResearchManager")
         except ImportError as e:
-            logger.warning(f"Could not import ResearchManager: {e}")
+            logger.warning(f"Could not import EnhancedResearchManager: {e}")
+            # Fallback to basic ResearchManager
+            try:
+                from engine_module.agents.research_manager import ResearchManager
+                agent = ResearchManager()
+                agent._agent_name = "ResearchManager"
+                agents.append(agent)
+                logger.debug("Added ResearchManager (fallback)")
+            except ImportError as e2:
+                logger.warning(f"Could not import ResearchManager either: {e2}")
         
         try:
             from engine_module.agents.options_strategy_agent import OptionsStrategyAgent
@@ -188,7 +197,15 @@ class AgentFactory:
             logger.debug("Added OptionsStrategyAgent")
         except ImportError as e:
             logger.warning(f"Could not import OptionsStrategyAgent: {e}")
-        
+
+        # Market Microstructure Agent - analyzes order book depth
+        # TODO: Implement MarketMicrostructureAgent
+        logger.debug("MarketMicrostructureAgent not implemented yet")
+
+        # Options Analytics Agent - analyzes Greeks, PCR, Max Pain
+        # TODO: Implement OptionsAnalyticsAgent
+        logger.debug("OptionsAnalyticsAgent not implemented yet")
+
         return agents
     
     def _build_validators(self, **kwargs: Any) -> List[Any]:
@@ -238,6 +255,15 @@ class AgentFactory:
             logger.debug("Added ExecutionAgent")
         except ImportError as e:
             logger.warning(f"Could not import ExecutionAgent: {e}")
+
+        try:
+            from engine_module.agents.signal_creation_agent import SignalCreationAgent
+            agent = SignalCreationAgent()
+            agent._agent_name = "SignalCreationAgent"
+            agents.append(agent)
+            logger.debug("Added SignalCreationAgent")
+        except ImportError as e:
+            logger.warning(f"Could not import SignalCreationAgent: {e}")
         
         return agents
     

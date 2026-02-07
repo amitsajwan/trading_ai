@@ -1,6 +1,7 @@
 """Multi-provider LLM manager with fallback and rate limit handling."""
 
 import os
+import sys
 import logging
 import time
 import random
@@ -10,7 +11,18 @@ from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List, Tuple
 from enum import Enum
 from dataclasses import dataclass, field
-import os
+
+# Fix Windows console encoding for emojis
+if sys.platform == 'win32':
+    try:
+        # Try to set UTF-8 encoding for Windows console
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except (AttributeError, ValueError):
+        # Fallback for older Python versions
+        import io
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 logger = logging.getLogger(__name__)
 
@@ -140,7 +152,7 @@ class LLMProviderManager:
                     if config.status == ProviderStatus.AVAILABLE:
                         healthy = self.check_provider_health(name, timeout=2)
                         if not healthy:
-                            logger.warning(f"⚠️ Health check failed for provider {name}; marking as degraded")
+                            logger.warning(f"[WARN] Health check failed for provider {name}; marking as degraded")
                             config.status = ProviderStatus.ERROR
                             config.last_error = "Health check failed"
                             config.last_error_time = datetime.now()
@@ -184,7 +196,7 @@ class LLMProviderManager:
             )
             # Store API keys directly - we'll use httpx for requests
             self.provider_clients["groq"] = groq_keys  # List of API keys for load balancing
-            logger.info(f"✅ Groq provider initialized with {len(groq_keys)} API keys (model: {groq_model})")
+            logger.info(f"[OK] Groq provider initialized with {len(groq_keys)} API keys (model: {groq_model})")
         
         # Cohere - Advanced reasoning with multi-key support (Priority: 1)
         cohere_keys = self._get_multiple_api_keys("COHERE_API_KEY")
@@ -209,7 +221,7 @@ class LLMProviderManager:
             )
             # Store API keys for load balancing
             self.provider_clients["cohere"] = cohere_keys
-            logger.info(f"✅ Cohere provider initialized with {len(cohere_keys)} API keys (model: {cohere_model})")
+            logger.info(f"[OK] Cohere provider initialized with {len(cohere_keys)} API keys (model: {cohere_model})")
         
         # AI21 - Quality language models with multi-key support (Priority: 2)
         ai21_keys = self._get_multiple_api_keys("AI21_API_KEY")
@@ -234,7 +246,7 @@ class LLMProviderManager:
             )
             # Store API keys for load balancing
             self.provider_clients["ai21"] = ai21_keys
-            logger.info(f"✅ AI21 provider initialized with {len(ai21_keys)} API keys (model: {ai21_model})")
+            logger.info(f"[OK] AI21 provider initialized with {len(ai21_keys)} API keys (model: {ai21_model})")
         
         logger.info(f"Initialized {len([p for p in self.providers.values() if p.status == ProviderStatus.AVAILABLE])} LLM providers")
     
@@ -265,14 +277,14 @@ class LLMProviderManager:
             primary_config = self.providers[self.primary_provider]
             if primary_config.status == ProviderStatus.AVAILABLE:
                 self.current_provider = self.primary_provider
-                logger.info(f"🎯 Single provider mode: Using {self.primary_provider} (primary)")
+                logger.info(f"[TARGET] Single provider mode: Using {self.primary_provider} (primary)")
                 return self.primary_provider
             elif primary_config.status in [ProviderStatus.ERROR, ProviderStatus.RATE_LIMITED, ProviderStatus.UNAVAILABLE]:
                 # Try to recover primary provider
                 self._recover_provider(self.primary_provider)
                 if primary_config.status == ProviderStatus.AVAILABLE:
                     self.current_provider = self.primary_provider
-                    logger.info(f"✅ Primary provider {self.primary_provider} recovered")
+                    logger.info(f"[OK] Primary provider {self.primary_provider} recovered")
                     return self.primary_provider
                 else:
                     logger.warning(f"⚠️ Primary provider {self.primary_provider} unavailable, falling back to others")
@@ -288,7 +300,7 @@ class LLMProviderManager:
                         config.status = ProviderStatus.AVAILABLE
                         config.last_error = None
                         config.last_error_time = None
-                        logger.info(f"✅ Provider {name} recovered via health check during selection")
+                        logger.info(f"Provider {name} recovered via health check during selection")
                     else:
                         logger.debug(f"Provider {name} remains unavailable during selection")
         
@@ -350,7 +362,7 @@ class LLMProviderManager:
             best_provider = available_providers[0][0]
         
         self.current_provider = best_provider
-        logger.info(f"✅ Selected provider: {best_provider} (priority: {self.providers[best_provider].priority})")
+        logger.info(f"[OK] Selected provider: {best_provider} (priority: {self.providers[best_provider].priority})")
         return best_provider
 
     def _select_model(self, provider_name: str) -> str:
@@ -707,7 +719,7 @@ class LLMProviderManager:
                 if time_since_reset >= 0:  # Reset time has passed
                     config.status = ProviderStatus.AVAILABLE
                     config.last_error = None
-                    logger.info(f"✅ Provider {provider_name} recovered from rate limit (waited {abs(time_since_reset):.0f}s)")
+                    logger.info(f"Provider {provider_name} recovered from rate limit (waited {abs(time_since_reset):.0f}s)")
                 else:
                     # Still waiting for rate limit to reset
                     wait_time = abs(time_since_reset)
@@ -717,7 +729,7 @@ class LLMProviderManager:
                 if time_since_reset > 300:  # 5 minutes
                     config.status = ProviderStatus.AVAILABLE
                     config.last_error = None
-                    logger.info(f"✅ Provider {provider_name} recovered after {time_since_reset:.0f}s")
+                    logger.info(f"Provider {provider_name} recovered after {time_since_reset:.0f}s")
         else:
             # If there's no last_error_time but status is not AVAILABLE, attempt a quick health check
             if config.status != ProviderStatus.AVAILABLE:
@@ -726,7 +738,7 @@ class LLMProviderManager:
                     config.status = ProviderStatus.AVAILABLE
                     config.last_error = None
                     config.last_error_time = None
-                    logger.info(f"✅ Provider {provider_name} marked healthy by quick check")
+                    logger.info(f"Provider {provider_name} marked healthy by quick check")
                 else:
                     logger.debug(f"Provider {provider_name} still unhealthy by quick check")
     
@@ -993,7 +1005,7 @@ class LLMProviderManager:
                     self._update_rate_limit(provider, tokens_used=0)
 
                 call_elapsed = time.time() - call_start_time
-                logger.info(f"✅ LLM call successful via {provider} (model: {model_name}) in {call_elapsed:.1f}s, tokens_est={tokens_used}")
+                logger.info(f"[OK] LLM call successful via {provider} (model: {model_name}) in {call_elapsed:.1f}s, tokens_est={tokens_used}")
                 return result
 
             except concurrent.futures.TimeoutError as e:

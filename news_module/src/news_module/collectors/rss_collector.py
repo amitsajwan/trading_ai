@@ -74,14 +74,36 @@ class RSSNewsCollector(NewsCollector):
         if sources:
             active_sources = [s for s in active_sources if s.name in sources]
 
+        # Sort sources by priority (high priority first)
+        active_sources.sort(key=lambda s: s.priority)
+
         all_news = []
+        successful_sources = 0
+
         for source in active_sources:
             try:
-                news_items = await self._collect_from_source(source, limit // len(active_sources))
-                all_news.extend(news_items)
-                logger.info(f"Collected {len(news_items)} items from {source.name}")
+                # Allocate more items to higher priority sources
+                priority_weight = {1: 1.5, 2: 1.0, 3: 0.5}
+                weight = priority_weight.get(source.priority, 1.0)
+                source_limit = max(5, int((limit * weight) // len(active_sources)))
+
+                news_items = await self._collect_from_source(source, source_limit)
+                if news_items:  # Only count as success if we got items
+                    all_news.extend(news_items)
+                    successful_sources += 1
+                    logger.info(f"✅ Collected {len(news_items)} items from {source.name} (priority: {source.priority})")
+                else:
+                    logger.warning(f"⚠️ No items collected from {source.name} (may be temporarily unavailable)")
+
             except Exception as e:
-                logger.error(f"Failed to collect from {source.name}: {e}")
+                logger.error(f"❌ Failed to collect from {source.name}: {e}")
+
+        # Log summary
+        total_items = len(all_news)
+        if successful_sources > 0:
+            logger.info(f"📊 News collection complete: {total_items} items from {successful_sources}/{len(active_sources)} sources")
+        else:
+            logger.warning(f"⚠️ No news sources available - all {len(active_sources)} sources failed")
 
         # Sort by published date, most recent first
         all_news.sort(key=lambda x: x.published_at, reverse=True)
@@ -107,51 +129,55 @@ class RSSNewsCollector(NewsCollector):
         return relevant_news
 
     async def _collect_from_source(self, source: NewsSource, limit: int) -> List[NewsItem]:
-        """Collect news from a single RSS source."""
-        try:
-            async with self.session.get(source.url) as response:
-                if response.status == 403:
-                    # HTTP 403 Forbidden - site is blocking requests
-                    logger.warning(f"Failed to fetch {source.url}: HTTP 403 Forbidden (site may be blocking requests)")
-                    logger.info(f"Skipping {source.name} - will try other sources")
-                    return []
-                elif response.status != 200:
-                    logger.warning(f"Failed to fetch {source.url}: HTTP {response.status}")
-                    return []
+        """Collect news from a single RSS source with retry logic."""
+        max_retries = getattr(source, 'retry_count', 3)
 
-                content = await response.text()
-                feed = feedparser.parse(content)
-                
-                # Check if feed parsing was successful
-                if feed.bozo and feed.bozo_exception:
-                    logger.warning(f"Feed parsing error for {source.name}: {feed.bozo_exception}")
-                    # Still try to parse entries if available
-                    if not feed.entries:
-                        return []
+        for attempt in range(max_retries):
+            try:
+                async with self.session.get(source.url) as response:
+                    if response.status == 403:
+                        # HTTP 403 Forbidden - site is blocking requests
+                        if attempt < max_retries - 1:  # Don't log warning on last attempt
+                            logger.debug(f"Attempt {attempt + 1}/{max_retries}: {source.name} returned 403 Forbidden, retrying...")
+                            await asyncio.sleep(1 * (attempt + 1))  # Progressive delay
+                            continue
+                        else:
+                            logger.warning(f"❌ {source.name} persistently blocking requests (403 Forbidden) after {max_retries} attempts")
+                            return []
 
-                news_items = []
-                for entry in feed.entries[:limit]:
-                    try:
-                        news_item = self._parse_feed_entry(entry, source)
-                        if news_item:
-                            news_items.append(news_item)
-                    except Exception as e:
-                        logger.warning(f"Failed to parse entry from {source.name}: {e}")
+                    elif response.status != 200:
+                        if attempt < max_retries - 1:
+                            logger.debug(f"Attempt {attempt + 1}/{max_retries}: {source.name} returned {response.status}, retrying...")
+                            await asyncio.sleep(0.5 * (attempt + 1))
+                            continue
+                        else:
+                            logger.warning(f"❌ {source.name} failed with HTTP {response.status} after {max_retries} attempts")
+                            return []
 
-                return news_items
+                    content = await response.text()
+                    feed = feedparser.parse(content)
 
-        except aiohttp.ClientError as e:
-            error_msg = str(e)
-            # Handle Brotli decompression errors gracefully
-            if 'brotli' in error_msg.lower() or 'br' in error_msg.lower():
-                logger.warning(f"Brotli decompression not available for {source.name}. Install 'Brotli' package or server will use gzip/deflate.")
-                logger.info(f"Skipping {source.name} due to encoding issue - will try other sources")
-            else:
-                logger.error(f"Network error collecting from {source.name}: {e}")
-            return []
-        except Exception as e:
-            logger.error(f"Failed to collect from {source.name}: {e}")
-            return []
+                    # Check if feed parsing was successful
+                    if feed.bozo and feed.bozo_exception:
+                        logger.warning(f"Feed parsing error for {source.name}: {feed.bozo_exception}")
+                        # Still try to parse entries if available
+                        if not feed.entries:
+                            return []
+
+                    news_items = []
+                    for entry in feed.entries[:limit]:
+                        try:
+                            news_item = self._parse_feed_entry(entry, source)
+                            if news_item:
+                                news_items.append(news_item)
+                        except Exception as e:
+                            logger.warning(f"Failed to parse entry from {source.name}: {e}")
+
+                    return news_items
+
+            except Exception as e:
+                logger.error(f"❌ Unexpected error collecting from {source.name}: {e}")
+                return []
 
     def _parse_feed_entry(self, entry: Dict[str, Any], source: NewsSource) -> Optional[NewsItem]:
         """Parse a single RSS feed entry into NewsItem."""
@@ -210,6 +236,9 @@ class RSSNewsCollector(NewsCollector):
         """Get keywords for instrument relevance matching."""
         instrument = instrument.upper()
 
+        # Extract base instrument from derivatives (e.g., BANKNIFTY26JANFUT -> BANKNIFTY)
+        base_instrument = self._extract_base_instrument(instrument)
+
         # Common instrument mappings
         keyword_map = {
             "NIFTY": ["nifty", "nse", "india", "indian market", "market", "stock"],
@@ -223,7 +252,37 @@ class RSSNewsCollector(NewsCollector):
             "MARUTI": ["maruti", "auto", "automobile", "suzuki"]
         }
 
-        return keyword_map.get(instrument, [instrument.lower()])
+        return keyword_map.get(base_instrument, [base_instrument.lower()])
+
+    def _extract_base_instrument(self, instrument: str) -> str:
+        """Extract base instrument from derivative names.
+
+        Examples:
+        - BANKNIFTY26JANFUT -> BANKNIFTY
+        - NIFTY26JANFUT -> NIFTY
+        - RELIANCE -> RELIANCE (no change)
+        """
+        # Common Indian market instruments
+        bases = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"]
+
+        for base in bases:
+            if instrument.startswith(base):
+                return base
+
+        # For stocks, remove any numeric/date suffixes
+        # RELIANCE26JANFUT -> RELIANCE
+        # But be careful not to remove legitimate parts
+        import re
+
+        # Pattern: letters followed by numbers/dates
+        # Keep original if it doesn't match derivative pattern
+        if re.match(r'^[A-Z]+(?:\d{2}[A-Z]{3}[A-Z]{3})?$', instrument):
+            # Extract just the letters part (stock name)
+            match = re.match(r'^([A-Z]+)', instrument)
+            if match:
+                return match.group(1)
+
+        return instrument
 
     def _is_relevant_to_instrument(self, news_item: NewsItem, instrument: str,
                                  keywords: List[str]) -> bool:

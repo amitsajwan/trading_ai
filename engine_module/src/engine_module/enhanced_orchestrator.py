@@ -1,1036 +1,1182 @@
-"""Enhanced 15-minute cycle orchestrator implementing trading engine contracts.
+"""Enhanced trading orchestrator with mode-aware execution.
 
-This orchestrator runs 15-minute trading cycles with multiple specialized agents,
-aggregating signals with confidence voting for systematic trading decisions.
+This orchestrator supports LIVE, PAPER, and BACKTEST modes as specified
+in the trading system specification.
 """
 
-import asyncio
 import logging
-from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
-from datetime import datetime, timedelta
+import asyncio
+import json
+from datetime import datetime, timezone, timedelta
+from typing import Dict, List, Optional, Any
+from decimal import Decimal
 from dataclasses import dataclass
+import numpy as np
 
-from .contracts import AnalysisResult, Orchestrator, TechnicalDataProvider, PositionManagerProvider
-from .agents.momentum_agent import MomentumAgent
-from .agents.trend_agent import TrendAgent
-from .agents.mean_reversion_agent import MeanReversionAgent
-from .agents.volume_agent import VolumeAgent
+from .contracts import Orchestrator, TradingDecision, AnalysisResult
+from .api import build_orchestrator
+from .execution_adapters import create_execution_adapter, ExecutionAdapter
+from .services.position_manager import PositionManager
+import redis
+from .signal_creator import create_signals_from_decision, save_signal_to_mongodb, cancel_pending_signals
+from .signal_monitor import SignalTriggerEvent
 
 logger = logging.getLogger(__name__)
 
+# IST timezone
+IST = timezone(timedelta(hours=5, minutes=30))
+
+
+def get_current_time(redis_client: Optional[Any] = None) -> datetime:
+    """Get current time, considering virtual time mode for backtesting.
+
+    In backtest/historical mode, uses virtual time from Redis if available.
+    Otherwise uses real current time.
+
+    Args:
+        redis_client: Redis client to check for virtual time
+
+    Returns:
+        Current datetime (IST timezone)
+    """
+    if redis_client:
+        try:
+            # Check if virtual time is enabled
+            virtual_enabled = redis_client.get("system:virtual_time:enabled")
+            if virtual_enabled and virtual_enabled.decode() == "1":
+                virtual_time_str = redis_client.get("system:virtual_time:current")
+                if virtual_time_str:
+                    virtual_time = datetime.fromisoformat(virtual_time_str.decode())
+                    # Ensure it's in IST
+                    if virtual_time.tzinfo is None:
+                        virtual_time = virtual_time.replace(tzinfo=IST)
+                    else:
+                        virtual_time = virtual_time.astimezone(IST)
+                    return virtual_time
+        except Exception as e:
+            # If Redis fails, fall back to real time
+            pass
+
+    # Default to real current time
+    return datetime.now(IST)
+
+
+def convert_numpy_types(obj):
+    """Recursively convert numpy types to native Python types for JSON serialization."""
+    if isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, dict):
+        return {key: convert_numpy_types(value) for key, value in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [convert_numpy_types(item) for item in obj]
+    elif hasattr(obj, '__dict__'):
+        # For objects, convert their __dict__
+        result = {}
+        for key, value in obj.__dict__.items():
+            if not key.startswith('_'):  # Skip private attributes
+                result[key] = convert_numpy_types(value)
+        return result
+    else:
+        return obj
+
 
 @dataclass
-class TradingDecision:
-    """Enhanced trading decision with position management for options strategies."""
-    action: str  # Options strategy name (CONDOR, BULL_CALL_SPREAD, etc.) or HOLD
-    confidence: float
-    reasoning: str
-    agent_signals: Dict[str, AnalysisResult]
-    timestamp: datetime
-    entry_price: float = 0.0  # Net premium for options
-    stop_loss: float = 0.0
-    take_profit: float = 0.0
-    quantity: int = 1  # Number of strategy lots
-    risk_amount: float = 0.0  # Max loss for the strategy
-    position_action: str = "OPEN_NEW"
-    options_strategy: Optional[Any] = None  # OptionsStrategyDetails if applicable
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary for API responses."""
-        result = {
-            'action': self.action,
-            'confidence': self.confidence,
-            'reasoning': self.reasoning,
-            'entry_price': self.entry_price,
-            'stop_loss': self.stop_loss,
-            'take_profit': self.take_profit,
-            'quantity': self.quantity,
-            'risk_amount': self.risk_amount,
-            'agent_signals': {
-                name: {
-                    'decision': signal.decision,
-                    'confidence': signal.confidence,
-                    'details': signal.details
-                }
-                for name, signal in self.agent_signals.items()
-            },
-            'timestamp': self.timestamp.isoformat(),
-            'position_action': self.position_action
-        }
-        
-        if self.options_strategy:
-            result['options_strategy'] = {
-                'strategy_type': self.options_strategy.strategy_type.value,
-                'underlying': self.options_strategy.underlying,
-                'expiry': self.options_strategy.expiry,
-                'legs': [
-                    {
-                        'strike_price': leg.strike_price,
-                        'option_type': leg.option_type,
-                        'position': leg.position,
-                        'quantity': leg.quantity,
-                        'premium': leg.premium
-                    }
-                    for leg in self.options_strategy.legs
-                ],
-                'max_profit': self.options_strategy.max_profit,
-                'max_loss': self.options_strategy.max_loss,
-                'breakeven_points': self.options_strategy.breakeven_points,
-                'risk_reward_ratio': self.options_strategy.risk_reward_ratio,
-                'margin_required': self.options_strategy.margin_required
-            }
-        
-        return result
-
-
-
-@runtime_checkable
-class MarketDataProvider(Protocol):
-    """Protocol for market data providers."""
-    async def get_ohlc_data(self, symbol: str, periods: int = 100) -> List[Dict[str, Any]]:
-        """Get OHLC data for symbol."""
-        ...
-
-
-class PositionProvider(PositionManagerProvider):
-    """Protocol for position providers."""
-    async def get_positions(self, symbol: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Get current positions.
-        
-        Args:
-            symbol: Optional symbol filter. If None, returns all positions.
-            
-        Returns:
-            List of position dictionaries with keys like:
-            - symbol: str
-            - action: str (BUY/SELL)
-            - quantity: int
-            - entry_price: float
-            - current_price: float
-            - stop_loss: float
-            - take_profit: float
-            - status: str (active/closed)
-            - position_id: str
-        """
-        ...
-
-
-    async def execute_trading_decision(self, instrument: str, decision: str, confidence: float, analysis_details: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Execute a trading decision."""
-        ...
+class TradingContext:
+    """Context for trading execution including instrument, mode, and metadata."""
+    instrument: str
+    mode: str
+    run_id: Optional[str] = None
 
 
 class EnhancedTradingOrchestrator(Orchestrator):
+    """Enhanced orchestrator with mode-aware execution support."""
 
-    def __init__(self,
-                 market_data_provider: MarketDataProvider,
-                 technical_data_provider: Optional[TechnicalDataProvider] = None,
-                 position_provider: Optional[PositionProvider] = None,
-                 config: Dict[str, Any] = None):
-        """Initialize enhanced trading orchestrator.
+    def __init__(
+        self,
+        agents: List[Any],
+        context: TradingContext,
+        llm_client=None,
+        market_data_provider=None,
+        options_data_provider=None,
+        news_data_provider=None,
+        technical_data_provider=None,
+        fundamental_data_provider=None,
+        macro_data_provider=None,
+        signal_monitor=None,
+        position_provider=None,
+        mongo_db=None,
+        execution_adapter=None,
+        redis_client: Optional[redis.Redis] = None,
+        config: Optional[Dict[str, Any]] = None
+    ):
+        """Initialize enhanced orchestrator.
 
         Args:
+            agents: List of analysis agents
+            context: Trading context containing instrument, mode, and run metadata
+            llm_client: LLM client for AI-powered analysis
             market_data_provider: Provider for market data
+            options_data_provider: Provider for options data
+            news_data_provider: Provider for news and sentiment data
             technical_data_provider: Provider for technical indicators
-            position_provider: Optional provider for current positions
-            config: Configuration dictionary
+            fundamental_data_provider: Provider for fundamental data
+            macro_data_provider: Provider for macroeconomic data
+            signal_monitor: Monitor for trading signals
+            position_provider: Provider for position data
+            mongo_db: MongoDB client for persistence
+            execution_adapter: Adapter for executing trades
+            redis_client: Redis client for pub/sub
         """
+        self.agents = agents
+        self.context = context
+        self.run_id = context.run_id  # For backward compatibility
+        self.llm_client = llm_client
         self.market_data_provider = market_data_provider
+        self.options_data_provider = options_data_provider
+        self.news_data_provider = news_data_provider
         self.technical_data_provider = technical_data_provider
+        self.fundamental_data_provider = fundamental_data_provider
+        self.macro_data_provider = macro_data_provider
+        self.signal_monitor = signal_monitor
         self.position_provider = position_provider
-        self.config = config or self._get_default_config()
+        self.mongo_db = mongo_db
+        self.redis_client = redis_client
+        self.config = config or {}
 
-        # Initialize agents
-        self.agents = self._initialize_agents()
+        # Use provided execution adapter or create one based on mode
+        if execution_adapter:
+            self.execution_adapter = execution_adapter
+        else:
+            self.execution_adapter = create_execution_adapter(self.context.mode, self.context.run_id, redis_client, mongo_db)
 
-        # Trading state
-        self.symbol = self.config.get('symbol', 'BANKNIFTY26JANFUT')
-        self.last_cycle_time = None
-        self.cycle_count = 0
+        # Initialize position manager if needed
+        self.position_manager = PositionManager() if position_provider else None
 
-        # Execution settings
-        self.config.setdefault('auto_execute_signals', False)
-        self.config.setdefault('auto_execute_dry_run', True)
-
-        # Register signal execution callback if SignalMonitor provided
+        # Auto-execute signals when they trigger (optional)
         try:
-            if getattr(self, 'signal_monitor', None):
+            auto_exec = bool(self.config.get("auto_execute_signals", False))
+            if auto_exec and self.signal_monitor and hasattr(self.signal_monitor, "set_execution_callback"):
                 self.signal_monitor.set_execution_callback(self._on_signal_triggered)
+                logger.info("EnhancedTradingOrchestrator: auto_execute_signals enabled (callback registered)")
         except Exception:
-            # Will be set when orchestrator is wired later if needed
             pass
 
-        logger.info(f"Enhanced Trading Orchestrator initialized for {self.symbol}")
+        logger.info(f"EnhancedTradingOrchestrator initialized for {self.context.instrument} in {self.context.mode} mode (run_id: {self.context.run_id})")
 
-    def _get_default_config(self) -> Dict[str, Any]:
-        """Get default configuration."""
-        return {
-            'symbol': 'BANKNIFTY26JANFUT',
-            'cycle_interval_minutes': 15,
-            'min_confidence_threshold': 0.6,
-            'max_agents_per_cycle': 4,
-            'risk_per_trade_pct': 1.0,
-            'position_size_pct': 5.0,
-            'max_positions': 3,  # Maximum number of open positions
-            'add_to_position_pct': 0.5,  # Percentage of new position size when adding to existing
-            'agents': {
-                'momentum': {'enabled': True},
-                'trend': {'enabled': True},
-                'mean_reversion': {'enabled': True},
-                'volume': {'enabled': True}
-            }
-        }
+    async def run_cycle(self, context: Dict[str, Any]) -> TradingDecision:
+        """Run complete analysis cycle with research-first architecture.
 
-    def _initialize_agents(self) -> Dict[str, Any]:
-        """Initialize trading agents."""
-        agents = {}
-
-        # Momentum Agent
-        if self.config.get('agents', {}).get('momentum', {}).get('enabled', True):
-            agents['momentum'] = MomentumAgent(self.config.get('momentum_config', {}))
-
-        # Trend Agent
-        if self.config.get('agents', {}).get('trend', {}).get('enabled', True):
-            agents['trend'] = TrendAgent(self.config.get('trend_config', {}))
-
-        # Mean Reversion Agent
-        if self.config.get('agents', {}).get('mean_reversion', {}).get('enabled', True):
-            agents['mean_reversion'] = MeanReversionAgent(self.config.get('mean_reversion_config', {}))
-
-        # Volume Agent
-        if self.config.get('agents', {}).get('volume', {}).get('enabled', True):
-            agents['volume'] = VolumeAgent(self.config.get('volume_config', {}))
-
-        logger.info(f"Initialized {len(agents)} trading agents: {list(agents.keys())}")
-        return agents
-
-    async def run_cycle(self, context: Dict[str, Any]) -> AnalysisResult:
-        """Run one 15-minute trading cycle.
-
-        Args:
-            context: Trading context (may include symbol, market data, etc.)
-
-        Returns:
-            AnalysisResult with aggregated trading decision
+        Phase 1: Research Manager establishes primary thesis
+        Phase 2: Supporting agents provide evidence and validation
+        Phase 3: Risk assessment and final decision validation
         """
-        self.cycle_count += 1
-        cycle_start = datetime.now()
-
         try:
-            logger.info(f"Starting trading cycle #{self.cycle_count} at {cycle_start.strftime('%H:%M:%S')}")
+            instrument = context.get("instrument", self.context.instrument)
 
-            # Get market data
-            symbol = context.get('symbol', self.symbol)
-            market_data = await self.market_data_provider.get_ohlc_data(symbol, periods=100)
+            # Ensure context has the correct instrument for data providers
+            context["instrument"] = instrument
 
-            if not market_data:
-                return AnalysisResult(
-                    decision="HOLD",
-                    confidence=0.0,
-                    details={"reason": "NO_MARKET_DATA", "cycle": self.cycle_count}
-                )
-
-            # Get current positions for this symbol
-            current_positions = []
-            if self.position_provider:
-                try:
-                    all_positions = await self.position_provider.get_positions(symbol=symbol)
-                    # Filter for active positions only
-                    current_positions = [
-                        pos for pos in all_positions 
-                        if pos.get('status', 'active') == 'active' and pos.get('symbol') == symbol
-                    ]
-                    logger.debug(f"Found {len(current_positions)} active positions for {symbol}")
-                except Exception as e:
-                    logger.warning(f"Failed to fetch positions: {e}")
-                    current_positions = []
-
-            # Get technical indicators
-            technical_indicators = None
-            if self.technical_data_provider:
-                try:
-                    technical_indicators = await self.technical_data_provider.get_technical_indicators(symbol, periods=100)
-                    logger.debug(f"Fetched technical indicators for {symbol}")
-                except Exception as e:
-                    logger.warning(f"Failed to fetch technical indicators: {e}")
-
-            # Attempt to fetch latest tick price (prefer real-time tick over OHLC close)
-            current_price = None
+            # 0) Invalidate previous signals for this instrument (15-min cadence)
             try:
-                if hasattr(self.market_data_provider, 'get_latest_ticks'):
-                    ticks = await self.market_data_provider.get_latest_ticks(symbol, limit=1)
-                    if ticks:
-                        tick = ticks[0]
-                        if isinstance(tick, dict):
-                            current_price = tick.get('last_price') or tick.get('last') or tick.get('price')
-                        else:
-                            current_price = getattr(tick, 'last_price', None) or getattr(tick, 'price', None) or getattr(tick, 'last', None)
-                # Fallback to technical indicators if available
-                if current_price is None and technical_indicators and isinstance(technical_indicators, dict):
-                    current_price = technical_indicators.get('current_price') or technical_indicators.get('last_price')
+                if self.mongo_db is not None:
+                    await cancel_pending_signals(self.mongo_db, instrument=instrument, reason="cycle_invalidation")
+            except Exception as e:
+                logger.debug(f"Signal invalidation (Mongo) skipped/failed: {e}")
+
+            try:
+                if self.signal_monitor and hasattr(self.signal_monitor, "remove_signals_for_instrument"):
+                    self.signal_monitor.remove_signals_for_instrument(instrument)
+            except Exception as e:
+                logger.debug(f"Signal invalidation (monitor) skipped/failed: {e}")
+
+            # PHASE 1: Get core data required by all agents
+            technical_data = await self._get_technical_data(context)
+            ohlc_data = await self._get_ohlc_data(context)
+            news_data = await self._get_news_data(context)
+            fundamental_data = await self._get_fundamental_data(context)
+            macro_data = await self._get_macro_data(context)
+
+            # Get current positions for context-aware decisions
+            positions = []
+            try:
+                if self.position_provider and hasattr(self.position_provider, "get_positions"):
+                    positions = await self.position_provider.get_positions(symbol=instrument)
             except Exception:
-                current_price = None
+                positions = []
+            context["positions"] = positions
 
-            # Fallback to OHLC close
-            if current_price is None:
-                current_price = market_data[-1].get('close', 0) if market_data else 0
+            # PHASE 2: Research Manager establishes primary thesis FIRST
+            research_decision = await self._run_research_manager_first(context, technical_data, ohlc_data, news_data, fundamental_data, macro_data)
 
-            # Prepare analysis context with position information and technical data
-            analysis_context = {
-                'ohlc': market_data,
-                'symbol': symbol,
-                'current_price': current_price,
-                'timestamp': cycle_start,
-                'current_positions': current_positions,  # Add positions to context
-                'has_long_position': any(
-                    p.get('action') == 'BUY' and p.get('status') == 'active' 
-                    for p in current_positions
-                ),
-                'has_short_position': any(
-                    p.get('action') == 'SELL' and p.get('status') == 'active' 
-                    for p in current_positions
-                ),
-                'position_count': len(current_positions),
-                'technical_indicators': technical_indicators.to_dict() if technical_indicators else {}
-            }
+            # PHASE 3: Supporting agents provide evidence and validation for the thesis
+            supporting_results = await self._run_supporting_agents(context, technical_data, ohlc_data, news_data, fundamental_data, macro_data, research_decision)
 
-            # Run all agents
-            agent_signals = await self._run_agent_analysis(analysis_context)
+            # Combine research and supporting results
+            all_agent_results = [research_decision] + supporting_results if research_decision else supporting_results
 
-            # Aggregate signals with position awareness
-            trading_decision = await self._aggregate_signals(
-                agent_signals, market_data, current_positions
+            # PHASE 4: Risk assessment and final validation
+            final_decision = await self._validate_and_finalize_decision(research_decision, supporting_results, context)
+
+            # Publish agent results to WebSocket for UI
+            await self._publish_agent_results(all_agent_results, context)
+
+            # Publish final decision to WebSocket for UI
+            await self._publish_final_decision(final_decision, all_agent_results, context)
+
+            # Create signals from decision details (structured preferred)
+            execution_result = None
+            try:
+                ar = AnalysisResult(
+                    decision=final_decision.get("decision", "HOLD"),
+                    confidence=float(final_decision.get("confidence", 0.0)),
+                    details=final_decision.get("details", {}) if isinstance(final_decision.get("details"), dict) else {"reasoning": final_decision.get("reasoning", "")},
+                    agent="ResearchFirstOrchestrator"
+                )
+                sigs = create_signals_from_decision(
+                    analysis_result=ar,
+                    instrument=instrument,
+                    technical_indicators=technical_data,
+                    current_price=context.get("current_price"),
+                    redis_client=self.redis_client
+                )
+                if sigs:
+                    # Persist + add to monitor
+                    for s in sigs:
+                        try:
+                            if self.mongo_db is not None:
+                                await save_signal_to_mongodb(s, self.mongo_db)
+                        except Exception:
+                            pass
+                        try:
+                            if self.signal_monitor:
+                                self.signal_monitor.add_signal(s)
+                        except Exception:
+                            pass
+                    # attach for UI
+                    final_decision.setdefault("details", {})
+                    if isinstance(final_decision["details"], dict):
+                        final_decision["details"]["signals_created"] = len(sigs)
+                        final_decision["details"]["signal_ids"] = [s.condition_id for s in sigs]
+            except Exception as e:
+                logger.debug(f"Signal creation skipped/failed: {e}")
+
+            # Optional immediate execution path (kept off by default if using signals)
+            if not self.signal_monitor and self.config.get("auto_execute_signals", False):
+                execution_result = await self._execute_decision(final_decision, context)
+
+            # Create comprehensive trading decision
+            trading_decision = TradingDecision(
+                instrument=instrument,
+                decision=final_decision.get("decision", "HOLD"),
+                confidence=final_decision.get("confidence", 0.0),
+                timestamp=get_current_time(self.redis_client),
+                reasoning=final_decision.get("reasoning", ""),
+                agent_results=all_agent_results,
+                technical_indicators=technical_data,
+                execution_result=execution_result,
+                mode=self.context.mode,
+                run_id=self.run_id
             )
 
-            # Publish detailed agent responses via WebSocket
-            await self._publish_agent_analysis_results(agent_signals, symbol, context)
+            logger.info(f"Research-first orchestrator cycle completed: {trading_decision.decision} ({trading_decision.confidence:.2f}) in {self.context.mode} mode")
+            return trading_decision
 
-            # Generate LLM decision if available
-            market_hours = context.get('market_hours', True)
-            if hasattr(self, 'llm_client') and self.llm_client and market_hours:
-                aggregated = {
-                    'action': trading_decision.action,
-                    'confidence': trading_decision.confidence,
-                    'signal_strength': 0.5,
-                    'confidence_score': trading_decision.confidence,
-                    'agent_signals': {},
-                    'reasoning': trading_decision.reasoning
-                }
-                final_decision = await self._generate_llm_decision(aggregated, context)
-                trading_decision.action = final_decision.decision
-                trading_decision.confidence = final_decision.confidence
-                if final_decision.details.get('reasoning'):
-                    trading_decision.reasoning += f" | LLM: {final_decision.details['reasoning']}"
-                if final_decision.decision not in ["HOLD", "ERROR"]:
-                    await self._create_signals_from_decision(final_decision, symbol, current_price)
+            # Publish final decision to WebSocket for UI
+            await self._publish_final_decision(decision, agent_results, context)
 
-                # Publish orchestrator decision
-                await self._publish_orchestrator_decision(final_decision, agent_signals, symbol, context)
+            # Create signals from decision details (structured preferred)
+            execution_result = None
+            try:
+                ar = AnalysisResult(
+                    decision=decision.get("decision", "HOLD"),
+                    confidence=float(decision.get("confidence", 0.0)),
+                    details=decision.get("details", {}) if isinstance(decision.get("details"), dict) else {"reasoning": decision.get("reasoning", "")},
+                    agent="FinalJudge"
+                )
+                sigs = create_signals_from_decision(
+                    analysis_result=ar,
+                    instrument=instrument,
+                    technical_indicators=technical_data,
+                    current_price=context.get("current_price"),
+                    redis_client=self.redis_client
+                )
+                if sigs:
+                    # Persist + add to monitor
+                    for s in sigs:
+                        try:
+                            if self.mongo_db is not None:
+                                await save_signal_to_mongodb(s, self.mongo_db)
+                        except Exception:
+                            pass
+                        try:
+                            if self.signal_monitor:
+                                self.signal_monitor.add_signal(s)
+                        except Exception:
+                            pass
+                    # attach for UI
+                    decision.setdefault("details", {})
+                    if isinstance(decision["details"], dict):
+                        decision["details"]["signals_created"] = len(sigs)
+                        decision["details"]["signal_ids"] = [s.condition_id for s in sigs]
+            except Exception as e:
+                logger.debug(f"Signal creation skipped/failed: {e}")
 
-            # Update cycle timing
-            self.last_cycle_time = cycle_start
+            # Optional immediate execution path (kept off by default if using signals)
+            if not self.signal_monitor and self.config.get("auto_execute_signals", False):
+                execution_result = await self._execute_decision(decision, context)
 
-            # Log cycle completion
-            cycle_duration = (datetime.now() - cycle_start).total_seconds()
-            logger.info(f"Trading cycle #{self.cycle_count} completed in {cycle_duration:.2f}s")
-            # Convert to AnalysisResult format for compatibility
-            details = trading_decision.to_dict()
-            details['cycle_info'] = {
-                'cycle_number': self.cycle_count,
-                'duration_seconds': cycle_duration,
-                'agents_run': len(agent_signals)
-            }
-
-            return AnalysisResult(
-                decision=trading_decision.action,
-                confidence=trading_decision.confidence,
-                details=details
+            # Create comprehensive trading decision
+            trading_decision = TradingDecision(
+                instrument=instrument,
+                decision=decision.get("decision", "HOLD"),
+                confidence=decision.get("confidence", 0.0),
+                timestamp=datetime.now(IST),
+                reasoning=decision.get("reasoning", ""),
+                agent_results=agent_results,
+                technical_indicators=technical_data,
+                execution_result=execution_result,
+                mode=self.context.mode,
+                run_id=self.run_id
             )
+
+            logger.info(f"Orchestrator cycle completed: {trading_decision.decision} ({trading_decision.confidence:.2f}) in {self.context.mode} mode")
+            return trading_decision
 
         except Exception as e:
-            logger.exception(f"Error in trading cycle #{self.cycle_count}")
-            return AnalysisResult(
+            logger.error(f"Orchestrator cycle failed: {e}", exc_info=True)
+            return TradingDecision(
+                instrument=context.get("instrument", "UNKNOWN"),
                 decision="HOLD",
                 confidence=0.0,
-                details={"reason": f"CYCLE_ERROR: {str(e)}", "cycle": self.cycle_count}
+                timestamp=get_current_time(self.redis_client),
+                reasoning=f"Error: {str(e)}",
+                agent_results=[],
+                technical_indicators={},
+                execution_result=None,
+                mode=self.context.mode,
+                run_id=self.run_id
             )
 
-    async def _run_agent_analysis(self, context: Dict[str, Any]) -> Dict[str, AnalysisResult]:
-        """Run analysis on all enabled agents."""
-        agent_signals = {}
+    async def _run_research_manager_first(self, context: Dict[str, Any], technical_data: Dict[str, Any],
+                                         ohlc_data: List[Dict[str, Any]], news_data: Dict[str, Any],
+                                         fundamental_data: Dict[str, Any], macro_data: Dict[str, Any]) -> Optional[AnalysisResult]:
+        """Phase 2: Run EnhancedResearchManager first to establish primary thesis.
 
-        # Run agents concurrently for better performance
+        This is the foundation of the research-first architecture. The research manager
+        establishes the core bull/bear/neutral thesis that all other analysis supports.
+        """
+        try:
+            # Check if EnhancedResearchManager is available in agents
+            research_manager = None
+            for agent in self.agents:
+                if agent.__class__.__name__ == "EnhancedResearchManager":
+                    research_manager = agent
+                    break
+
+            if not research_manager:
+                logger.warning("EnhancedResearchManager not found in agents - falling back to traditional approach")
+                return None
+
+            # Prepare context specifically for research manager
+            research_context = context.copy()
+            research_context["technical_indicators"] = technical_data
+            research_context["current_price"] = technical_data.get("current_price", 0)
+            if ohlc_data:
+                research_context["ohlc"] = ohlc_data
+            if news_data:
+                research_context.update(news_data)
+            if fundamental_data:
+                research_context.update(fundamental_data)
+            if macro_data:
+                research_context.update(macro_data)
+
+            # Run research manager to establish primary thesis
+            research_result = await self._run_single_agent(research_manager, research_context)
+
+            if research_result and research_result.confidence > 0.3:  # Minimum confidence threshold
+                logger.info(f"Research Manager thesis established: {research_result.decision} (confidence: {research_result.confidence:.2f})")
+                return research_result
+            else:
+                logger.info("Research Manager returned low-confidence result - proceeding with supporting analysis only")
+                return None
+
+        except Exception as e:
+            logger.warning(f"Research manager execution failed: {e}")
+            return None
+
+    async def _run_supporting_agents(self, context: Dict[str, Any], technical_data: Dict[str, Any],
+                                   ohlc_data: List[Dict[str, Any]], news_data: Dict[str, Any],
+                                   fundamental_data: Dict[str, Any], macro_data: Dict[str, Any],
+                                   research_decision: Optional[AnalysisResult]) -> List[AnalysisResult]:
+        """Phase 3: Run supporting agents to validate and enhance the research thesis.
+
+        Supporting agents provide evidence that either confirms or challenges the
+        research manager's thesis, leading to more robust decision-making.
+        """
+        # Prepare agent context with research thesis for context-aware analysis
+        agent_context = context.copy()
+        agent_context["technical_indicators"] = technical_data
+        agent_context["current_price"] = technical_data.get("current_price", 0)
+
+        if ohlc_data:
+            agent_context["ohlc"] = ohlc_data
+        if news_data:
+            agent_context.update(news_data)
+        if fundamental_data:
+            agent_context.update(fundamental_data)
+        if macro_data:
+            agent_context.update(macro_data)
+
+        # Add research thesis to context for supporting agents
+        if research_decision:
+            agent_context["research_thesis"] = {
+                "decision": research_decision.decision,
+                "confidence": research_decision.confidence,
+                "thesis": research_decision.details.get("research_plan", "") if research_decision.details else ""
+            }
+
+            # Extract individual trader results for agents that need them
+            bull_result = research_decision.details.get("bull_trader_input") if research_decision.details else None
+            bear_result = research_decision.details.get("bear_trader_input") if research_decision.details else None
+
+            if bull_result:
+                agent_context["bull_researcher"] = bull_result
+            if bear_result:
+                agent_context["bear_researcher"] = bear_result
+
+            # Pass the market maker synthesis
+            agent_context["market_maker"] = research_decision
+
+        # Special context for SignalCreationAgent - it needs all agent results
+        # We'll handle this after running other agents
+
+        # Define supporting agent types (exclude research managers and signal creation)
+        supporting_agent_types = {
+            "TechnicalAgent", "VolumeAgent", "MomentumAgent", "TrendAgent",
+            "MeanReversionAgent", "SentimentAgent", "FundamentalAgent", "MacroAgent",
+            "PortfolioManagerAgent", "RiskAgent", "EnhancedRiskAgent"
+        }
+
+        logger.debug(f"Looking for supporting agents of types: {supporting_agent_types}")
+
+        # Include specialized agents based on research thesis
+        if research_decision:
+            decision_upper = research_decision.decision.upper()
+            # Include OptionsStrategyAgent for options trading (BANKNIFTY26JANFUT is options)
+            instrument = context.get("instrument", "")
+            if "BANKNIFTY26JANFUT" in instrument or any(x in decision_upper for x in ["CALL", "PUT", "IRON_CONDOR", "SPREAD", "OPTION"]):
+                supporting_agent_types.add("OptionsStrategyAgent")
+            # Always include SignalCreationAgent for final signal synthesis
+            supporting_agent_types.add("SignalCreationAgent")
+
+        # Separate SignalCreationAgent from other supporting agents
+        signal_creation_agent = None
+        regular_supporting_agents = []
+
+        for agent in self.agents:
+            agent_name = agent.__class__.__name__
+            if agent_name == "SignalCreationAgent":
+                signal_creation_agent = agent
+                logger.debug(f"Found SignalCreationAgent: {agent}")
+            elif agent_name in supporting_agent_types:
+                regular_supporting_agents.append(agent)
+                logger.debug(f"Found supporting agent: {agent_name}")
+
+        logger.info(f"Found {len(regular_supporting_agents)} regular supporting agents and SignalCreationAgent: {signal_creation_agent is not None}")
+
+        if not regular_supporting_agents and not signal_creation_agent:
+            logger.warning("No supporting agents found")
+            return []
+
+        # Run regular supporting agents concurrently
+        logger.debug(f"Running {len(regular_supporting_agents)} supporting agents concurrently")
+        tasks = [self._run_single_agent(agent, agent_context) for agent in regular_supporting_agents]
+        supporting_results = await asyncio.gather(*tasks, return_exceptions=True)
+        logger.debug(f"Supporting agents execution completed, got {len(supporting_results)} results")
+
+        # Run SignalCreationAgent with all other agent results
+        if signal_creation_agent:
+            signal_context = agent_context.copy()
+            signal_context["agent_results"] = [r for r in supporting_results if isinstance(r, AnalysisResult)]
+            signal_context["current_positions"] = context.get("current_positions", [])
+            signal_context["cash_available"] = context.get("cash_available", 1000000)
+            signal_context["volatility"] = technical_data.get("volatility", 0.15)
+
+            signal_result = await self._run_single_agent(signal_creation_agent, signal_context)
+            if isinstance(signal_result, AnalysisResult):
+                supporting_results.append(signal_result)
+
+        # Filter valid results
+        valid_results = []
+        for i, result in enumerate(supporting_results):
+            if isinstance(result, Exception):
+                agent_name = regular_supporting_agents[i].__class__.__name__ if i < len(regular_supporting_agents) else "Unknown"
+                logger.warning(f"Supporting agent {agent_name} failed: {result}")
+                continue
+            valid_results.append(result)
+
+        logger.info(f"Supporting agents completed: {len(valid_results)}/{len(regular_supporting_agents)} successful")
+        return valid_results
+
+    async def _validate_and_finalize_decision(self, research_decision: Optional[AnalysisResult],
+                                            supporting_results: List[AnalysisResult],
+                                            context: Dict[str, Any]) -> Dict[str, Any]:
+        """Phase 4: Validate research thesis with supporting evidence and finalize decision.
+
+        This method implements trader-focused decision logic:
+        1. Research thesis is primary driver
+        2. Supporting agents provide validation/confirmation
+        3. LLM provides risk assessment but doesn't override strong research conclusions
+        """
+        instrument = context.get("instrument", self.context.instrument)
+
+        # Case 1: Strong research thesis with supporting validation
+        if research_decision and research_decision.confidence >= 0.6:
+            # Research thesis is strong - use it as foundation
+            supporting_validation = self._assess_supporting_validation(research_decision, supporting_results)
+
+            # If supporting agents mostly agree, confidence increases
+            if supporting_validation["agreement_ratio"] >= 0.6:
+                adjusted_confidence = min(research_decision.confidence * 1.2, 0.95)
+                decision = research_decision.decision
+                reasoning = f"Strong research thesis ({research_decision.decision}) validated by {supporting_validation['supporting_votes']}/{len(supporting_results)} supporting agents"
+            else:
+                # Supporting agents disagree - reduce confidence but don't override
+                adjusted_confidence = research_decision.confidence * 0.8
+                decision = research_decision.decision
+                reasoning = f"Research thesis ({research_decision.decision}) with moderate supporting validation ({supporting_validation['supporting_votes']}/{len(supporting_results)} agents)"
+
+            # LLM risk assessment (doesn't override)
+            llm_assessment = await self._get_llm_risk_assessment(research_decision, supporting_results, context)
+
+            # Include structured signals from SignalCreationAgent if available
+            details = {
+                "research_thesis": research_decision.details,
+                "supporting_validation": supporting_validation,
+                "llm_risk_assessment": llm_assessment,
+                "decision_framework": "research_first_validated",
+                "valid_for_minutes": 15
+            }
+
+            # Use signals from SignalCreationAgent if available
+            signal_creation_result = None
+            for result in supporting_results:
+                if getattr(result, 'agent', '') == 'SignalCreationAgent' and result.details:
+                    signal_creation_result = result
+                    break
+
+            if signal_creation_result and signal_creation_result.details.get('signals'):
+                details["signals"] = signal_creation_result.details["signals"]
+                logger.info(f"Included {len(signal_creation_result.details['signals'])} final signals from SignalCreationAgent")
+
+                # Update confidence based on signal creation
+                if signal_creation_result.confidence > 0:
+                    adjusted_confidence = signal_creation_result.confidence
+                    reasoning = signal_creation_result.details.get('reasoning', reasoning)
+            else:
+                logger.warning("No signals created by SignalCreationAgent")
+
+            return {
+                "decision": decision,
+                "confidence": adjusted_confidence,
+                "reasoning": reasoning,
+                "details": details
+            }
+
+        # Case 2: Weak/No research thesis - fall back to supporting agent consensus
+        else:
+            # Aggregate supporting agent decisions
+            aggregated = await self._aggregate_decisions(supporting_results)
+
+            # LLM final validation
+            if self.llm_client and aggregated.get("confidence", 0.0) >= 0.4:
+                llm_decision = await self._judge_decision(aggregated, supporting_results, context)
+                return llm_decision
+            else:
+                return aggregated
+
+    def _assess_supporting_validation(self, research_decision: AnalysisResult,
+                                    supporting_results: List[AnalysisResult]) -> Dict[str, Any]:
+        """Assess how well supporting agents validate the research thesis."""
+        if not supporting_results:
+            return {"agreement_ratio": 0.0, "supporting_votes": 0, "conflicting_votes": 0, "excluded_agents": 0}
+
+        # Separate participating and excluded agents
+        participating_results = [r for r in supporting_results if not getattr(r, 'excluded', False)]
+        excluded_results = [r for r in supporting_results if getattr(r, 'excluded', False)]
+
+        if not participating_results:
+            return {
+                "agreement_ratio": 0.0,
+                "supporting_votes": 0,
+                "conflicting_votes": 0,
+                "total_agents": len(supporting_results),
+                "participating_agents": 0,
+                "excluded_agents": len(excluded_results)
+            }
+
+        supporting_votes = 0
+        conflicting_votes = 0
+
+        research_direction = self._extract_direction_from_decision(research_decision.decision)
+
+        for result in participating_results:
+            agent_direction = self._extract_direction_from_decision(result.decision)
+
+            # Direction agreement (simplified logic)
+            if research_direction == agent_direction and result.confidence >= 0.5:
+                supporting_votes += 1
+            elif research_direction != agent_direction and result.confidence >= 0.6:
+                conflicting_votes += 1
+
+        total_valid_agents = len([r for r in participating_results if r.confidence >= 0.4])
+        agreement_ratio = supporting_votes / max(total_valid_agents, 1)
+
+        return {
+            "agreement_ratio": agreement_ratio,
+            "supporting_votes": supporting_votes,
+            "conflicting_votes": conflicting_votes,
+            "total_agents": len(supporting_results),
+            "participating_agents": len(participating_results),
+            "excluded_agents": len(excluded_results)
+        }
+
+    def _extract_direction_from_decision(self, decision: str) -> str:
+        """Extract directional bias from agent decision."""
+        decision = decision.upper() if decision else "HOLD"
+
+        if "BUY" in decision or "BULL" in decision:
+            return "BULLISH"
+        elif "SELL" in decision or "BEAR" in decision:
+            return "BEARISH"
+        else:
+            return "NEUTRAL"
+
+    async def _get_llm_risk_assessment(self, research_decision: AnalysisResult,
+                                     supporting_results: List[AnalysisResult],
+                                     context: Dict[str, Any]) -> Dict[str, Any]:
+        """Get LLM risk assessment without overriding the research decision."""
+        if not self.llm_client:
+            return {"risk_level": "unknown", "assessment": "No LLM available"}
+
+        try:
+            prompt = f"""
+            Analyze the risk profile of this trading decision. DO NOT override the research thesis.
+
+            Research Decision: {research_decision.decision} (confidence: {research_decision.confidence:.2f})
+            Thesis: {research_decision.details.get('research_plan', 'N/A') if research_decision.details else 'N/A'}
+
+            Supporting agents: {len([r for r in supporting_results if r.confidence >= 0.5])}/{len(supporting_results)} agree
+
+            Context: {context.get('instrument', 'UNKNOWN')} at price {context.get('current_price', 'N/A')}
+
+            Provide risk assessment focusing on:
+            1. Position sizing recommendation (0.5-2.0x normal)
+            2. Stop loss tightness (conservative/moderate/aggressive)
+            3. Holding period expectation
+            4. Key risk factors to monitor
+
+            Return as JSON with keys: risk_level, position_size_multiplier, stop_loss_style, holding_period, key_risks
+            """
+
+            from genai_module.contracts import LLMRequest
+            req = LLMRequest(prompt=prompt, temperature=0.1, max_tokens=300)
+            resp = await self.llm_client.generate(req)
+            content = getattr(resp, "content", None) or getattr(resp, "text", None) or "{}"
+
+            import json
+            assessment = json.loads(content)
+            return assessment
+
+        except Exception as e:
+            logger.debug(f"LLM risk assessment failed: {e}")
+            return {"risk_level": "moderate", "assessment": "Assessment unavailable"}
+
+    async def _judge_decision(self, aggregated: Dict[str, Any], agent_results: List[AnalysisResult], context: Dict[str, Any]) -> Dict[str, Any]:
+        """LLM-backed final judge that outputs structured signals + English reasoning."""
+        # If no LLM client, fall back to aggregated summary
+        if not self.llm_client:
+            return aggregated
+
+        instrument = context.get("instrument", self.context.instrument)
+        positions = context.get("positions", [])
+
+        # Build agent block
+        lines = []
+        for r in agent_results:
+            an = getattr(r, "agent", None) or getattr(r, "_agent_name", None) or r.__class__.__name__
+            dec = getattr(r, "decision", "HOLD")
+            conf = float(getattr(r, "confidence", 0.0) or 0.0)
+            det = getattr(r, "details", {}) or {}
+            reasoning = det.get("reasoning") if isinstance(det, dict) else ""
+            lines.append(f"- {an}: decision={dec}, confidence={conf:.2f}, reasoning={reasoning or 'n/a'}")
+        agent_block = "\n".join(lines) if lines else "- (no agents)"
+
+        # Positions block
+        pos_lines = []
+        if isinstance(positions, list):
+            for p in positions[:10]:
+                if not isinstance(p, dict):
+                    continue
+                pos_lines.append(
+                    f"- side={p.get('action')}, qty={p.get('quantity')}, entry={p.get('entry_price')}, current={p.get('current_price')}"
+                )
+        pos_block = "\n".join(pos_lines) if pos_lines else "No open positions."
+
+        prompt = f"""You are the FINAL JUDGE for {instrument} for the next 15 minutes.
+
+You must produce:
+1) detailed English reasoning, referencing evidence and current positions
+2) structured signals (entry and/or exit) that can be executed later when conditions match.
+
+AGGREGATED SUMMARY:
+{json.dumps(aggregated, ensure_ascii=False)[:4000]}
+
+CURRENT POSITIONS:
+{pos_block}
+
+AGENT REPORTS:
+{agent_block}
+
+Respond in JSON ONLY:
+{{
+  \"final_decision\": \"BUY|SELL|HOLD|CLOSE_LONG|CLOSE_SHORT|SCALE_IN|SCALE_OUT|REVERSE\",
+  \"confidence\": 0.0-1.0,
+  \"reasoning\": \"Detailed English reasoning\",
+  \"valid_for_minutes\": 15,
+  \"signals\": [
+    {{
+      \"signal_type\": \"ENTRY|EXIT\",
+      \"action\": \"BUY|SELL|CLOSE_LONG|CLOSE_SHORT|SCALE_IN|SCALE_OUT|REVERSE\",
+      \"execution_mode\": \"CONDITIONAL|IMMEDIATE\",
+      \"position_size\": 0.1-5.0,
+      \"confidence\": 0.0-1.0,
+      \"entry_price\": number|null,
+      \"stop_loss\": number|null,
+      \"take_profit\": number|null,
+      \"conditions\": [
+        {{\"indicator\":\"current_price|rsi_14|macd|...\",\"operator\":\">|<|>=|<=|crosses_above|crosses_below\",\"threshold\": number}}
+      ],
+      \"rationale\": \"Short English rationale\"
+    }}
+  ]
+}}
+"""
+
+        try:
+            from genai_module.contracts import LLMRequest
+            req = LLMRequest(prompt=prompt, temperature=0.1, max_tokens=1200, model=None)
+            resp = await self.llm_client.generate(req)
+            content = getattr(resp, "content", None) or getattr(resp, "text", None) or str(resp)
+            parsed = json.loads(content)
+            final_decision = (parsed.get("final_decision") or parsed.get("decision") or "HOLD").upper()
+            confidence = float(parsed.get("confidence", aggregated.get("confidence", 0.0)))
+            reasoning = parsed.get("reasoning", aggregated.get("reasoning", ""))
+            signals = parsed.get("signals", []) if isinstance(parsed.get("signals", []), list) else []
+
+            # Decision returned to engine stays in BUY/SELL/HOLD family; signals carry richer actions
+            decision_for_engine = final_decision
+            if final_decision in {"CLOSE_LONG", "SCALE_OUT"}:
+                decision_for_engine = "SELL"
+            elif final_decision == "CLOSE_SHORT":
+                decision_for_engine = "BUY"
+            elif final_decision == "REVERSE":
+                decision_for_engine = "HOLD"
+
+            return {
+                "decision": decision_for_engine,
+                "confidence": confidence,
+                "reasoning": reasoning,
+                "details": {
+                    "judge": parsed,
+                    "signals": signals,
+                    "valid_for_minutes": parsed.get("valid_for_minutes", 15),
+                    "positions": positions,
+                    "aggregated_analysis": aggregated.get("aggregated_analysis", aggregated),
+                }
+            }
+        except Exception as e:
+            logger.warning(f"Judge decision failed, using aggregate fallback: {e}")
+            return aggregated
+
+    async def _on_signal_triggered(self, event: SignalTriggerEvent) -> None:
+        """Execute a triggered signal through the mode-aware execution adapter."""
+        # Safety switches
+        dry_run = bool(self.config.get("auto_execute_dry_run", False))
+
+        try:
+            from .signal_creator import mark_signal_status
+        except Exception:
+            mark_signal_status = None
+
+        if dry_run:
+            if mark_signal_status:
+                try:
+                    await mark_signal_status(event.condition_id, "executed", mongo_db=self.mongo_db, extra={"dry_run": True})
+                except Exception:
+                    pass
+            return
+
+        try:
+            res = await self.execution_adapter.execute_trading_decision(
+                instrument=event.instrument,
+                decision=event.action,
+                confidence=float(event.confidence or 0.0),
+                analysis_details={
+                    "current_price": float(event.current_price or 0.0),
+                    "entry_price": float(event.current_price or 0.0),
+                    "quantity": max(1, int(round(float(event.position_size or 1.0)))),
+                    "stop_loss": event.stop_loss,
+                    "take_profit": event.take_profit,
+                    "signal_id": event.condition_id,
+                },
+                position_manager=self.position_manager,
+            )
+            if mark_signal_status:
+                try:
+                    await mark_signal_status(event.condition_id, "executed", mongo_db=self.mongo_db, extra={"execution_result": res})
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.error(f"EnhancedTradingOrchestrator auto-execute failed: {e}", exc_info=True)
+
+    async def _get_technical_data(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        """Get technical indicators for analysis."""
+        if self.technical_data_provider:
+            return await self.technical_data_provider.get_indicators(
+                context.get("instrument", "BANKNIFTY")
+            )
+        return {}
+
+    async def _get_ohlc_data(self, context: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Get OHLC data for analysis (needed by TechnicalAgent, VolumeAgent, etc.)."""
+        if self.market_data_provider:
+            return await self.market_data_provider.get_ohlc_data(
+                context.get("instrument", "BANKNIFTY"), periods=100
+            )
+        return []
+
+    async def _get_news_data(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        """Get news and sentiment data for analysis (needed by SentimentAgent)."""
+        if self.news_data_provider:
+            return await self.news_data_provider.get_news_data(
+                context.get("instrument", "BANKNIFTY")
+            )
+        return {}
+
+    async def _get_fundamental_data(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        """Get fundamental data for analysis (needed by FundamentalAgent)."""
+        if self.fundamental_data_provider:
+            return await self.fundamental_data_provider.get_fundamental_data(
+                context.get("instrument", "BANKNIFTY")
+            )
+        return {}
+
+    async def _get_macro_data(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        """Get macroeconomic data for analysis (needed by MacroAgent)."""
+        if self.macro_data_provider:
+            return await self.macro_data_provider.get_macro_data()
+        return {}
+
+    async def _run_agents(self, context: Dict[str, Any], technical_data: Dict[str, Any],
+                         ohlc_data: List[Dict[str, Any]] = None,
+                         news_data: Dict[str, Any] = None,
+                         fundamental_data: Dict[str, Any] = None,
+                         macro_data: Dict[str, Any] = None) -> List[AnalysisResult]:
+        """Run all agents concurrently."""
+        # Prepare context for agents
+        agent_context = context.copy()
+        agent_context["technical_indicators"] = technical_data
+
+        # Add OHLC data if available
+        if ohlc_data:
+            agent_context["ohlc"] = ohlc_data
+
+        # Add news/sentiment data if available
+        if news_data:
+            agent_context.update(news_data)
+
+        # Add fundamental data if available
+        if fundamental_data:
+            agent_context.update(fundamental_data)
+
+        # Add macro data if available
+        if macro_data:
+            agent_context.update(macro_data)
+
+        # Run agents concurrently
         tasks = []
-        for agent_name, agent in self.agents.items():
-            task = asyncio.create_task(self._run_single_agent(agent_name, agent, context))
+        for agent in self.agents:
+            task = asyncio.create_task(self._run_single_agent(agent, agent_context))
             tasks.append(task)
 
         # Wait for all agents to complete
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        agent_results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Process results
-        for i, (agent_name, _) in enumerate(self.agents.items()):
-            if i < len(results):
-                result = results[i]
-                if isinstance(result, Exception):
-                    logger.error(f"Agent {agent_name} failed: {result}")
-                    agent_signals[agent_name] = AnalysisResult(
-                        decision="HOLD",
-                        confidence=0.0,
-                        details={"reason": f"AGENT_ERROR: {str(result)}"}
-                    )
-                else:
-                    agent_signals[agent_name] = result
+        # Filter out exceptions and return valid results
+        valid_results = []
+        for i, result in enumerate(agent_results):
+            if isinstance(result, Exception):
+                logger.warning(f"Agent {self.agents[i].__class__.__name__} failed: {result}")
+                continue
+            valid_results.append(result)
 
-        return agent_signals
+        return valid_results
 
-    async def _run_single_agent(self, agent_name: str, agent: Any, context: Dict[str, Any]) -> AnalysisResult:
-        """Run a single agent analysis and standardize the result."""
+    async def _run_single_agent(self, agent: Any, context: Dict[str, Any]) -> AnalysisResult:
+        """Run a single agent with proper error handling."""
         try:
-            result = await agent.analyze(context)
+            if hasattr(agent, 'analyze'):
+                result = await agent.analyze(context)
+                # Ensure result has agent identifier
+                agent_name = agent.__class__.__name__
+                if hasattr(result, 'agent'):
+                    result.agent = agent_name
 
-            # Standardize result to ensure consistent fields for downstream consumers
-            try:
-                from engine_module.utils.agent_helpers import standardize_analysis_result
-                agent_id = getattr(agent, '_agent_name', None) or getattr(agent, 'name', None) or agent_name
-                standardize_analysis_result(result, agent_id)
-            except Exception:
-                # Never fail the agent due to standardization issues; just log at debug
-                logger.debug("Agent standardization step failed", exc_info=True)
-
-            return result
+                if hasattr(result, 'details') and result.details is not None:
+                    if isinstance(result.details, dict):
+                        result.details['agent'] = agent_name
+                        # Convert numpy types to Python types for JSON serialization
+                        result.details = convert_numpy_types(result.details)
+                return result
+            else:
+                logger.warning(f"Agent {agent.__class__.__name__} does not have analyze method")
+                return AnalysisResult(
+                    decision="HOLD",
+                    confidence=0.0,
+                    details={"error": "No analyze method", "agent": agent.__class__.__name__},
+                    agent=agent.__class__.__name__
+                )
         except Exception as e:
-            logger.exception(f"Error in agent {agent_name}")
+            logger.warning(f"Agent {agent.__class__.__name__} failed: {e}")
             return AnalysisResult(
                 decision="HOLD",
                 confidence=0.0,
-                details={"reason": f"AGENT_ERROR: {str(e)}", "agent": agent_name}
+                details={"error": str(e), "agent": agent.__class__.__name__},
+                agent=agent.__class__.__name__
             )
 
-    async def _aggregate_signals(self,
-                                agent_signals: Dict[str, AnalysisResult],
-                                market_data: List[Dict[str, Any]],
-                                current_positions: List[Dict[str, Any]] = None) -> TradingDecision:
-        """Aggregate agent signals into final trading decision."""
-        if not agent_signals:
-            return TradingDecision(
-                action="HOLD",
-                confidence=0.0,
-                reasoning="No agent signals available",
-                entry_price=0.0,
-                stop_loss=0.0,
-                take_profit=0.0,
-                quantity=0,
-                risk_amount=0.0,
-                agent_signals=agent_signals,
-                timestamp=datetime.now(),
-                position_action="OPEN_NEW"
-            )
+    async def _aggregate_decisions(self, agent_results: List[AnalysisResult]) -> Dict[str, Any]:
+        """Aggregate agent results into final trading decision."""
+        if not agent_results:
+            return {
+                "decision": "HOLD",
+                "confidence": 0.0,
+                "reasoning": "No agent results available"
+            }
 
-        # Count signals by type - now including options strategies
-        buy_signals = []
-        sell_signals = []
-        hold_signals = []
-        options_strategies = []
+        # Simple voting system for now
+        buy_votes = 0
+        sell_votes = 0
+        hold_votes = 0
+        total_confidence = 0.0
+        reasonings = []
+        key_insights = []
 
-        for agent_name, signal in agent_signals.items():
-            decision = signal.decision
-            if decision in ["BUY", "BULL_CALL_SPREAD"]:
-                buy_signals.append((agent_name, signal))
-            elif decision in ["SELL", "BEAR_PUT_SPREAD"]:
-                sell_signals.append((agent_name, signal))
-            elif decision in ["IRON_CONDOR", "CONDOR", "BUTTERFLY"]:
-                options_strategies.append((agent_name, signal))
+        for result in agent_results:
+            confidence = getattr(result, 'confidence', 0.0)
+            decision = getattr(result, 'decision', 'HOLD').upper()
+            agent_name = getattr(result, 'agent', 'Unknown')
+
+            total_confidence += confidence
+
+            if 'BUY' in decision:
+                buy_votes += 1
+            elif 'SELL' in decision:
+                sell_votes += 1
             else:
-                hold_signals.append((agent_name, signal))
+                hold_votes += 1
 
-        # Prioritize options strategies if available
-        if options_strategies:
-            # Use the options strategy with highest confidence
-            best_strategy = max(options_strategies, key=lambda x: x[1].confidence)
-            agent_name, signal = best_strategy
+            # Collect reasoning
+            agent_reasoning = f"{agent_name}: {decision} ({confidence:.2f})"
             
-            if signal.confidence >= min_confidence:
-                return await self._create_options_trading_decision(
-                    signal.decision, signal.confidence, [best_strategy], agent_signals, 
-                    current_price, current_positions, signal.options_strategy
-                )
+            # Add detailed reasoning from agent details if available
+            if hasattr(result, 'details') and result.details and isinstance(result.details, dict):
+                detailed_reasoning = result.details.get('reasoning')
+                if detailed_reasoning and len(detailed_reasoning) > 10:  # Only if substantial
+                    agent_reasoning += f" - {detailed_reasoning[:200]}..." if len(detailed_reasoning) > 200 else f" - {detailed_reasoning}"
+            
+            reasonings.append(agent_reasoning)
+            
+            # Simple key insights from agents with high confidence
+            if confidence > 0.7 and decision != "HOLD":
+                key_insights.append(f"{agent_name} suggests {decision} with {confidence:.0%} confidence")
 
-        # Fallback to traditional buy/sell logic if no strong options signals
-
-        # Determine consensus
-        total_agents = len(agent_signals)
-        buy_count = len(buy_signals)
-        sell_count = len(sell_signals)
-
-        # Get current price
-        current_price = market_data[-1].get('close', 0) if market_data else 0
-
-        # Analyze current positions
-        current_positions = current_positions or []
-        has_long_position = any(
-            p.get('action') == 'BUY' and p.get('status') == 'active' 
-            for p in current_positions
-        )
-        has_short_position = any(
-            p.get('action') == 'SELL' and p.get('status') == 'active' 
-            for p in current_positions
-        )
-
-        # Decision logic with position awareness
-        min_confidence = self.config.get('min_confidence_threshold', 0.6)
-        max_positions = self.config.get('max_positions', 3)
-
-        # Check if we're at position limit
-        if len(current_positions) >= max_positions:
-            logger.info(f"At position limit ({len(current_positions)}/{max_positions}), considering exit signals only")
-            # Only consider SELL signals if we have long positions, or BUY signals if we have short positions
-            if has_long_position and sell_count > 0:
-                # Consider closing long positions
-                avg_confidence = sum(s.confidence for _, s in sell_signals) / sell_count
-                if avg_confidence >= min_confidence:
-                    return await self._create_trading_decision(
-                        "SELL", avg_confidence, sell_signals, agent_signals, current_price,
-                        current_positions, position_action="CLOSE_LONG"
-                    )
-            elif has_short_position and buy_count > 0:
-                # Consider closing short positions
-                avg_confidence = sum(s.confidence for _, s in buy_signals) / buy_count
-                if avg_confidence >= min_confidence:
-                    return await self._create_trading_decision(
-                        "BUY", avg_confidence, buy_signals, agent_signals, current_price,
-                        current_positions, position_action="CLOSE_SHORT"
-                    )
-            # At limit and no exit signals - HOLD
-            return TradingDecision(
-                action="HOLD",
-                confidence=0.0,
-                reasoning=f"At position limit ({len(current_positions)}/{max_positions}) with no exit signals",
-                entry_price=current_price,
-                stop_loss=0.0,
-                take_profit=0.0,
-                quantity=0,
-                risk_amount=0.0,
-                agent_signals=agent_signals,
-                timestamp=datetime.now(),
-                position_action="OPEN_NEW"
-            )
-
-        if buy_count > sell_count and buy_count >= max(2, total_agents // 2):
-            # BUY consensus
-            avg_confidence = sum(s.confidence for _, s in buy_signals) / buy_count
-            if avg_confidence >= min_confidence:
-                # Check if we should add to existing position or open new
-                position_action = "ADD_TO_LONG" if has_long_position else "OPEN_NEW"
-                return await self._create_trading_decision(
-                    "BUY", avg_confidence, buy_signals, agent_signals, current_price,
-                    current_positions, position_action=position_action
-                )
-
-        elif sell_count > buy_count and sell_count >= max(2, total_agents // 2):
-            # SELL consensus
-            avg_confidence = sum(s.confidence for _, s in sell_signals) / sell_count
-            if avg_confidence >= min_confidence:
-                # Check if we should add to existing position or open new
-                position_action = "ADD_TO_SHORT" if has_short_position else "OPEN_NEW"
-                return await self._create_trading_decision(
-                    "SELL", avg_confidence, sell_signals, agent_signals, current_price,
-                    current_positions, position_action=position_action
-                )
-
-        # No clear consensus - HOLD
-        reasoning_parts = []
-        if buy_signals:
-            reasoning_parts.append(f"{buy_count} BUY signals")
-        if sell_signals:
-            reasoning_parts.append(f"{sell_count} SELL signals")
-        if hold_signals:
-            reasoning_parts.append(f"{len(hold_signals)} HOLD signals")
-
-        reasoning = f"No clear consensus: {' | '.join(reasoning_parts)}"
-
-        return TradingDecision(
-            action="HOLD",
-            confidence=0.0,
-            reasoning=reasoning,
-            entry_price=current_price,
-            stop_loss=0.0,
-            take_profit=0.0,
-            quantity=0,
-            risk_amount=0.0,
-            agent_signals=agent_signals,
-            timestamp=datetime.now(),
-            position_action="OPEN_NEW"
-        )
-
-    async def _create_trading_decision(self,
-                                      action: str,
-                                      confidence: float,
-                                      primary_signals: List,
-                                      all_signals: Dict[str, AnalysisResult],
-                                      current_price: float,
-                                      current_positions: List[Dict[str, Any]] = None,
-                                      position_action: str = "OPEN_NEW") -> TradingDecision:
-        """Create a complete trading decision with position management."""
-
-        # Combine reasoning from primary signals
-        reasoning_parts = []
-        for agent_name, signal in primary_signals:
-            if signal.details and 'reasoning' in signal.details:
-                reasoning_parts.extend(signal.details['reasoning'])
-            else:
-                reasoning_parts.append(f"{agent_name}: {signal.decision}")
-
-        reasoning = " | ".join(reasoning_parts[:3])  # Limit to top 3 reasons
-
-        # Position management from agent details (use first agent's levels)
-        primary_agent = primary_signals[0][1]
-        agent_details = primary_agent.details or {}
-
-        entry_price = agent_details.get('entry_price', current_price)
-        stop_loss = agent_details.get('stop_loss', entry_price * 0.98)
-        take_profit = agent_details.get('take_profit', entry_price * 1.04)
-
-        # Calculate quantity based on risk management and position action
-        risk_per_trade_pct = self.config.get('risk_per_trade_pct', 1.0)
-        account_size = self.config.get('account_size', 100000)
-        current_positions = current_positions or []
-
-        # Adjust quantity based on position action
-        if position_action in ["ADD_TO_LONG", "ADD_TO_SHORT"]:
-            # When adding to position, use smaller size (e.g., 50% of new position)
-            add_to_position_pct = self.config.get('add_to_position_pct', 0.5)
-            risk_per_trade_pct = risk_per_trade_pct * add_to_position_pct
-            # Find existing position to reference
-            existing_pos = next(
-                (p for p in current_positions 
-                 if p.get('action') == action and p.get('status') == 'active'),
-                None
-            )
-            if existing_pos:
-                reasoning += f" | Adding to existing {action} position (ID: {existing_pos.get('position_id', 'unknown')})"
-        elif position_action in ["CLOSE_LONG", "CLOSE_SHORT"]:
-            # When closing, use quantity from existing position
-            existing_pos = next(
-                (p for p in current_positions 
-                 if ((action == "SELL" and p.get('action') == 'BUY') or 
-                     (action == "BUY" and p.get('action') == 'SELL')) and 
-                    p.get('status') == 'active'),
-                None
-            )
-            if existing_pos:
-                quantity = existing_pos.get('quantity', 1)
-                entry_price = existing_pos.get('entry_price', current_price)
-                # Use existing position's stop/target or update based on current market
-                stop_loss = existing_pos.get('stop_loss', stop_loss)
-                take_profit = existing_pos.get('take_profit', take_profit)
-                risk_amount = abs(entry_price - stop_loss) * quantity
-                reasoning += f" | Closing {action} position (ID: {existing_pos.get('position_id', 'unknown')})"
-                return TradingDecision(
-                    action=action,
-                    confidence=confidence,
-                    reasoning=reasoning,
-                    entry_price=entry_price,
-                    stop_loss=stop_loss,
-                    take_profit=take_profit,
-                    quantity=quantity,
-                    risk_amount=risk_amount,
-                    agent_signals=all_signals,
-                    timestamp=datetime.now(),
-                    position_action=position_action
-                )
-
-        risk_amount = account_size * (risk_per_trade_pct / 100)
-        stop_distance = abs(entry_price - stop_loss)
-
-        if stop_distance > 0:
-            position_value = risk_amount / (stop_distance / entry_price)
-            max_position_value = account_size * (self.config.get('position_size_pct', 5.0) / 100)
-            position_value = min(position_value, max_position_value)
-            quantity = max(1, int(position_value / entry_price))
+        # Determine final decision
+        if buy_votes > sell_votes:
+            final_decision = "BUY"
+        elif sell_votes > buy_votes:
+            final_decision = "SELL"
         else:
-            quantity = 1
-            risk_amount = abs(entry_price * 0.02)  # Default 2% risk
+            final_decision = "HOLD"
 
-        # Add position action to reasoning
-        if position_action != "OPEN_NEW":
-            reasoning += f" | Action: {position_action}"
-
-        return TradingDecision(
-            action=action,
-            confidence=confidence,
-            reasoning=reasoning,
-            entry_price=entry_price,
-            stop_loss=stop_loss,
-            take_profit=take_profit,
-            quantity=quantity,
-            risk_amount=risk_amount,
-            agent_signals=all_signals,
-            timestamp=datetime.now(),
-            position_action=position_action
-        )
-
-    async def _create_options_trading_decision(self,
-                                             strategy_name: str,
-                                             confidence: float,
-                                             primary_signals: List,
-                                             all_signals: Dict[str, AnalysisResult],
-                                             current_price: float,
-                                             current_positions: List[Dict[str, Any]] = None,
-                                             options_strategy: Any = None) -> TradingDecision:
-        """Create a trading decision for options strategies."""
+        avg_confidence = total_confidence / len(agent_results) if agent_results else 0.0
         
-        # Combine reasoning from primary signals
-        reasoning_parts = []
-        for agent_name, signal in primary_signals:
-            if signal.details and 'plan' in signal.details:
-                reasoning_parts.append(f"{agent_name}: {signal.details['plan']}")
-            else:
-                reasoning_parts.append(f"{agent_name}: {signal.decision}")
+        # Basic risk assessment based on consensus
+        risk_assessment = "LOW"
+        if final_decision != "HOLD":
+            if avg_confidence < 0.4:
+                risk_assessment = "HIGH"
+            elif avg_confidence < 0.6:
+                risk_assessment = "MEDIUM"
 
-        reasoning = " | ".join(reasoning_parts[:2])  # Limit to top 2 reasons
-
-        # Use options strategy details if available
-        if options_strategy:
-            entry_price = 0.0  # Net premium (to be calculated)
-            stop_loss = options_strategy.max_loss
-            take_profit = options_strategy.max_profit
-            risk_amount = options_strategy.max_loss
-            quantity = 1  # Number of strategy lots
-        else:
-            # Fallback defaults
-            entry_price = 0.0
-            stop_loss = current_price * 0.05  # 5% stop loss
-            take_profit = current_price * 0.10  # 10% target
-            risk_amount = current_price * 0.02  # 2% risk
-            quantity = 1
-
-        return TradingDecision(
-            action=strategy_name,
-            confidence=confidence,
-            reasoning=reasoning,
-            entry_price=entry_price,
-            stop_loss=stop_loss,
-            take_profit=take_profit,
-            quantity=quantity,
-            risk_amount=risk_amount,
-            agent_signals=all_signals,
-            timestamp=datetime.now(),
-            position_action="OPEN_NEW",
-            options_strategy=options_strategy
-        )
-
-    def get_cycle_stats(self) -> Dict[str, Any]:
-        """Get statistics about completed cycles."""
         return {
-            'total_cycles': self.cycle_count,
-            'last_cycle_time': self.last_cycle_time.isoformat() if self.last_cycle_time else None,
-            'symbol': self.symbol,
-            'active_agents': list(self.agents.keys()),
-            'config': self.config
+            "decision": final_decision,
+            "confidence": avg_confidence,
+            "reasoning": " | ".join(reasonings),
+            "agent_results": agent_results,
+            "aggregated_analysis": {
+                "consensus_direction": final_decision,
+                "confidence_score": avg_confidence,
+                "risk_assessment": risk_assessment,
+                "key_insights": key_insights,
+                "agent_breakdown": {
+                    "buy_signals": buy_votes,
+                    "sell_signals": sell_votes,
+                    "hold_signals": hold_votes,
+                    "total_agents": len(agent_results)
+                }
+            }
         }
 
-    async def _on_signal_triggered(self, event: 'SignalTriggerEvent') -> None:
-        """Orchestrator-level handler for triggered signals.
+    async def _execute_decision(self, decision: Dict[str, Any], context: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Execute the trading decision using the appropriate adapter."""
+        instrument = context.get("instrument", "UNKNOWN")
 
-        If `auto_execute_signals` is enabled in config, this will attempt to execute the
-        signal (via `position_provider.execute_trading_decision` if available, otherwise
-        it will call the user trading API). The handler is idempotent (checks DB status
-        before executing).
-        """
+        # Only execute if confidence is above threshold and not HOLD
+        if decision.get("confidence", 0.0) < 0.6 or decision.get("decision") == "HOLD":
+            logger.debug(f"Skipping execution: low confidence or HOLD decision")
+            return None
+
+        # Execute via adapter
+        execution_result = await self.execution_adapter.execute_trading_decision(
+            instrument=instrument,
+            decision=decision["decision"],
+            confidence=decision["confidence"],
+            analysis_details=context,
+            position_manager=self.position_manager
+        )
+
+        return execution_result
+
+    async def finalize_backtest(self):
+        """Finalize backtest if in BACKTEST mode."""
+        if self.context.mode == "BACKTEST" and hasattr(self.execution_adapter, 'finalize_backtest'):
+            await self.execution_adapter.finalize_backtest()
+
+    def get_mode(self) -> str:
+        """Get current execution mode."""
+        return self.context.mode
+
+    def get_run_id(self) -> Optional[str]:
+        """Get current run ID."""
+        return self.context.run_id
+
+    async def _publish_agent_results(self, agent_results: List[AnalysisResult], context: Dict[str, Any]) -> None:
+        """Publish individual agent results to WebSocket for UI."""
+        if not self.redis_client:
+            return
+
         try:
-            # Respect configuration
-            if not self.config.get('auto_execute_signals', False):
-                logger.debug("Auto execution disabled; skipping execution for %s", event.condition_id)
-                return
+            instrument = context.get("instrument", self.context.instrument)
 
-            # Idempotency: check DB status
-            try:
-                mongo_client = getattr(self, 'mongo_db', None) or None
-                from .api_service import get_mongo_client
-                if mongo_client is None:
-                    mongo_client = get_mongo_client()
-                db_name = None
-                try:
-                    db_name = os.getenv('MONGODB_DATABASE', 'zerodha_trading')
-                    db = mongo_client[db_name]
-                except Exception:
-                    db = mongo_client
+            for result in agent_results:
+                # Use result.agent if set, otherwise fallback to details['agent'], finally 'unknown'
+                agent_name = getattr(result, 'agent', None)
+                if not agent_name and hasattr(result, 'details') and result.details:
+                    agent_name = result.details.get('agent')
+                if not agent_name:
+                    agent_name = 'unknown'
 
-                # Try to find the signal doc
-                sig_doc = None
-                try:
-                    from bson import ObjectId
-                    q = {'condition_id': event.condition_id}
-                    sig_doc = db['signals'].find_one(q)
-                except Exception:
-                    try:
-                        sig_doc = db['signals'].find_one({'condition_id': event.condition_id})
-                    except Exception:
-                        sig_doc = None
-
-                if sig_doc and sig_doc.get('status') == 'executed':
-                    logger.info("Signal %s already executed, skipping", event.condition_id)
-                    return
-            except Exception:
-                # If we can't check DB, continue but be conservative
-                logger.debug("Could not check DB for idempotency")
-
-            # Dry-run; log and mark triggered only
-            if self.config.get('auto_execute_dry_run', True):
-                logger.info("Dry-run: would execute signal %s: %s %s", event.condition_id, event.action, event.instrument)
-                try:
-                    from .signal_creator import mark_signal_status
-                    await mark_signal_status(event.condition_id, 'triggered', extra={'triggered_at': event.triggered_at})
-                except Exception:
-                    pass
-                return
-
-            # Prepare execution payload
-            payload = {
-                'user_id': 'auto_executor',
-                'instrument': event.instrument,
-                'side': event.action,
-                'quantity': int(event.position_size) if hasattr(event, 'position_size') else 1,
-                'order_type': 'MARKET',
-                'signal_id': event.condition_id
-            }
-
-            # Try position_provider first
-            executed = None
-            if self.position_provider and hasattr(self.position_provider, 'execute_trading_decision'):
-                try:
-                    executed = await self.position_provider.execute_trading_decision(event.instrument, event.action, event.confidence, {'signal_id': event.condition_id})
-                except Exception as e:
-                    logger.warning(f"Position provider execution failed: {e}")
-
-            # Fallback to calling user API
-            if executed is None:
-                try:
-                    import httpx
-                    async with httpx.AsyncClient(timeout=30.0) as client:
-                        resp = await client.post('http://localhost:8007/api/trading/execute', json=payload)
-                        if resp.status_code == 200:
-                            executed = resp.json()
-                        else:
-                            logger.warning("User API execution returned status %s", resp.status_code)
-                except Exception as e:
-                    logger.exception("Failed to call user execution API: %s", e)
-
-            # Mark executed in DB if we have evidence
-            if executed is not None:
-                try:
-                    from .signal_creator import mark_signal_status
-                    await mark_signal_status(event.condition_id, 'executed', extra={'executed_at': datetime.now().isoformat(), 'execution_info': executed})
-                except Exception:
-                    logger.debug("Failed to mark signal executed in DB")
-
-        except Exception as e:
-            logger.exception("Error in auto-execute handler: %s", e)
-
-    def update_config(self, new_config: Dict[str, Any]):
-        """Update orchestrator configuration."""
-        self.config.update(new_config)
-
-        # Reinitialize agents if config changed
-        if 'agents' in new_config:
-            self.agents = self._initialize_agents()
-
-        logger.info(f"Orchestrator configuration updated: {list(new_config.keys())}")
-
-    async def reconcile_signals_with_positions(self, mongo_db: Any) -> int:
-        """Reconcile pending signals with current active positions.
-
-        Marks signals as 'executed' if corresponding positions exist (best-effort).
-        Returns number of signals reconciled.
-        """
-        reconciled = 0
-        try:
-            collection = mongo_db['signals']
-            pending = list(collection.find({'status': 'pending', 'is_active': True}))
-
-            # Fetch positions if provider available
-            positions = []
-            try:
-                if self.position_provider and hasattr(self.position_provider, 'get_positions'):
-                    positions = await self.position_provider.get_positions()
-            except Exception:
-                positions = []
-
-            for sig in pending:
-                try:
-                    cond_id = sig.get('condition_id')
-                    instr = sig.get('instrument')
-                    # Find matching positions: match by signal_id or instrument + action
-                    match = None
-                    for p in positions:
-                        if p.get('signal_id') == cond_id:
-                            match = p
-                            break
-                        if p.get('instrument') == instr and p.get('status') == 'active' and p.get('action') == sig.get('action'):
-                            match = p
-                            break
-
-                    if match:
-                        from .signal_creator import mark_signal_status
-                        await mark_signal_status(cond_id, 'executed', extra={'reconciled_at': datetime.now().isoformat(), 'position_id': match.get('position_id')})
-                        reconciled += 1
-                except Exception:
-                    continue
-        except Exception as e:
-            logger.warning(f"Reconciliation failed: {e}")
-        return reconciled
-
-    async def _create_signals_from_decision(self, analysis_result: AnalysisResult, symbol: str, current_price: Optional[float]):
-        """Create trading signals from orchestrator analysis result.
-
-        Args:
-            analysis_result: AnalysisResult from LLM decision
-            symbol: Trading instrument symbol
-            current_price: Current market price
-        """
-        try:
-            logger.info(f"Creating signals for {analysis_result.decision} decision on {symbol}")
-
-            # Import signal creation functionality
-            from .signal_creator import create_signals_from_decision, save_signal_to_mongodb
-
-            # Create signals from the decision
-            signals = create_signals_from_decision(
-                analysis_result=analysis_result,
-                instrument=symbol,
-                current_price=current_price,
-                strategy_config=getattr(self, 'strategy_config', None)
-            )
-
-            if signals:
-                logger.info(f"Created {len(signals)} signals for {symbol}")
-
-                # Save signals to database and publish to Redis
-                for signal in signals:
-                    try:
-                        # Get MongoDB connection from the orchestrator
-                        mongo_db = getattr(self, 'mongo_db', None)
-                        if mongo_db:
-                            signal_id = await save_signal_to_mongodb(signal, mongo_db)
-                            logger.info(f"Saved signal {signal.condition_id} with ID {signal_id}")
-
-                            # Sync signal to monitor if available
-                            if hasattr(self, 'signal_monitor'):
-                                try:
-                                    from .signal_creator import sync_signals_to_monitor
-                                    await sync_signals_to_monitor(mongo_db, self.signal_monitor, symbol)
-                                    logger.info(f"Synced signals to monitor for {symbol}")
-                                except Exception as sync_err:
-                                    logger.warning(f"Failed to sync signals to monitor: {sync_err}")
-
-                        else:
-                            logger.warning("MongoDB not available for signal persistence")
-
-                    except Exception as save_err:
-                        logger.error(f"Failed to save signal {signal.condition_id}: {save_err}")
-
-            else:
-                logger.info(f"No signals created for {analysis_result.decision} decision")
-
-        except Exception as e:
-            logger.error(f"Error creating signals from decision: {e}", exc_info=True)
-
-    async def _publish_agent_analysis_results(self, agent_signals: Dict[str, AnalysisResult], symbol: str, context: Dict[str, Any]):
-        """Publish detailed agent analysis results via WebSocket."""
-        try:
-            import redis.asyncio as redis_async
-            redis_host = os.getenv("REDIS_HOST", "localhost")
-            redis_port = int(os.getenv("REDIS_PORT", "6379"))
-
-            redis_client = redis_async.Redis(host=redis_host, port=redis_port, db=0, decode_responses=True)
-
-            for agent_name, analysis_result in agent_signals.items():
-                try:
-                    # Extract rich data from analysis result
-                    agent_data = {
-                        'type': 'agent_analysis',
-                        'timestamp': datetime.now().isoformat(),
-                        'agent_name': agent_name,
-                        'instrument': symbol,
-                        'decision': analysis_result.decision,
-                        'confidence': analysis_result.confidence,
-                        'details': analysis_result.details or {},
-                        'cycle_info': context.get('cycle_info', {}),
-                        'seq': context.get('cycle_info', {}).get('cycle_number', 0)
-                    }
-
-                    # Add technical indicators if available
-                    if analysis_result.details and 'indicators' in analysis_result.details:
-                        agent_data['technical_indicators'] = analysis_result.details['indicators']
-
-                    # Add reasoning if available
-                    if analysis_result.details and 'reasoning' in analysis_result.details:
-                        agent_data['reasoning'] = analysis_result.details['reasoning']
-
-                    # Publish to Redis pub/sub
-                    channel = f"engine:agent:{agent_name}"
-                    await redis_client.publish(channel, json.dumps(agent_data))
-
-                    # Also publish to general agent channel
-                    await redis_client.publish("engine:agent", json.dumps(agent_data))
-
-                    logger.debug(f"Published agent analysis for {agent_name}: {analysis_result.decision} ({analysis_result.confidence:.2f})")
-
-                except Exception as agent_err:
-                    logger.warning(f"Failed to publish agent {agent_name} analysis: {agent_err}")
-
-            await redis_client.aclose()
-
-        except Exception as e:
-            logger.error(f"Error publishing agent analysis results: {e}")
-
-    async def _publish_orchestrator_decision(self, final_decision: AnalysisResult, agent_signals: Dict[str, AnalysisResult], symbol: str, context: Dict[str, Any]):
-        """Publish orchestrator decision with agent breakdown via WebSocket."""
-        try:
-            import redis.asyncio as redis_async
-            redis_host = os.getenv("REDIS_HOST", "localhost")
-            redis_port = int(os.getenv("REDIS_PORT", "6379"))
-
-            redis_client = redis_async.Redis(host=redis_host, port=redis_port, db=0, decode_responses=True)
-
-            # Build comprehensive orchestrator decision data
-            orchestrator_data = {
-                'type': 'orchestrator_decision',
-                'timestamp': datetime.now().isoformat(),
-                'instrument': symbol,
-                'final_decision': final_decision.decision,
-                'confidence': final_decision.confidence,
-                'reasoning': final_decision.details.get('reasoning', ''),
-                'agent_responses': [],
-                'signal_created': final_decision.decision not in ["HOLD", "ERROR"],
-                'cycle_info': context.get('cycle_info', {}),
-                'seq': context.get('cycle_info', {}).get('cycle_number', 0)
-            }
-
-            # Add agent breakdown
-            for agent_name, analysis_result in agent_signals.items():
-                agent_response = {
-                    'agent': agent_name,
-                    'decision': analysis_result.decision,
-                    'confidence': analysis_result.confidence,
-                    'details': analysis_result.details.get('reasoning', '') if analysis_result.details else ''
+                agent_data = {
+                    "agent_name": agent_name,
+                    "decision": getattr(result, 'decision', 'HOLD'),
+                    "confidence": float(getattr(result, 'confidence', 0.0)),
+                    "timestamp": datetime.now(IST).isoformat(),
+                    "instrument": instrument,
+                    "details": self._json_safe_dict(getattr(result, 'details', {})),
+                    "reasoning": getattr(result, 'details', {}).get('reasoning', ''),
+                    "technical_indicators": self._json_safe_dict(getattr(result, 'details', {}).get('technical_indicators', {})),
+                    "cycle_info": self._json_safe_dict(context.get('cycle_info', {})),
+                    "mode": self.context.mode,
+                    "run_id": self.context.run_id
                 }
-                orchestrator_data['agent_responses'].append(agent_response)
 
-            # Add key insights if available
-            if final_decision.details and 'aggregated_analysis' in final_decision.details:
-                agg = final_decision.details['aggregated_analysis']
-                if 'key_insights' in agg:
-                    orchestrator_data['key_insights'] = agg['key_insights']
+                # Publish to general and instrument-specific channels
+                self.redis_client.publish("engine:decision", json.dumps(agent_data))
+                self.redis_client.publish(f"engine:decision:{instrument}", json.dumps(agent_data))
 
-            # Publish to Redis pub/sub
-            await redis_client.publish("engine:decision", json.dumps(orchestrator_data))
-            await redis_client.publish(f"engine:decision:{symbol}", json.dumps(orchestrator_data))
-
-            logger.info(f"Published orchestrator decision: {final_decision.decision} ({final_decision.confidence:.2f}) for {symbol}")
-
-            await redis_client.aclose()
+                logger.debug(f"Published agent analysis for {agent_data['agent_name']}: {agent_data['decision']} ({agent_data['confidence']:.2f})")
 
         except Exception as e:
-            logger.error(f"Error publishing orchestrator decision: {e}")
+            logger.warning(f"Failed to publish agent results to WebSocket: {e}")
+
+    def _json_safe_dict(self, data: Any) -> Any:
+        """Convert data to JSON-safe format, handling numpy types."""
+        if isinstance(data, dict):
+            return {k: self._json_safe_dict(v) for k, v in data.items()}
+        elif isinstance(data, list):
+            return [self._json_safe_dict(item) for item in data]
+        elif hasattr(data, 'item'):  # numpy types
+            return data.item()
+        elif isinstance(data, (int, float, str, bool)) or data is None:
+            return data
+        else:
+            # Convert to string for unknown types
+            return str(data)
+
+    async def _publish_final_decision(self, decision: Dict[str, Any], agent_results: List[AnalysisResult], context: Dict[str, Any]) -> None:
+        """Publish final orchestrator decision to WebSocket for UI."""
+        if not self.redis_client:
+            logger.warning("No Redis client available for publishing final decision")
+            return
+
+
+        try:
+            instrument = context.get("instrument", self.context.instrument)
+
+            agent_responses = [
+                {
+                    "agent": getattr(result, 'agent', 'unknown'),
+                    "decision": getattr(result, 'decision', 'HOLD'),
+                    "confidence": float(getattr(result, 'confidence', 0.0)),
+                    "excluded": getattr(result, 'excluded', False),
+                    "exclusion_reason": getattr(result, 'exclusion_reason', None),
+                    "details": getattr(result, 'details', {})
+                } for result in agent_results
+            ]
+
+            decision_data = {
+                "instrument": instrument,
+                "final_decision": decision.get("decision", "HOLD"),
+                "confidence": float(decision.get("confidence", 0.0)),
+                "reasoning": decision.get("reasoning", ""),
+                "timestamp": datetime.now(IST).isoformat(),
+                "agent_responses": agent_responses,
+                "mode": self.context.mode,
+                "run_id": self.context.run_id,
+                "details": {
+                    "aggregated_analysis": decision.get("aggregated_analysis", {})
+                }
+            }
+
+
+            # Publish to orchestrator decision channels (separate from agent channels)
+            self.redis_client.publish("engine:orchestrator_decision", json.dumps(decision_data))
+            self.redis_client.publish(f"engine:orchestrator_decision:{instrument}", json.dumps(decision_data))
+
+            # Persist last decision in Redis for "replay on subscribe"
+            # Publish to Redis with run isolation
+            from .system_context import get_cache_manager
+            cache_manager = get_cache_manager()
+            cache_manager.set(f"engine:orchestrator_decision:{instrument}:latest", json.dumps(decision_data), expire_seconds=3600)  # 1 hour
+            cache_manager.set("engine:orchestrator_decision:latest", json.dumps(decision_data), expire_seconds=3600)
+
+            logger.debug(f"Published orchestrator decision: {decision_data['final_decision']} ({decision_data['confidence']:.2f}) for {instrument}")
+
+        except Exception as e:
+            logger.warning(f"Failed to publish final decision to WebSocket: {e}")

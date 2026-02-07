@@ -1,4 +1,6 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
+import { useDispatch } from 'react-redux'
+import { useNavigate } from 'react-router-dom'
 import { CurrentSignalWidget } from '../components/widgets/CurrentSignalWidget'
 import { MarketOverviewWidget } from '../components/widgets/MarketOverviewWidget'
 import { TechnicalIndicatorsWidget } from '../components/widgets/TechnicalIndicatorsWidget'
@@ -13,17 +15,34 @@ import { TradeHistoryWidget } from '../components/widgets/TradeHistoryWidget'
 import { KeyInsightsWidget } from '../components/widgets/KeyInsightsWidget'
 import { AgentDetailModal } from '../components/widgets/AgentDetailModal'
 import { WidgetShell } from '../components/widgets/WidgetShell'
+import { fetchAgentStatuses, fetchOrchestratorDecisions, fetchSignals } from '../store/slices/tradingSlice'
 
 type TabType = 'dashboard' | 'analytics' | 'signals'
 
 export const DashboardPage: React.FC = () => {
+  const dispatch = useDispatch()
   const [activeTab, setActiveTab] = useState<TabType>('dashboard')
   const [selectedAgent, setSelectedAgent] = useState<any>(null)
   const [agentModalOpen, setAgentModalOpen] = useState(false)
+  const navigate = useNavigate()
 
-  // Data loading and refresh hooks are disabled
-  // All data comes from WebSocket real-time streams
-  // No HTTP polling or dispatch needed
+  // Load data based on active tab - tab isolation for better debugging
+  useEffect(() => {
+    if (activeTab === 'dashboard') {
+      // Dashboard tab: core trading data including signals
+      dispatch(fetchAgentStatuses() as any)
+      dispatch(fetchOrchestratorDecisions() as any)
+      dispatch(fetchSignals() as any)
+    } else if (activeTab === 'analytics') {
+      // Analytics tab: agent details for analysis
+      dispatch(fetchAgentStatuses() as any)
+    } else if (activeTab === 'signals') {
+      // Signals tab: full trading data
+      dispatch(fetchAgentStatuses() as any)
+      dispatch(fetchOrchestratorDecisions() as any)
+      dispatch(fetchSignals() as any)
+    }
+  }, [dispatch, activeTab])
 
   const tabs: { id: TabType; label: string; description: string }[] = [
     { id: 'dashboard', label: 'Dashboard', description: 'Core trading view with signals & market data' },
@@ -146,8 +165,13 @@ export const DashboardPage: React.FC = () => {
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               <WidgetShell id="agent-status-signals" title="Agent Status">
                 <AgentStatusWidget onAgentClick={(agent) => {
-                  setSelectedAgent(agent)
-                  setAgentModalOpen(true)
+                  // Navigate to full agent detail page
+                  if (agent?.name) {
+                    navigate(`/agents/${encodeURIComponent(agent.name)}`)
+                  } else {
+                    setSelectedAgent(agent)
+                    setAgentModalOpen(true)
+                  }
                 }} />
               </WidgetShell>
 

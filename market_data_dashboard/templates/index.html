@@ -1,0 +1,1066 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Market Data Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body class="bg-gray-100 min-h-screen">
+    <div class="container mx-auto px-4 py-8">
+        <header class="mb-8">
+            <div class="flex justify-between items-center mb-2">
+                <h1 class="text-3xl font-bold text-gray-800">Market Data Dashboard</h1>
+                <div id="mode-badge" class="text-lg">
+                    <span class="inline-flex items-center px-4 py-2 rounded-full bg-gray-300 text-gray-700">
+                        <svg class="w-4 h-4 mr-2 animate-spin" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        Loading...
+                    </span>
+                </div>
+            </div>
+            <div class="flex justify-between items-center">
+                <p class="text-gray-600">Real-time market data monitoring and visualization</p>
+                <p class="text-sm text-gray-500">
+                    <span id="effective-time">Loading...</span>
+                </p>
+            </div>
+        </header>
+
+        <!-- Status Overview -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
+            <div class="bg-white rounded-lg shadow p-6">
+                <h3 class="text-lg font-semibold mb-4">System Status</h3>
+                <div id="system-status" class="space-y-2">
+                    <div class="flex items-center">
+                        <div id="auth-status-icon" class="w-3 h-3 rounded-full mr-2 bg-gray-500"></div>
+                        <span>Auth: <span id="auth-status">Checking...</span></span>
+                    </div>
+                    <div class="flex items-center">
+                        <div id="api-status" class="w-3 h-3 rounded-full mr-2"></div>
+                        <span>Market Data API</span>
+                    </div>
+                    <div class="flex items-center">
+                        <div id="ws-status-icon" class="w-3 h-3 rounded-full mr-2"></div>
+                        <span>WebSocket: <span id="ws-status">Connecting...</span></span>
+                    </div>
+                    <div class="text-sm text-gray-600">
+                        <span id="last-update">Loading...</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="bg-white rounded-lg shadow p-6">
+                <h3 class="text-lg font-semibold mb-4">Data Validation</h3>
+                <div id="data-validation" class="space-y-2">
+                    <div class="text-2xl font-bold" id="overall-status">Loading...</div>
+                    <div class="text-sm text-gray-600">
+                        <span id="instruments-count">0/0</span> instruments with data
+                    </div>
+                </div>
+            </div>
+
+            <div class="bg-white rounded-lg shadow p-6">
+                <h3 class="text-lg font-semibold mb-4">Quick Actions</h3>
+                <div class="space-y-2">
+                    <button onclick="refreshData()" class="w-full bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600">
+                        Refresh Data
+                    </button>
+                    <button onclick="window.location.reload()" class="w-full bg-gray-500 text-white px-4 py-2 rounded hover:bg-gray-600">
+                        Reload Page
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Instruments Status -->
+        <div class="bg-white rounded-lg shadow p-6 mb-8">
+            <h3 class="text-lg font-semibold mb-4">Instruments Status</h3>
+            <div id="instruments-grid" class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <!-- Instruments will be populated here -->
+            </div>
+        </div>
+
+        <!-- Timeframe Selector -->
+        <div class="bg-white rounded-lg shadow p-6 mb-8">
+            <h3 class="text-lg font-semibold mb-4">Timeframe Selection</h3>
+            <div class="flex flex-wrap gap-2">
+                <button onclick="setTimeframe('1min')" id="tf-1min" class="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600">1M</button>
+                <button onclick="setTimeframe('5min')" id="tf-5min" class="px-4 py-2 bg-gray-400 text-white rounded hover:bg-gray-500">5M</button>
+                <button onclick="setTimeframe('15min')" id="tf-15min" class="px-4 py-2 bg-gray-400 text-white rounded hover:bg-gray-500">15M</button>
+                <button onclick="setTimeframe('1h')" id="tf-1h" class="px-4 py-2 bg-gray-400 text-white rounded hover:bg-gray-500">1H</button>
+                <button onclick="setTimeframe('4h')" id="tf-4h" class="px-4 py-2 bg-gray-400 text-white rounded hover:bg-gray-500">4H</button>
+                <button onclick="setTimeframe('1d')" id="tf-1d" class="px-4 py-2 bg-gray-400 text-white rounded hover:bg-gray-500">1D</button>
+            </div>
+        </div>
+
+        <!-- Current Indicators Values -->
+        <div class="bg-white rounded-lg shadow p-6 mb-8">
+            <h3 class="text-lg font-semibold mb-4" id="indicators-title">Technical Indicators</h3>
+            <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <!-- Trend Indicators -->
+                <div class="border-l-4 border-purple-500 pl-4">
+                    <h4 class="text-xs font-semibold text-gray-600 uppercase mb-2">Trend</h4>
+                    <div class="space-y-1 text-sm">
+                        <div><span class="font-bold" id="rsi-status">--</span> RSI</div>
+                        <div><span class="font-bold" id="macd-status">--</span> MACD</div>
+                        <div><span class="font-bold" id="trend-dir">--</span> Trend</div>
+                        <div><span class="font-bold" id="adx-status">--</span> ADX</div>
+                    </div>
+                </div>
+                
+                <!-- Momentum Indicators -->
+                <div class="border-l-4 border-green-500 pl-4">
+                    <h4 class="text-xs font-semibold text-gray-600 uppercase mb-2">Momentum</h4>
+                    <div class="space-y-1 text-sm">
+                        <div><span class="font-bold" id="momentum-val">--</span> Momentum</div>
+                        <div><span class="font-bold" id="roc-val">--</span> ROC</div>
+                        <div><span class="font-bold" id="mfi-val">--</span> MFI</div>
+                        <div><span class="font-bold" id="stoch-k">--</span> Stoch K</div>
+                    </div>
+                </div>
+                
+                <!-- Volatility Indicators -->
+                <div class="border-l-4 border-yellow-500 pl-4">
+                    <h4 class="text-xs font-semibold text-gray-600 uppercase mb-2">Volatility</h4>
+                    <div class="space-y-1 text-sm">
+                        <div><span class="font-bold" id="atr-val">--</span> ATR</div>
+                        <div><span class="font-bold" id="bolling-val">--</span> Bollinger</div>
+                        <div><span class="font-bold" id="volatility-lvl">--</span> Vol Level</div>
+                        <div><span class="font-bold" id="cci-val">--</span> CCI</div>
+                    </div>
+                </div>
+                
+                <!-- Support/Resistance -->
+                <div class="border-l-4 border-red-500 pl-4">
+                    <h4 class="text-xs font-semibold text-gray-600 uppercase mb-2">Levels</h4>
+                    <div class="space-y-1 text-sm">
+                        <div><span class="font-bold" id="pivot-p">--</span> Pivot</div>
+                        <div><span class="font-bold" id="resistance">--</span> R1</div>
+                        <div><span class="font-bold" id="support">--</span> S1</div>
+                        <div><span class="font-bold" id="range-val">--</span> Range</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Charts Section -->
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 mb-8">
+            <div class="bg-white rounded-lg shadow p-6">
+                <h3 class="text-lg font-semibold mb-4" id="price-chart-title">Price Chart</h3>
+                <canvas id="banknifty-chart" width="400" height="300"></canvas>
+            </div>
+
+            <div class="bg-white rounded-lg shadow p-6">
+                <h3 class="text-lg font-semibold mb-4">Technical Indicators Chart</h3>
+                <canvas id="indicators-chart" width="400" height="300"></canvas>
+            </div>
+        </div>
+
+        <!-- Market Depth Section -->
+        <div class="bg-white rounded-lg shadow p-6 mb-8">
+            <h3 class="text-lg font-semibold mb-4">Market Depth (Order Book)</h3>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <!-- Buy Orders (Bids) -->
+                <div>
+                    <h4 class="text-sm font-semibold text-green-600 mb-3">BUY ORDERS</h4>
+                    <div class="space-y-2">
+                        <div class="grid grid-cols-3 text-xs font-semibold text-gray-600 border-b pb-2">
+                            <div>Price</div>
+                            <div class="text-center">Quantity</div>
+                            <div class="text-right">Orders</div>
+                        </div>
+                        <div id="depth-buy-orders" class="space-y-1">
+                            <!-- Buy orders will be populated here -->
+                            <div class="text-sm text-gray-500 py-4 text-center">Loading...</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Sell Orders (Asks) -->
+                <div>
+                    <h4 class="text-sm font-semibold text-red-600 mb-3">SELL ORDERS</h4>
+                    <div class="space-y-2">
+                        <div class="grid grid-cols-3 text-xs font-semibold text-gray-600 border-b pb-2">
+                            <div>Price</div>
+                            <div class="text-center">Quantity</div>
+                            <div class="text-right">Orders</div>
+                        </div>
+                        <div id="depth-sell-orders" class="space-y-1">
+                            <!-- Sell orders will be populated here -->
+                            <div class="text-sm text-gray-500 py-4 text-center">Loading...</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="mt-4 text-xs text-gray-500">
+                Last updated: <span id="depth-timestamp">--</span>
+            </div>
+        </div>
+
+        <!-- Options Chain Section -->
+        <div class="bg-white rounded-lg shadow p-6 mb-8">
+            <h3 class="text-lg font-semibold mb-4">Options Chain</h3>
+            <div id="options-status" class="text-sm text-gray-600 mb-4">
+                <!-- Status message will appear here -->
+            </div>
+            <div class="overflow-x-auto">
+                <table class="min-w-full text-sm">
+                    <thead>
+                        <tr class="border-b">
+                            <th colspan="5" class="py-2 text-green-600 text-center">CALL OPTIONS</th>
+                            <th class="py-2 text-gray-800 text-center font-bold">STRIKE</th>
+                            <th colspan="5" class="py-2 text-red-600 text-center">PUT OPTIONS</th>
+                        </tr>
+                        <tr class="text-xs text-gray-600 border-b">
+                            <!-- Call headers -->
+                            <th class="py-1 px-2">OI</th>
+                            <th class="py-1 px-2">Volume</th>
+                            <th class="py-1 px-2">LTP</th>
+                            <th class="py-1 px-2">IV</th>
+                            <th class="py-1 px-2">Delta</th>
+                            <!-- Strike -->
+                            <th class="py-1 px-2 bg-gray-100">Strike</th>
+                            <!-- Put headers -->
+                            <th class="py-1 px-2">Delta</th>
+                            <th class="py-1 px-2">IV</th>
+                            <th class="py-1 px-2">LTP</th>
+                            <th class="py-1 px-2">Volume</th>
+                            <th class="py-1 px-2">OI</th>
+                        </tr>
+                    </thead>
+                    <tbody id="options-chain-body">
+                        <!-- Options data will be populated here -->
+                        <tr>
+                            <td colspan="11" class="text-center py-8 text-gray-500">
+                                Loading options chain...
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+            <div class="mt-4 text-xs text-gray-500">
+                <span>PCR: <span id="options-pcr" class="font-bold">--</span></span>
+                <span class="ml-4">Max Pain: <span id="options-maxpain" class="font-bold">--</span></span>
+                <span class="ml-4">Last updated: <span id="options-timestamp">--</span></span>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let bankniftyChart, indicatorsChart;
+        let statusData = {};
+        let websocket = null;
+        let reconnectInterval = null;
+        let currentInstrument = null; // Will be set dynamically from API
+        let currentTimeframe = '1min'; // Default timeframe
+        
+        // Available timeframes
+        const TIMEFRAMES = ['1min', '5min', '15min', '1h', '4h', '1d'];
+
+        // WebSocket connection for real-time updates
+        function connectWebSocket() {
+            if (websocket && websocket.readyState === WebSocket.OPEN) {
+                return; // Already connected
+            }
+
+            try {
+                websocket = new WebSocket('ws://localhost:8889/ws');
+                
+                websocket.onopen = function(event) {
+                    console.log('WebSocket connected');
+                    document.getElementById('ws-status').textContent = 'Connected';
+                    document.getElementById('ws-status').className = 'text-green-600';
+                    document.getElementById('ws-status-icon').className = 'w-3 h-3 rounded-full mr-2 bg-green-500';
+                    
+                    // Clear any reconnect interval
+                    if (reconnectInterval) {
+                        clearInterval(reconnectInterval);
+                        reconnectInterval = null;
+                    }
+                    
+                    // Subscribe to market data channels (if instrument is available)
+                    if (currentInstrument) {
+                        websocket.send(JSON.stringify({
+                            action: 'subscribe',
+                            channels: [
+                                'auth:status',
+                                `market:ohlc:${currentInstrument}`,
+                                `indicators:${currentInstrument}`,
+                                `market:tick:${currentInstrument}`,
+                                `market:depth:${currentInstrument}`
+                            ],
+                            requestId: 'dashboard-subscription'
+                        }));
+                    }
+                };
+                
+                websocket.onmessage = function(event) {
+                    try {
+                        const data = JSON.parse(event.data);
+                        console.log('WebSocket message:', data);
+                        
+                        // Handle different message types
+                        if (data.type === 'connected') {
+                            console.log('WebSocket connection confirmed');
+                        } else if (data.type === 'subscribed') {
+                            console.log('Subscribed to channels:', data.channels);
+                        } else if (data.type === 'message') {
+                            // Handle Redis pub/sub message
+                            handleRedisMessage(data);
+                        } else if (data.type === 'error') {
+                            console.error('WebSocket error:', data.message);
+                        }
+                    } catch (e) {
+                        console.error('Error parsing WebSocket message:', e);
+                    }
+                };
+                
+                websocket.onclose = function(event) {
+                    console.log('WebSocket disconnected');
+                    document.getElementById('ws-status').textContent = 'Disconnected';
+                    document.getElementById('ws-status').className = 'text-red-600';
+                    document.getElementById('ws-status-icon').className = 'w-3 h-3 rounded-full mr-2 bg-red-500';
+                    
+                    // Attempt to reconnect
+                    if (!reconnectInterval) {
+                        reconnectInterval = setInterval(connectWebSocket, 5000);
+                    }
+                };
+                
+                websocket.onerror = function(error) {
+                    console.error('WebSocket error:', error);
+                    document.getElementById('ws-status').textContent = 'Error';
+                    document.getElementById('ws-status').className = 'text-red-600';
+                    document.getElementById('ws-status-icon').className = 'w-3 h-3 rounded-full mr-2 bg-red-500';
+                };
+                
+            } catch (e) {
+                console.error('Failed to connect WebSocket:', e);
+                document.getElementById('ws-status').textContent = 'Failed to connect';
+                document.getElementById('ws-status').className = 'text-red-600';
+                document.getElementById('ws-status-icon').className = 'w-3 h-3 rounded-full mr-2 bg-red-500';
+            }
+        }
+
+        async function fetchStatus() {
+            try {
+                const response = await fetch('/api/market-data/status');
+                statusData = await response.json();
+                
+                // Set current instrument from first available instrument if not set
+                if (!currentInstrument && statusData.instruments) {
+                    const instruments = Object.keys(statusData.instruments);
+                    if (instruments.length > 0) {
+                        currentInstrument = instruments[0];
+                        console.log('Current instrument set to:', currentInstrument);
+                        
+                        // Update page titles
+                        const indicatorsTitle = document.getElementById('indicators-title');
+                        const priceChartTitle = document.getElementById('price-chart-title');
+                        if (indicatorsTitle) {
+                            indicatorsTitle.textContent = `Current Technical Indicators (${currentInstrument})`;
+                        }
+                        if (priceChartTitle) {
+                            priceChartTitle.textContent = `${currentInstrument} Price Chart`;
+                        }
+                    }
+                }
+                
+                updateUI();
+            } catch (error) {
+                console.error('Failed to fetch status:', error);
+            }
+        }
+
+        function updateUI() {
+            // Update system status
+            const apiStatus = statusData.market_data_api?.status;
+            const apiStatusEl = document.getElementById('api-status');
+            const lastUpdateEl = document.getElementById('last-update');
+
+            if (apiStatus === 'healthy') {
+                apiStatusEl.className = 'w-3 h-3 rounded-full mr-2 bg-green-500';
+            } else {
+                apiStatusEl.className = 'w-3 h-3 rounded-full mr-2 bg-red-500';
+            }
+
+            lastUpdateEl.textContent = new Date(statusData.timestamp).toLocaleString();
+
+            // Update data validation
+            const validation = statusData.data_validation;
+            const overallStatusEl = document.getElementById('overall-status');
+            const instrumentsCountEl = document.getElementById('instruments-count');
+
+            overallStatusEl.textContent = validation.overall_status.toUpperCase();
+            overallStatusEl.className = `text-2xl font-bold ${
+                validation.overall_status === 'healthy' ? 'text-green-600' :
+                validation.overall_status === 'warning' ? 'text-yellow-600' :
+                validation.overall_status === 'critical' ? 'text-red-600' : 'text-gray-600'
+            }`;
+
+            instrumentsCountEl.textContent = `${validation.checks.instruments_with_data}/${validation.checks.total_instruments}`;
+
+            // Update instruments grid
+            updateInstrumentsGrid();
+
+            // Update charts
+            updateCharts();
+        }
+
+        function updateInstrumentsGrid() {
+            const grid = document.getElementById('instruments-grid');
+            grid.innerHTML = '';
+
+            for (const [instrument, info] of Object.entries(statusData.instruments || {})) {
+                const card = document.createElement('div');
+                card.className = 'border rounded-lg p-4';
+
+                const statusColor = info.status === 'available' ? 'text-green-600' : 'text-red-600';
+                const statusIcon = info.status === 'available' ? '🟢' : '🔴';
+
+                card.innerHTML = `
+                    <div class="font-semibold">${instrument}</div>
+                    <div class="text-sm ${statusColor}">${statusIcon} ${info.status}</div>
+                    ${info.data_points ? `<div class="text-sm text-gray-600">${info.data_points} data points</div>` : ''}
+                    ${info.latest_price ? `<div class="text-sm font-mono">${info.latest_price.toFixed(2)}</div>` : ''}
+                    ${info.first_timestamp ? `<div class="text-xs text-gray-500">Start: ${new Date(info.first_timestamp).toLocaleString()}</div>` : ''}
+                    ${info.latest_timestamp ? `<div class="text-xs text-gray-500">Latest: ${new Date(info.latest_timestamp).toLocaleString()}</div>` : ''}
+                `;
+
+                grid.appendChild(card);
+            }
+        }
+
+        async function updateCharts() {
+            if (!currentInstrument) {
+                console.log('No instrument selected yet');
+                return;
+            }
+            
+            // Update price chart with current timeframe
+            try {
+                const limitByTf = {
+                    '1min': 1500,
+                    '5min': 500,
+                    '15min': 200,
+                    '1h': 150,
+                    '4h': 150,
+                    '1d': 150
+                };
+                const reqLimit = limitByTf[currentTimeframe] || 200;
+                const priceResp = await fetch(`/api/market-data/ohlc/${currentInstrument}?timeframe=${currentTimeframe}&limit=${reqLimit}&order=asc`);
+                if (!priceResp.ok) {
+                    console.warn('OHLC fetch failed', currentInstrument, currentTimeframe, priceResp.status);
+                    return;
+                }
+
+                const bankniftyData = await priceResp.json();
+                if (!Array.isArray(bankniftyData) || bankniftyData.length === 0) {
+                    console.warn('No OHLC data to plot for', currentInstrument, currentTimeframe);
+                    return;
+                }
+
+                const labels = bankniftyData.map(d => new Date(d.start_at).toLocaleTimeString());
+                const prices = bankniftyData.map(d => d.close);
+                const volumes = bankniftyData.map(d => d.volume / 1000000); // Convert to millions for better scaling
+
+                if (bankniftyChart) {
+                    bankniftyChart.destroy();
+                }
+
+                bankniftyChart = new Chart(document.getElementById('banknifty-chart'), {
+                    type: 'line',
+                    data: {
+                        labels: labels,
+                        datasets: [{
+                            label: `${currentInstrument} (${currentTimeframe})`,
+                            data: prices,
+                            borderColor: 'rgb(59, 130, 246)',
+                            backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                            yAxisID: 'y',
+                            tension: 0.1
+                        }, {
+                            label: 'Volume (M)',
+                            data: volumes,
+                            borderColor: 'rgb(245, 101, 101)',
+                            backgroundColor: 'rgba(245, 101, 101, 0.1)',
+                            yAxisID: 'y1',
+                            type: 'bar',
+                            tension: 0.1
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        scales: {
+                            y: {
+                                type: 'linear',
+                                display: true,
+                                position: 'left',
+                                title: {
+                                    display: true,
+                                    text: 'Price'
+                                },
+                                beginAtZero: false
+                            },
+                            y1: {
+                                type: 'linear',
+                                display: true,
+                                position: 'right',
+                                title: {
+                                    display: true,
+                                    text: 'Volume (M)'
+                                },
+                                grid: {
+                                    drawOnChartArea: false,
+                                }
+                            }
+                        }
+                    }
+                });
+            } catch (error) {
+                console.error('Failed to update price chart:', error);
+            }
+
+            // Update Technical Indicators chart - calculate from historical OHLC data
+            try {
+                // Fetch OHLC data for indicator calculation
+                const ohlcLimit = 100; // Need enough data for RSI(14) and MACD calculations
+                const ohlcResp = await fetch(`/api/market-data/ohlc/${currentInstrument}?timeframe=${currentTimeframe}&limit=${ohlcLimit}&order=asc`);
+                
+                if (ohlcResp.ok) {
+                    const ohlcData = await ohlcResp.json();
+                    
+                    if (!Array.isArray(ohlcData) || ohlcData.length < 20) {
+                        console.warn('Insufficient OHLC data for indicators:', ohlcData.length);
+                        return;
+                    }
+                    
+                    // Calculate RSI for each bar (using 14-period)
+                    function calculateRSI(closes, period = 14) {
+                        if (closes.length < period + 1) return Array(closes.length).fill(null);
+                        
+                        const rsi = [];
+                        let gains = 0, losses = 0;
+                        
+                        // Initial average
+                        for (let i = 1; i <= period; i++) {
+                            const change = closes[i] - closes[i - 1];
+                            if (change > 0) gains += change;
+                            else losses -= change;
+                        }
+                        
+                        let avgGain = gains / period;
+                        let avgLoss = losses / period;
+                        
+                        // Fill initial nulls
+                        for (let i = 0; i < period; i++) rsi.push(null);
+                        
+                        // Calculate RSI
+                        for (let i = period; i < closes.length; i++) {
+                            const change = closes[i] - closes[i - 1];
+                            const gain = change > 0 ? change : 0;
+                            const loss = change < 0 ? -change : 0;
+                            
+                            avgGain = (avgGain * (period - 1) + gain) / period;
+                            avgLoss = (avgLoss * (period - 1) + loss) / period;
+                            
+                            const rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
+                            rsi.push(100 - (100 / (1 + rs)));
+                        }
+                        
+                        return rsi;
+                    }
+                    
+                    // Calculate EMA
+                    function calculateEMA(data, period) {
+                        const ema = [];
+                        const multiplier = 2 / (period + 1);
+                        
+                        // Start with SMA
+                        let sum = 0;
+                        for (let i = 0; i < period && i < data.length; i++) {
+                            sum += data[i];
+                            ema.push(null);
+                        }
+                        if (data.length >= period) {
+                            ema[period - 1] = sum / period;
+                        }
+                        
+                        // Calculate EMA
+                        for (let i = period; i < data.length; i++) {
+                            ema.push((data[i] - ema[i - 1]) * multiplier + ema[i - 1]);
+                        }
+                        
+                        return ema;
+                    }
+                    
+                    // Calculate MACD
+                    function calculateMACD(closes) {
+                        const ema12 = calculateEMA(closes, 12);
+                        const ema26 = calculateEMA(closes, 26);
+                        const macd = [];
+                        
+                        for (let i = 0; i < closes.length; i++) {
+                            if (ema12[i] !== null && ema26[i] !== null) {
+                                macd.push(ema12[i] - ema26[i]);
+                            } else {
+                                macd.push(null);
+                            }
+                        }
+                        
+                        const signal = calculateEMA(macd.filter(v => v !== null), 9);
+                        
+                        // Align signal line with macd (pad with nulls)
+                        const nullCount = macd.findIndex(v => v !== null);
+                        const alignedSignal = Array(nullCount).fill(null).concat(signal.filter(v => v !== null));
+                        
+                        return { macd, signal: alignedSignal };
+                    }
+                    
+                    // Extract close prices
+                    const closes = ohlcData.map(d => d.close);
+                    const labels = ohlcData.map(d => new Date(d.start_at).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'}));
+                    
+                    // Calculate indicators
+                    const rsiValues = calculateRSI(closes, 14);
+                    const { macd: macdValues, signal: macdSignalValues } = calculateMACD(closes);
+                    
+                    // Use last 50 bars for chart (or all if less)
+                    const chartPoints = Math.min(50, ohlcData.length);
+                    const startIdx = ohlcData.length - chartPoints;
+                    
+                    const chartLabels = labels.slice(startIdx);
+                    const chartRSI = rsiValues.slice(startIdx);
+                    const chartMACD = macdValues.slice(startIdx);
+                    const chartSignal = macdSignalValues.slice(startIdx);
+                    
+                    console.log('Calculated indicators - RSI points:', chartRSI.filter(v => v !== null).length, 
+                               'MACD points:', chartMACD.filter(v => v !== null).length);
+                    
+                    if (indicatorsChart) {
+                        indicatorsChart.destroy();
+                    }
+
+                    indicatorsChart = new Chart(document.getElementById('indicators-chart'), {
+                        type: 'line',
+                        data: {
+                            labels: chartLabels,
+                            datasets: [{
+                                label: 'RSI',
+                                data: chartRSI,
+                                borderColor: 'rgb(245, 101, 101)',
+                                backgroundColor: 'rgba(245, 101, 101, 0.1)',
+                                yAxisID: 'y',
+                                tension: 0.1,
+                                spanGaps: true
+                            }, {
+                                label: 'MACD',
+                                data: chartMACD,
+                                borderColor: 'rgb(16, 185, 129)',
+                                backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                                yAxisID: 'y1',
+                                tension: 0.1,
+                                spanGaps: true
+                            }, {
+                                label: 'MACD Signal',
+                                data: chartSignal,
+                                borderColor: 'rgb(59, 130, 246)',
+                                backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                                yAxisID: 'y1',
+                                tension: 0.1,
+                                spanGaps: true
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            interaction: {
+                                intersect: false,
+                                mode: 'index'
+                            },
+                            scales: {
+                                y: {
+                                    type: 'linear',
+                                    display: true,
+                                    position: 'left',
+                                    title: {
+                                        display: true,
+                                        text: 'RSI'
+                                    },
+                                    min: 0,
+                                    max: 100
+                                },
+                                y1: {
+                                    type: 'linear',
+                                    display: true,
+                                    position: 'right',
+                                    title: {
+                                        display: true,
+                                        text: 'MACD'
+                                    },
+                                    grid: {
+                                        drawOnChartArea: false,
+                                    }
+                                }
+                            }
+                        }
+                    });
+                    
+                    // Fetch latest indicator values for the text display
+                    const indicatorsResponse = await fetch(`/api/market-data/indicators/${currentInstrument}`);
+                    if (indicatorsResponse.ok) {
+                        const indicatorsData = await indicatorsResponse.json();
+                        if (indicatorsData.indicators) {
+                            const latestIndicator = indicatorsData.indicators;
+                            
+                            // Update indicator values display
+                            document.getElementById('rsi-status').textContent = latestIndicator.rsi_status || 'N/A';
+                            document.getElementById('macd-status').textContent = (latestIndicator.macd_value || 0).toFixed(2);
+                            document.getElementById('trend-dir').textContent = latestIndicator.trend_direction || 'N/A';
+                            document.getElementById('adx-status').textContent = (latestIndicator.adx_14 || 0).toFixed(1);
+                            
+                            // Momentum
+                            document.getElementById('momentum-val').textContent = (latestIndicator.momentum_10 || 0).toFixed(2);
+                            document.getElementById('roc-val').textContent = (latestIndicator.roc_12 || 0).toFixed(2);
+                            document.getElementById('mfi-val').textContent = (latestIndicator.mfi_14 || 0).toFixed(1);
+                            document.getElementById('stoch-k').textContent = (latestIndicator.stoch_k || 0).toFixed(1);
+                            
+                            // Volatility
+                            document.getElementById('atr-val').textContent = (latestIndicator.atr_14 || 0).toFixed(2);
+                            document.getElementById('bolling-val').textContent = ((latestIndicator.bollinger_percent_b || 0) * 100).toFixed(1) + '%';
+                            document.getElementById('volatility-lvl').textContent = latestIndicator.volatility_level || 'N/A';
+                            document.getElementById('cci-val').textContent = (latestIndicator.cci_20 || 0).toFixed(0);
+                            
+                            // Levels
+                            document.getElementById('pivot-p').textContent = (latestIndicator.pivot_point || 0).toFixed(2);
+                            document.getElementById('resistance').textContent = (latestIndicator.pivot_r1 || 0).toFixed(2);
+                            document.getElementById('support').textContent = (latestIndicator.pivot_s1 || 0).toFixed(2);
+                            document.getElementById('range-val').textContent = (latestIndicator.range_20 || 0).toFixed(2);
+                        }
+                    }
+                } else {
+                    console.error('Failed to fetch OHLC for indicators:', ohlcResp.status);
+                }
+            } catch (error) {
+                console.error('Failed to update indicators chart:', error);
+                document.getElementById('rsi-status').textContent = 'Error';
+                document.getElementById('macd-status').textContent = 'Error';
+                document.getElementById('trend-dir').textContent = 'Error';
+            }
+        }
+
+        function setTimeframe(tf) {
+            currentTimeframe = tf;
+            
+            // Update button styling
+            document.querySelectorAll('[id^="tf-"]').forEach(btn => {
+                btn.className = 'px-4 py-2 bg-gray-400 text-white rounded hover:bg-gray-500';
+            });
+            document.getElementById(`tf-${tf}`).className = 'px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600';
+            
+            // Refresh charts
+            updateCharts();
+            console.log('Timeframe changed to:', tf);
+        }
+
+        function handleRedisMessage(data) {
+            // Handle incoming Redis pub/sub messages
+            const channel = data.channel;
+            const message = data.data;
+            
+            console.log('Received Redis message on channel:', channel, message);
+            
+            if (channel === 'auth:status') {
+                // Authentication status update
+                handleAuthStatus(message);
+            } else if (channel.startsWith('market:ohlc:')) {
+                // OHLC data update - refresh charts
+                console.log('OHLC data update received');
+                fetchStatus();
+            } else if (channel.startsWith('indicators:')) {
+                // Indicators update - refresh indicators chart
+                console.log('Indicators update received');
+                updateIndicatorsChart();
+            } else if (channel.startsWith('market:tick:')) {
+                // Tick data update - could update real-time price display
+                console.log('Tick data update received');
+                // For now, just refresh status
+                fetchStatus();
+            } else if (channel.startsWith('market:depth:')) {
+                // Market depth update
+                console.log('Market depth update received');
+                // Could update order book display if implemented
+            }
+        }
+
+        function handleAuthStatus(authData) {
+            console.log('Auth status update:', authData);
+            
+            const statusElement = document.getElementById('auth-status');
+            const statusIcon = document.getElementById('auth-status-icon');
+            
+            if (statusElement && statusIcon) {
+                // Update status text and styling based on auth status
+                switch (authData.status) {
+                    case 'authenticated':
+                        statusElement.textContent = 'Authenticated';
+                        statusElement.className = 'text-green-600';
+                        statusIcon.className = 'w-3 h-3 rounded-full mr-2 bg-green-500';
+                        break;
+                    case 'failed':
+                        statusElement.textContent = 'Authentication Failed';
+                        statusElement.className = 'text-red-600';
+                        statusIcon.className = 'w-3 h-3 rounded-full mr-2 bg-red-500';
+                        // Show alert for failed auth
+                        alert(`❌ ${authData.message}\n\n${authData.details?.action_required === 'manual_login' ? 'Please visit the authentication page to complete login.' : ''}`);
+                        break;
+                    case 'expired':
+                        statusElement.textContent = 'Token Expired';
+                        statusElement.className = 'text-yellow-600';
+                        statusIcon.className = 'w-3 h-3 rounded-full mr-2 bg-yellow-500';
+                        break;
+                    case 'pending':
+                        statusElement.textContent = 'Authenticating...';
+                        statusElement.className = 'text-blue-600';
+                        statusIcon.className = 'w-3 h-3 rounded-full mr-2 bg-blue-500';
+                        break;
+                    default:
+                        statusElement.textContent = 'Unknown Status';
+                        statusElement.className = 'text-gray-600';
+                        statusIcon.className = 'w-3 h-3 rounded-full mr-2 bg-gray-500';
+                }
+            }
+        }
+
+        function refreshData() {
+            fetchStatus();
+            fetchMarketDepth();
+            fetchOptionsChain();
+            updateModeIndicator(); // Update mode badge
+        }
+
+        // Update mode indicator badge
+        async function updateModeIndicator() {
+            try {
+                const response = await fetch('/api/v1/system/mode');
+                if (!response.ok) {
+                    console.warn('Failed to fetch mode:', response.status);
+                    return;
+                }
+                
+                const data = await response.json();
+                const badge = document.getElementById('mode-badge');
+                const effectiveTime = document.getElementById('effective-time');
+                
+                // Determine if we're in live mode
+                const isLive = data.mode === 'live' && !data.virtual_time_enabled;
+                
+                // Update badge with appropriate styling
+                const badgeClass = isLive ? 'bg-green-500' : 'bg-blue-500';
+                const icon = isLive 
+                    ? '<svg class="w-4 h-4 mr-2" fill="currentColor" viewBox="0 0 20 20"><circle cx="10" cy="10" r="4" class="animate-pulse"/></svg>'
+                    : '<svg class="w-4 h-4 mr-2" fill="currentColor" viewBox="0 0 20 20"><path d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z"/></svg>';
+                
+                const modeText = data.mode.toUpperCase();
+                const dateInfo = data.virtual_time ? ` (${data.virtual_time.split('T')[0]})` : '';
+                
+                badge.innerHTML = `
+                    <span class="inline-flex items-center px-4 py-2 rounded-full ${badgeClass} text-white font-semibold">
+                        ${icon}
+                        ${modeText}${dateInfo}
+                    </span>
+                `;
+                
+                // Update effective time display
+                if (data.effective_time) {
+                    const time = new Date(data.effective_time);
+                    effectiveTime.textContent = time.toLocaleString();
+                    effectiveTime.title = `System: ${new Date(data.system_time).toLocaleString()}\nMode: ${data.mode}\nVirtual Time: ${data.virtual_time_enabled ? 'Enabled' : 'Disabled'}`;
+                }
+                
+                // Add mode mismatch warning if detected
+                if (data.redis_mode && data.redis_mode !== data.mode) {
+                    console.warn(`Mode mismatch: ENV=${data.mode}, Redis=${data.redis_mode}`);
+                    badge.innerHTML += `<span class="ml-2 text-xs text-yellow-300" title="Mode mismatch detected">⚠️</span>`;
+                }
+                
+            } catch (err) {
+                console.error('Failed to update mode indicator:', err);
+                const badge = document.getElementById('mode-badge');
+                badge.innerHTML = `
+                    <span class="inline-flex items-center px-4 py-2 rounded-full bg-red-500 text-white">
+                        <svg class="w-4 h-4 mr-2" fill="currentColor" viewBox="0 0 20 20">
+                            <path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd"/>
+                        </svg>
+                        ERROR
+                    </span>
+                `;
+            }
+        }
+
+        async function fetchMarketDepth() {
+            if (!currentInstrument) return;
+            
+            try {
+                const response = await fetch(`/api/market-data/depth/${currentInstrument}`);
+                if (response.ok) {
+                    const depthData = await response.json();
+                    console.log('Depth data:', depthData);
+                    
+                    updateDepthDisplay(depthData);
+                } else {
+                    console.error('Failed to fetch depth data');
+                }
+            } catch (error) {
+                console.error('Error fetching depth:', error);
+            }
+        }
+
+        function updateDepthDisplay(depthData) {
+            const buyOrdersEl = document.getElementById('depth-buy-orders');
+            const sellOrdersEl = document.getElementById('depth-sell-orders');
+            const depthTimestampEl = document.getElementById('depth-timestamp');
+            
+            // Update timestamp
+            if (depthData.timestamp) {
+                depthTimestampEl.textContent = new Date(depthData.timestamp).toLocaleTimeString();
+            }
+            
+            // Update buy orders
+            if (depthData.buy && depthData.buy.length > 0) {
+                buyOrdersEl.innerHTML = depthData.buy.map(order => `
+                    <div class="grid grid-cols-3 text-sm border-b border-gray-100 py-1">
+                        <div class="font-mono text-green-600">${order.price > 0 ? order.price.toFixed(2) : '--'}</div>
+                        <div class="text-center">${order.quantity > 0 ? order.quantity : '--'}</div>
+                        <div class="text-right text-gray-600">${order.orders > 0 ? order.orders : '--'}</div>
+                    </div>
+                `).join('');
+            } else {
+                buyOrdersEl.innerHTML = '<div class="text-sm text-gray-500 py-4 text-center">No buy orders (historical mode)</div>';
+            }
+            
+            // Update sell orders
+            if (depthData.sell && depthData.sell.length > 0) {
+                sellOrdersEl.innerHTML = depthData.sell.map(order => `
+                    <div class="grid grid-cols-3 text-sm border-b border-gray-100 py-1">
+                        <div class="font-mono text-red-600">${order.price > 0 ? order.price.toFixed(2) : '--'}</div>
+                        <div class="text-center">${order.quantity > 0 ? order.quantity : '--'}</div>
+                        <div class="text-right text-gray-600">${order.orders > 0 ? order.orders : '--'}</div>
+                    </div>
+                `).join('');
+            } else {
+                sellOrdersEl.innerHTML = '<div class="text-sm text-gray-500 py-4 text-center">No sell orders (historical mode)</div>';
+            }
+        }
+
+        async function fetchOptionsChain() {
+            if (!currentInstrument) return;
+            
+            try {
+                const response = await fetch(`/api/market-data/options/${currentInstrument}`);
+                if (response.ok) {
+                    const optionsData = await response.json();
+                    console.log('Options data:', optionsData);
+                    
+                    updateOptionsDisplay(optionsData);
+                } else {
+                    console.error('Failed to fetch options data');
+                }
+            } catch (error) {
+                console.error('Error fetching options:', error);
+            }
+        }
+
+        function updateOptionsDisplay(optionsData) {
+            const optionsBodyEl = document.getElementById('options-chain-body');
+            const optionsStatusEl = document.getElementById('options-status');
+            const optionsPcrEl = document.getElementById('options-pcr');
+            const optionsMaxpainEl = document.getElementById('options-maxpain');
+            const optionsTimestampEl = document.getElementById('options-timestamp');
+            
+            // Update timestamp
+            if (optionsData.timestamp) {
+                optionsTimestampEl.textContent = new Date(optionsData.timestamp).toLocaleTimeString();
+            }
+            
+            // Show status message
+            if (optionsData.status === 'no_data' || optionsData.message) {
+                optionsStatusEl.innerHTML = `
+                    <div class="bg-yellow-50 border border-yellow-200 rounded p-3 text-yellow-800">
+                        ℹ️ ${optionsData.message || 'Options chain data not available. This is normal for historical mode.'}
+                    </div>
+                `;
+            } else if (optionsData.status === 'error') {
+                optionsStatusEl.innerHTML = `
+                    <div class="bg-red-50 border border-red-200 rounded p-3 text-red-800">
+                        ❌ Error loading options data: ${optionsData.error || 'Unknown error'}
+                    </div>
+                `;
+            } else {
+                optionsStatusEl.innerHTML = '';
+            }
+            
+            // Update PCR and max pain
+            if (optionsData.pcr) {
+                optionsPcrEl.textContent = optionsData.pcr.toFixed(2);
+            }
+            if (optionsData.max_pain) {
+                optionsMaxpainEl.textContent = optionsData.max_pain.toFixed(2);
+            }
+            
+            // Update options chain table
+            if (optionsData.strikes && optionsData.strikes.length > 0) {
+                optionsBodyEl.innerHTML = optionsData.strikes.map(strike => {
+                    const ce = strike.CE || {};
+                    const pe = strike.PE || {};
+                    
+                    return `
+                        <tr class="text-xs border-b hover:bg-gray-50">
+                            <!-- Call options -->
+                            <td class="py-1 px-2">${ce.oi || '--'}</td>
+                            <td class="py-1 px-2">${ce.volume || '--'}</td>
+                            <td class="py-1 px-2 font-mono text-green-600">${ce.last_price ? ce.last_price.toFixed(2) : '--'}</td>
+                            <td class="py-1 px-2">${ce.iv ? (ce.iv * 100).toFixed(1) + '%' : '--'}</td>
+                            <td class="py-1 px-2">${ce.delta ? ce.delta.toFixed(2) : '--'}</td>
+                            <!-- Strike price -->
+                            <td class="py-1 px-2 bg-gray-100 font-bold text-center">${strike.strike}</td>
+                            <!-- Put options -->
+                            <td class="py-1 px-2">${pe.delta ? pe.delta.toFixed(2) : '--'}</td>
+                            <td class="py-1 px-2">${pe.iv ? (pe.iv * 100).toFixed(1) + '%' : '--'}</td>
+                            <td class="py-1 px-2 font-mono text-red-600">${pe.last_price ? pe.last_price.toFixed(2) : '--'}</td>
+                            <td class="py-1 px-2">${pe.volume || '--'}</td>
+                            <td class="py-1 px-2">${pe.oi || '--'}</td>
+                        </tr>
+                    `;
+                }).join('');
+            } else {
+                optionsBodyEl.innerHTML = `
+                    <tr>
+                        <td colspan="11" class="text-center py-8 text-gray-500">
+                            No options chain data available
+                        </td>
+                    </tr>
+                `;
+            }
+        }
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', function() {
+            connectWebSocket();
+            fetchStatus();
+            fetchMarketDepth();
+            fetchOptionsChain();
+            updateModeIndicator(); // Initial mode update
+            
+            // Refresh every 30 seconds as fallback
+            setInterval(refreshData, 30000);
+            
+            // Update mode indicator every 5 seconds
+            setInterval(updateModeIndicator, 5000);
+        });
+    </script>
+</body>
+</html>

@@ -7,9 +7,22 @@ and processes each tick through the real-time signal monitoring system.
 import asyncio
 import logging
 import json
+import sys
 from typing import Dict, Any, Optional
 from datetime import datetime
 import os
+
+# Fix Windows console encoding for emojis
+if sys.platform == 'win32':
+    try:
+        # Try to set UTF-8 encoding for Windows console
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except (AttributeError, ValueError):
+        # Fallback for older Python versions
+        import io
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 try:
     import redis.asyncio as redis_async
@@ -198,7 +211,7 @@ async def _process_tick_from_redis(redis_client: Any, key: str) -> None:
         result = await process_tick_for_signals(instrument, tick_dict)
         
         if result.get("signals_triggered", 0) > 0:
-            logger.info(f"✅ {result['signals_triggered']} signal(s) triggered for {instrument} at price {price}")
+            logger.info(f"[OK] {result['signals_triggered']} signal(s) triggered for {instrument} at price {price}")
         
     except Exception as e:
         logger.debug(f"Error processing tick from Redis key {key}: {e}")

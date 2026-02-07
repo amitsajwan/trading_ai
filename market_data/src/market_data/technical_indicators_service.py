@@ -28,6 +28,12 @@ import redis
 
 # Import standardized indicator names
 from .technical_indicators_constants import *
+from .timestamp_utils import (
+    create_canonical_timestamp_payload,
+    create_mode_aware_payload,
+    get_instrument_channel,
+    get_market_time
+)
 
 logger = logging.getLogger(__name__)
 
@@ -138,15 +144,26 @@ class TechnicalIndicatorsService:
     on OHLC data. Maintains rolling windows of data for real-time indicator calculation.
     """
 
-    def __init__(self, redis_client: Optional[redis.Redis] = None, window_size: int = 200):
+    def __init__(
+        self,
+        redis_client: Optional[redis.Redis] = None,
+        window_size: int = 200,
+        mode: str = "LIVE",
+        run_id: Optional[str] = None
+    ):
         """Initialize technical indicators service.
 
         Args:
             redis_client: Redis client for caching indicators
             window_size: Number of candles to maintain for calculations (default 200 for robust indicators)
+            mode: Execution mode ("LIVE", "PAPER", "BACKTEST")
+            run_id: Run identifier (required for BACKTEST mode)
         """
         self.redis_client = redis_client
         self.window_size = window_size
+        self._mode = mode
+        self._run_id = run_id
+
         # Single timeframe data (backward compatibility)
         self._ohlc_data: Dict[str, pd.DataFrame] = {}  # instrument -> OHLC DataFrame
         self._data_windows: Dict[str, deque] = {}  # instrument -> deque of ticks (for tick-based updates)
@@ -154,6 +171,8 @@ class TechnicalIndicatorsService:
         # Multi-timeframe data (new)
         self._ohlc_data_mtf: Dict[tuple, pd.DataFrame] = {}  # (instrument, timeframe) -> OHLC DataFrame
         self._indicators_mtf: Dict[tuple, TechnicalIndicators] = {}  # (instrument, timeframe) -> Indicators
+        # Deduplication: track last published payload hash to prevent duplicate publishes
+        self._last_published_hash: Dict[str, str] = {}  # instrument -> hash of last published payload
 
     def _json_safe_value(self, value):
         """Convert value to JSON-safe format, handling Infinity and NaN."""
@@ -227,7 +246,17 @@ class TechnicalIndicatorsService:
                         }
                         # Remove None values from publish message
                         pub = {k: v for k, v in pub.items() if v is not None}
-                        self.redis_client.publish(f"indicators:{instrument}", json.dumps(self._json_safe_dict(pub)))
+                        
+                        # Add canonical timestamps
+                        timestamp_payload = create_canonical_timestamp_payload(
+                            market_timestamp=get_market_time(),
+                            indicator_timestamp=get_market_time()
+                        )
+                        pub.update(timestamp_payload)
+                        
+                        # Publish to type-specific channel only (e.g., indicators:BANKNIFTY:INDEX)
+                        type_specific_channel = get_instrument_channel(instrument, "indicators")
+                        self.redis_client.publish(type_specific_channel, json.dumps(self._json_safe_dict(pub)))
                     except Exception as pub_err:
                         logger.debug(f"Failed to publish indicators to Redis: {pub_err}")
                 except Exception as e:
@@ -235,32 +264,45 @@ class TechnicalIndicatorsService:
         
     def update_tick(self, instrument: str, tick: Dict[str, Any]) -> TechnicalIndicators:
         """Update indicators based on new market tick.
-        
-        This should be called on EVERY market tick to keep indicators up-to-date.
-        
+
+        Now publishes indicators on every tick for real-time UI updates.
+        Indicators are calculated using available tick data within the current candle.
+
         Args:
             instrument: Instrument symbol (e.g., "BANKNIFTY")
             tick: Tick data with last_price, volume, timestamp
-            
+
         Returns:
             Updated TechnicalIndicators object
         """
         # Initialize window if needed
         if instrument not in self._data_windows:
             self._data_windows[instrument] = deque(maxlen=self.window_size)
-        
+
         # Add tick to window (will be used for next candle)
         # For real-time, we aggregate ticks into candles
         # For now, assume tick represents a completed candle
         self._data_windows[instrument].append(tick)
-        
+
         # Calculate indicators
         indicators = self._calculate_all_indicators(instrument)
-        
-        # Store latest
+
+        # Update timestamp to use tick timestamp
+        tick_timestamp = tick.get('timestamp') or tick.get('ts') or datetime.now().isoformat()
+        if isinstance(tick_timestamp, str):
+            try:
+                # Try to parse timestamp, fallback to now if parsing fails
+                parsed_ts = pd.to_datetime(tick_timestamp)
+                indicators.timestamp = parsed_ts.isoformat()
+            except Exception:
+                indicators.timestamp = datetime.now().isoformat()
+        else:
+            indicators.timestamp = tick_timestamp.isoformat() if hasattr(tick_timestamp, 'isoformat') else datetime.now().isoformat()
+
+        # Store latest (for get_indicators() API calls)
         self._latest_indicators[instrument] = indicators
 
-        # Cache and publish to Redis if available
+        # Cache and publish to Redis if available (now on every tick for real-time updates)
         if self.redis_client:
             try:
                 indicators_dict = asdict(indicators)
@@ -270,26 +312,66 @@ class TechnicalIndicatorsService:
                         redis_key = get_indicator_redis_key(instrument, key)
                         self.redis_client.setex(redis_key, 300, str(value))
 
-                # Publish a lightweight message with key indicators for real-time consumers
+                # Publish standardized complete payload (now on every tick for real-time UI)
                 try:
                     import json
-                    pub = {
-                        "instrument": instrument,
-                        "timestamp": indicators.timestamp,
-                        "current_price": indicators.current_price,
-                        # include important momentum/trend indicators used for signals
-                        RSI_14: indicators.rsi_14,
-                        MACD_VALUE: indicators.macd_value,
-                        MACD_SIGNAL: indicators.macd_signal,
-                        ADX_14: indicators.adx_14,
-                        ATR_14: indicators.atr_14,
-                        ATR_20: indicators.atr_20
-                    }
-                    # Remove None values from publish message
+                    import hashlib
+
+                    # Create complete, standardized payload with all indicators
+                    pub = self._json_safe_dict(indicators_dict)
+                    # Remove None values
                     pub = {k: v for k, v in pub.items() if v is not None}
-                    self.redis_client.publish(f"indicators:{instrument}", json.dumps(pub))
+
+                    # Add intrabar flags to distinguish from candle-close updates
+                    pub.update({
+                        "intrabar": True,        # Indicates this is calculated from ticks within current candle
+                        "candle_closed": False,  # False for tick updates, True for candle-close updates
+                        "update_type": "tick"    # "tick" or "candle" to distinguish source
+                    })
+
+                    # Add canonical timestamps using tick timestamp
+                    tick_ts = pd.to_datetime(tick_timestamp) if isinstance(tick_timestamp, str) else tick_timestamp
+                    if isinstance(tick_ts, pd.Timestamp):
+                        tick_ts = tick_ts.to_pydatetime()
+
+                    # For tick updates, both market and indicator timestamps use tick time
+                    timestamp_payload = create_canonical_timestamp_payload(
+                        market_timestamp=tick_ts,
+                        indicator_timestamp=tick_ts
+                    )
+                    pub.update(timestamp_payload)
+
+                    # Deduplication with shorter window for tick updates (allow more frequent updates)
+                    payload_str = json.dumps(pub, sort_keys=True)
+                    payload_hash = hashlib.md5(payload_str.encode()).hexdigest()
+
+                    last_hash = self._last_published_hash.get(instrument)
+                    if last_hash == payload_hash:
+                        # Identical payload - skip publishing to prevent duplicates
+                        logger.debug(f"Skipping duplicate indicator publish for {instrument}")
+                        return indicators
+
+                    # Update last published hash
+                    self._last_published_hash[instrument] = payload_hash
+
+                    # Add mode-aware payload to ALL messages
+                    mode_payload = create_mode_aware_payload(
+                        mode=self._mode,
+                        run_id=self._run_id,
+                        instrument=instrument,
+                        timeframe="1min"
+                    )
+                    pub.update(mode_payload)
+
+                    # Update payload_str with mode info
+                    payload_str = json.dumps(pub, sort_keys=True)
+
+                    # Publish to type-specific channel
+                    type_specific_channel = get_instrument_channel(instrument, "indicators")
+                    self.redis_client.publish(type_specific_channel, payload_str)
+                    logger.debug(f"Published intrabar indicators for {instrument} on tick update")
                 except Exception as pub_err:
-                    logger.debug(f"Failed to publish indicators to Redis: {pub_err}")
+                    logger.debug(f"Failed to publish intrabar indicators to Redis: {pub_err}")
             except Exception as e:
                 logger.warning(f"Failed to cache indicators in Redis: {e}")
 
@@ -298,21 +380,35 @@ class TechnicalIndicatorsService:
     def update_candle(self, instrument: str, candle: Dict[str, Any]) -> TechnicalIndicators:
         """Update indicators based on new OHLC candle using pandas.
 
+        Publishes indicators to Redis pub/sub when candles close, providing stable indicator values.
+        (Indicators are also published on every tick via update_tick() for real-time UI updates)
+
         Args:
             instrument: Instrument symbol
-            candle: OHLC data with open, high, low, close, volume, timestamp
+            candle: OHLC data with open, high, low, close, volume, timestamp/start_at
 
         Returns:
             Updated TechnicalIndicators object
         """
+        # Parse candle timestamp (use virtual time from candle, not current time)
+        candle_timestamp = None
+        if isinstance(candle.get('start_at'), str):
+            candle_timestamp = pd.to_datetime(candle['start_at'])
+        elif isinstance(candle.get('timestamp'), str):
+            candle_timestamp = pd.to_datetime(candle['timestamp'])
+        elif candle.get('start_at'):
+            candle_timestamp = pd.to_datetime(candle['start_at'])
+        else:
+            # Fallback to virtual time if available, otherwise current time
+            candle_timestamp = pd.to_datetime(get_market_time())
+        
         # Initialize DataFrame if needed
         if instrument not in self._ohlc_data:
             self._ohlc_data[instrument] = pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
 
         # Add new candle to DataFrame
         new_row = {
-            'timestamp': pd.to_datetime(candle['start_at']) if isinstance(candle.get('start_at'), str)
-                        else pd.to_datetime(candle['timestamp']),
+            'timestamp': candle_timestamp,
             'open': candle['open'],
             'high': candle['high'],
             'low': candle['low'],
@@ -327,6 +423,10 @@ class TechnicalIndicatorsService:
 
         # Calculate all indicators
         indicators = self._calculate_all_indicators(instrument)
+        
+        # Update timestamp to use candle timestamp (virtual time) instead of current time
+        if candle_timestamp is not None:
+            indicators.timestamp = candle_timestamp.isoformat()
 
         # Store latest
         self._latest_indicators[instrument] = indicators
@@ -341,25 +441,70 @@ class TechnicalIndicatorsService:
                         redis_key = get_indicator_redis_key(instrument, key)
                         self.redis_client.setex(redis_key, 300, str(value))
 
-                # Publish a lightweight message for real-time consumers
+                # Publish standardized complete payload (only on candle close)
                 try:
                     import json
-                    pub = {
-                        "instrument": instrument,
-                        "timestamp": indicators.timestamp,
-                        "current_price": indicators.current_price,
-                        RSI_14: indicators.rsi_14,
-                        MACD_VALUE: indicators.macd_value,
-                        MACD_SIGNAL: indicators.macd_signal,
-                        ADX_14: indicators.adx_14,
-                        ATR_14: indicators.atr_14,
-                        ATR_20: indicators.atr_20
-                    }
-                    # Remove None values from publish message
+                    import hashlib
+                    
+                    # Create complete, standardized payload with all indicators
+                    pub = self._json_safe_dict(indicators_dict)
+                    # Remove None values
                     pub = {k: v for k, v in pub.items() if v is not None}
-                    self.redis_client.publish(f"indicators:{instrument}", json.dumps(pub))
+
+                    # Add candle-close flags to distinguish from intrabar tick updates
+                    pub.update({
+                        "intrabar": False,       # False for candle-close updates (stable values)
+                        "candle_closed": True,   # True for candle-close updates, False for tick updates
+                        "update_type": "candle"  # "tick" or "candle" to distinguish source
+                    })
+
+                    # Add canonical timestamps using candle timestamp (virtual time)
+                    market_ts = candle_timestamp if candle_timestamp else get_market_time()
+                    if isinstance(market_ts, pd.Timestamp):
+                        from datetime import datetime
+                        market_ts = market_ts.to_pydatetime()
+                    
+                    # In BACKTEST mode, use candle time for indicator_timestamp for accurate analytics
+                    # In LIVE mode, use current time for indicator_timestamp (when calculated)
+                    indicator_ts = market_ts if self._mode == "BACKTEST" else get_market_time()
+
+                    timestamp_payload = create_canonical_timestamp_payload(
+                        market_timestamp=market_ts,
+                        indicator_timestamp=indicator_ts
+                    )
+                    pub.update(timestamp_payload)
+                    
+                    # Deduplication: Check if this payload is identical to last published
+                    payload_str = json.dumps(pub, sort_keys=True)
+                    payload_hash = hashlib.md5(payload_str.encode()).hexdigest()
+                    
+                    last_hash = self._last_published_hash.get(instrument)
+                    if last_hash == payload_hash:
+                        # Identical payload - skip publishing to prevent duplicates
+                        logger.debug(f"Skipping duplicate indicator publish for {instrument}")
+                        return indicators
+                    
+                    # Update last published hash
+                    self._last_published_hash[instrument] = payload_hash
+                    
+                    # Add mode-aware payload to ALL messages
+                    mode_payload = create_mode_aware_payload(
+                        mode=self._mode,
+                        run_id=self._run_id,
+                        instrument=instrument,
+                        timeframe="1min"
+                    )
+                    pub.update(mode_payload)
+
+                    # Update payload_str with mode info
+                    payload_str = json.dumps(pub, sort_keys=True)
+
+                    # Publish to type-specific channel only
+                    type_specific_channel = get_instrument_channel(instrument, "indicators")
+                    self.redis_client.publish(type_specific_channel, payload_str)
+                    logger.debug(f"Published indicators for {instrument} in {self._mode} mode on candle close")
                 except Exception as pub_err:
-                    logger.debug(f"Failed to publish indicators to Redis: {pub_err}")
+                    logger.warning(f"Failed to publish indicators to Redis: {pub_err}", exc_info=True)
             except Exception as e:
                 logger.warning(f"Failed to cache indicators in Redis: {e}")
 
@@ -396,9 +541,52 @@ class TechnicalIndicatorsService:
 
             # Publish to Redis if available
             if self.redis_client and indicators:
+                # GATE BY MODE: In BACKTEST mode, background publishing should be disabled
+                # In HISTORICAL mode, indicators are calculated for replay
+                # No special handling needed - indicators work the same
+
                 indicators_dict = asdict(indicators)
                 safe_indicators = self._json_safe_dict(indicators_dict)
-                self.redis_client.publish(f"indicators:{instrument}", json.dumps(safe_indicators))
+                # Add canonical timestamps
+                timestamp_payload = create_canonical_timestamp_payload(
+                    market_timestamp=get_market_time(redis_client=self.redis_client),
+                    indicator_timestamp=get_market_time(redis_client=self.redis_client)
+                )
+                safe_indicators.update(timestamp_payload)
+
+                # Store individual indicator values as Redis keys for verification
+                core_indicators = [
+                    'rsi_14', 'macd_value', 'bollinger_upper', 'adx_14',
+                    'current_price', 'trend_direction', 'signal_strength'
+                ]
+
+                for indicator_name in core_indicators:
+                    if indicator_name in safe_indicators and safe_indicators[indicator_name] is not None:
+                        redis_key = get_indicator_redis_key(instrument, indicator_name)
+                        try:
+                            self.redis_client.set(redis_key, str(safe_indicators[indicator_name]))
+                        except Exception as store_error:
+                            logger.warning(f"Failed to store indicator {indicator_name}: {store_error}")
+
+                # Store timestamp for freshness validation
+                timestamp_key = get_indicator_redis_key(instrument, 'timestamp')
+                try:
+                    self.redis_client.set(timestamp_key, safe_indicators.get('indicator_timestamp', datetime.now().isoformat()))
+                except Exception as store_error:
+                    logger.warning(f"Failed to store indicator timestamp: {store_error}")
+
+                # Publish to type-specific channel only
+                type_specific_channel = get_instrument_channel(instrument, "indicators")
+                logger.info(f"Publishing indicators to Redis channel: {type_specific_channel}")
+                logger.info(f"Indicator data keys: {list(safe_indicators.keys())}")
+                logger.info(f"Sample values - RSI: {safe_indicators.get('rsi_14')}, ATR: {safe_indicators.get('atr_14')}")
+
+                try:
+                    result = self.redis_client.publish(type_specific_channel, json.dumps(safe_indicators))
+                    logger.info(f"Publish result: {result} subscribers received")
+                except Exception as pub_error:
+                    logger.error(f"Failed to publish indicators to Redis: {pub_error}")
+                    print(f"TECHNICAL INDICATORS PUBLISH ERROR: {pub_error}")
 
             return indicators
         except Exception as e:
@@ -414,16 +602,49 @@ class TechnicalIndicatorsService:
         Returns:
             Dictionary of indicators or empty dict
         """
+        # First try to get from memory
         indicators = self._latest_indicators.get(instrument)
-        if not indicators:
-            return {}
+        if indicators:
+            # Convert dataclass to dict, filtering out None values
+            result = {}
+            for key, value in asdict(indicators).items():
+                if value is not None:
+                    result[key] = value
+            return result
 
-        # Convert dataclass to dict, filtering out None values
-        result = {}
-        for key, value in asdict(indicators).items():
-            if value is not None:
-                result[key] = value
-        return result
+        # If not in memory, try to reconstruct from Redis
+        if self.redis_client:
+            try:
+                result = {}
+                # Get all indicator keys for this instrument
+                pattern = get_indicator_redis_key(instrument, "*")
+                keys = self.redis_client.keys(pattern)
+                if keys:
+                    for key in keys:
+                        value_str = self.redis_client.get(key)
+                        if value_str:
+                            # Extract indicator name from key
+                            key_parts = key.split(":")
+                            if len(key_parts) >= 3:
+                                indicator_name = ":".join(key_parts[2:])  # Handle keys like indicators:INSTRUMENT:rsi_14
+                                try:
+                                    # Try to parse as number first
+                                    result[indicator_name] = float(value_str)
+                                except ValueError:
+                                    # If not a number, keep as string
+                                    result[indicator_name] = value_str
+                    if result:
+                        # Add timestamp if available
+                        timestamp_key = get_indicator_redis_key(instrument, "timestamp")
+                        timestamp_str = self.redis_client.get(timestamp_key)
+                        if timestamp_str:
+                            result["timestamp"] = timestamp_str
+                        result["instrument"] = instrument
+                        return result
+            except Exception as e:
+                logger.warning(f"Failed to reconstruct indicators from Redis for {instrument}: {e}")
+
+        return {}
     
     def _calculate_all_indicators(self, instrument: str) -> TechnicalIndicators:
         """Calculate comprehensive technical indicators using pandas and pandas-ta.
@@ -435,7 +656,7 @@ class TechnicalIndicatorsService:
             Complete TechnicalIndicators object with all calculated indicators
         """
         df = self._ohlc_data.get(instrument)
-        if df is None or len(df) < 20:  # Minimum data required
+        if df is None or len(df) < 10:  # Minimum data required (reduced for basic testing)
             current_price = float(df["close"].iloc[-1]) if df is not None and len(df) > 0 else 0.0
             return TechnicalIndicators(
                 timestamp=datetime.now().isoformat(),
@@ -556,6 +777,14 @@ class TechnicalIndicatorsService:
             if len(df) >= 10:
                 indicators.momentum_10 = self._safe_float(ta.mom(df["close"], length=10))
 
+            # CCI (Commodity Channel Index)
+            if len(df) >= 20:
+                indicators.cci_20 = self._safe_float(ta.cci(df["high"], df["low"], df["close"], length=20))
+
+            # MFI (Money Flow Index)
+            if len(df) >= 14:
+                indicators.mfi_14 = self._safe_float(ta.mfi(df["high"], df["low"], df["close"], df["volume"], length=14))
+
             # === SUPPORT/RESISTANCE ===
             if len(df) >= 1:
                 # Use previous day's OHLC for pivot points (simplified)
@@ -615,6 +844,39 @@ class TechnicalIndicatorsService:
                     signal_score += 30  # Weak trend
 
             indicators.signal_strength = signal_score / max(signal_count, 1)
+
+            # === TREND DIRECTION & STRENGTH ===
+            # Determine trend direction based on moving averages
+            trend_score = 0
+            if indicators.sma_20 and indicators.sma_50:
+                if current_price > indicators.sma_20 > indicators.sma_50:
+                    indicators.trend_direction = "UP"
+                    trend_score = 80
+                elif current_price < indicators.sma_20 < indicators.sma_50:
+                    indicators.trend_direction = "DOWN"
+                    trend_score = 20
+                else:
+                    indicators.trend_direction = "SIDEWAYS"
+                    trend_score = 50
+            elif indicators.ema_10 and indicators.ema_20:
+                if current_price > indicators.ema_10 > indicators.ema_20:
+                    indicators.trend_direction = "UP"
+                    trend_score = 75
+                elif current_price < indicators.ema_10 < indicators.ema_20:
+                    indicators.trend_direction = "DOWN"
+                    trend_score = 25
+                else:
+                    indicators.trend_direction = "SIDEWAYS"
+                    trend_score = 50
+
+            # Incorporate ADX for trend strength
+            if indicators.adx_14:
+                if indicators.adx_14 > 25:  # Strong trend
+                    trend_score = min(100, trend_score + 20)
+                elif indicators.adx_14 < 20:  # Weak trend
+                    trend_score = max(0, trend_score - 20)
+
+            indicators.trend_strength = trend_score
 
         except Exception as e:
             logger.error(f"Error calculating indicators for {instrument}: {e}", exc_info=True)
@@ -934,14 +1196,80 @@ class TechnicalIndicatorsService:
                 indicators.volume_sma_20 = self._safe_float(ta.sma(df["volume"], length=20))
                 if len(df) >= 14:
                     indicators.volume_rsi_14 = self._safe_float(ta.rsi(df["volume"], length=14))
-                
+
                 # Calculate volume ratio
                 if indicators.volume_sma_20 and indicators.volume_sma_20 > 0:
                     current_volume = df["volume"].iloc[-1]
                     indicators.volume_ratio = current_volume / indicators.volume_sma_20
-            
-            # Derive signals (same logic as _calculate_all_indicators)
-            # ... (simplified for brevity, but should include all signal derivations)
+
+            # === ADDITIONAL OSCILLATORS ===
+            if len(df) >= 20:
+                indicators.cci_20 = self._safe_float(ta.cci(df["high"], df["low"], df["close"], length=20))
+
+            if len(df) >= 14:
+                indicators.mfi_14 = self._safe_float(ta.mfi(df["high"], df["low"], df["close"], df["volume"], length=14))
+
+            if len(df) >= 12:
+                indicators.roc_12 = self._safe_float(ta.roc(df["close"], length=12))
+
+            if len(df) >= 10:
+                indicators.momentum_10 = self._safe_float(ta.mom(df["close"], length=10))
+
+            # === TREND DIRECTION & STRENGTH ===
+            trend_score = 0
+            if indicators.sma_20 and indicators.sma_50:
+                if current_price > indicators.sma_20 > indicators.sma_50:
+                    indicators.trend_direction = "UP"
+                    trend_score = 80
+                elif current_price < indicators.sma_20 < indicators.sma_50:
+                    indicators.trend_direction = "DOWN"
+                    trend_score = 20
+                else:
+                    indicators.trend_direction = "SIDEWAYS"
+                    trend_score = 50
+            elif indicators.ema_10 and indicators.ema_20:
+                if current_price > indicators.ema_10 > indicators.ema_20:
+                    indicators.trend_direction = "UP"
+                    trend_score = 75
+                elif current_price < indicators.ema_10 < indicators.ema_20:
+                    indicators.trend_direction = "DOWN"
+                    trend_score = 25
+                else:
+                    indicators.trend_direction = "SIDEWAYS"
+                    trend_score = 50
+
+            # Incorporate ADX for trend strength
+            if indicators.adx_14:
+                if indicators.adx_14 > 25:  # Strong trend
+                    trend_score = min(100, trend_score + 20)
+                elif indicators.adx_14 < 20:  # Weak trend
+                    trend_score = max(0, trend_score - 20)
+
+            indicators.trend_strength = trend_score
+
+            # === SIGNAL STRENGTH ===
+            signal_score = 0
+            signal_count = 0
+
+            # RSI signals (30-70 range is neutral)
+            if indicators.rsi_14:
+                signal_count += 1
+                if indicators.rsi_14 < 30:
+                    signal_score += 100  # Oversold
+                elif indicators.rsi_14 > 70:
+                    signal_score += 0    # Overbought
+                else:
+                    signal_score += 50   # Neutral
+
+            # MACD signals
+            if indicators.macd_histogram:
+                signal_count += 1
+                if indicators.macd_histogram > 0:
+                    signal_score += 75  # Bullish momentum
+                else:
+                    signal_score += 25  # Bearish momentum
+
+            indicators.signal_strength = signal_score / max(signal_count, 1)
             
         except Exception as e:
             logger.error(f"Error calculating MTF indicators for {instrument}:{timeframe}: {e}", exc_info=True)

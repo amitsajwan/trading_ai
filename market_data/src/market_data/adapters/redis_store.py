@@ -13,6 +13,12 @@ from datetime import datetime, timedelta
 from typing import Iterable, Optional, Dict, Any
 
 from ..contracts import MarketStore, MarketTick, OHLCBar
+from ..timestamp_utils import (
+    create_canonical_timestamp_payload,
+    create_mode_aware_payload,
+    get_instrument_channel,
+    get_market_time
+)
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +106,8 @@ class RedisMarketStore(MarketStore):
         self,
         redis_client,
         *,
+        mode: str = "LIVE",  # "LIVE", "PAPER", "BACKTEST"
+        run_id: Optional[str] = None,
         tick_ttl_hours: int = 24,
         price_ttl_seconds: int = 86400,  # 24 hours to match tick TTL
         ohlc_ttl_hours: int = 24,
@@ -116,7 +124,11 @@ class RedisMarketStore(MarketStore):
         self._tick_ttl = int(timedelta(hours=tick_ttl_hours).total_seconds())
         self._price_ttl = int(price_ttl_seconds)
         self._ohlc_ttl = int(timedelta(hours=ohlc_ttl_hours).total_seconds())
-        
+
+        # Mode configuration (mandatory for all messages)
+        self._mode = mode
+        self._run_id = run_id
+
         # Candle builders per instrument and timeframe
         self._candle_builders: Dict[str, Dict[str, Any]] = {}
         self._enable_candle_building = enable_candle_building
@@ -126,12 +138,28 @@ class RedisMarketStore(MarketStore):
         if self._enable_technical_indicators:
             try:
                 from ..technical_indicators_service import TechnicalIndicatorsService
-                self._technical_service = TechnicalIndicatorsService(redis_client=redis_client)
-                
+
+                # Read execution mode from Redis if available (for backtest awareness)
+                mode = "LIVE"
+                run_id = None
+                try:
+                    mode = redis_client.get("system:execution_mode") or "LIVE"
+                    run_id = redis_client.get("system:run_id")
+                    if mode == "BACKTEST" and run_id:
+                        logger.info(f"MarketStore: Detected BACKTEST mode (run_id: {run_id})")
+                except Exception as e:
+                    logger.warning(f"MarketStore: Could not read execution mode from Redis: {e}")
+
+                self._technical_service = TechnicalIndicatorsService(
+                    redis_client=redis_client,
+                    mode=mode,
+                    run_id=run_id
+                )
+
                 # Initialize technical service with existing OHLC data
                 self._initialize_technical_service_with_existing_data()
-                
-                logger.info("Technical indicators service initialized in MarketStore")
+
+                logger.info(f"Technical indicators service initialized in MarketStore ({mode} mode)")
             except Exception as e:
                 logger.warning(f"Could not initialize technical indicators service: {e}")
                 self._technical_service = None
@@ -147,7 +175,12 @@ class RedisMarketStore(MarketStore):
             # Get all instruments that have OHLC data
             ohlc_keys = self.redis.keys("ohlc:*:*")
             instruments = set()
-            for key in ohlc_keys:
+            # Coerce to list safely (Mock may return a Mock or non-iterable)
+            try:
+                ohlc_iter = list(ohlc_keys) if ohlc_keys is not None else []
+            except Exception:
+                ohlc_iter = []
+            for key in ohlc_iter:
                 parts = key.split(":")
                 if len(parts) >= 2:
                     instruments.add(parts[1])  # Extract instrument name
@@ -197,9 +230,32 @@ class RedisMarketStore(MarketStore):
             
             # Publish tick to Redis pub/sub for real-time subscribers (Socket.IO, signal monitoring, etc.)
             try:
-                self.redis.publish(f"market:tick:{tick.instrument}", payload_json)
-                # Also publish to general tick channel
-                self.redis.publish("market:tick", payload_json)
+                # Create canonical timestamp payload
+                timestamp_payload = create_canonical_timestamp_payload(
+                    market_timestamp=tick.timestamp,
+                    original_timestamp=tick.original_timestamp
+                )
+                
+                # Enhanced payload with canonical timestamps
+                enhanced_payload = payload.copy()
+                enhanced_payload.update(timestamp_payload)
+                enhanced_payload_json = json.dumps(enhanced_payload)
+                
+                # Publish to type-specific channel only (e.g., market:tick:BANKNIFTY:INDEX)
+                type_specific_channel = get_instrument_channel(tick.instrument, "tick")
+                # Add mode-aware payload to ALL messages
+                mode_payload = create_mode_aware_payload(
+                    mode=self._mode,
+                    run_id=self._run_id,
+                    instrument=tick.instrument,
+                    timeframe="1min"
+                )
+                enhanced_payload.update(mode_payload)
+                # GATE BY MODE: In BACKTEST mode, only historical replay may publish
+                # In HISTORICAL mode, publish to WebSocket for real-time-like experience
+
+                enhanced_payload_json = json.dumps(enhanced_payload)
+                self.redis.publish(type_specific_channel, enhanced_payload_json)
             except Exception as pub_exc:
                 # Don't fail if pub/sub fails (may not be enabled)
                 logger.debug(f"Failed to publish tick to pub/sub: {pub_exc}")
@@ -208,17 +264,9 @@ class RedisMarketStore(MarketStore):
             if self._enable_candle_building:
                 self._process_tick_for_ohlc(tick)
             
-            # Automatically update technical indicators (if enabled)
-            if self._enable_technical_indicators and self._technical_service:
-                try:
-                    tick_dict = {
-                        "last_price": tick.last_price,
-                        "volume": tick.volume or 0,
-                        "timestamp": tick.timestamp.isoformat()
-                    }
-                    self._technical_service.update_tick(tick.instrument, tick_dict)
-                except Exception as e:
-                    logger.debug(f"Error updating technical indicators: {e}")
+            # Note: We do NOT call update_tick here for indicators.
+            # Indicators are only updated and published when candles close (in on_candle_close callback).
+            # This ensures stable indicator values within a candle and prevents duplicate publishing.
         except Exception as exc:  # noqa: BLE001
             logger.error("Error storing tick: %s", exc, exc_info=True)
     
@@ -238,10 +286,14 @@ class RedisMarketStore(MarketStore):
                 # Create candle builder with callback to store OHLC bars
                 def on_candle_close(bar: OHLCBar):
                     """Callback when candle closes - store it and update indicators."""
+                    print(f"CANDLE CLOSE CALLBACK: {instrument} at {bar.start_at} - O:{bar.open} H:{bar.high} L:{bar.low} C:{bar.close}")
                     try:
                         self.store_ohlc(bar)
+                        print(f"OHLC stored for {instrument}")
+
                         # Also update technical indicators when candle closes
                         if self._enable_technical_indicators and self._technical_service:
+                            print(f"UPDATING INDICATORS for {instrument} candle close")
                             candle_dict = {
                                 "open": bar.open,
                                 "high": bar.high,
@@ -251,9 +303,15 @@ class RedisMarketStore(MarketStore):
                                 "start_at": bar.start_at.isoformat(),
                                 "timestamp": bar.start_at.isoformat()
                             }
-                            self._technical_service.update_candle(instrument, candle_dict)
+                            print(f"Calling update_candle with data")
+                            result = self._technical_service.update_candle(instrument, candle_dict)
+                            print(f"INDICATORS UPDATED for {instrument}: RSI={getattr(result, 'rsi_14', 'N/A')}, MACD={getattr(result, 'macd_value', 'N/A')}")
+                        else:
+                            print(f"TECHNICAL SERVICE NOT AVAILABLE: enabled={self._enable_technical_indicators}, service={self._technical_service is not None}")
                     except Exception as e:
-                        logger.warning(f"Error in candle close callback: {e}")
+                        print(f"ERROR in candle close callback: {e}")
+                        import traceback
+                        traceback.print_exc()
 
                 self._candle_builders[instrument][timeframe] = CandleBuilder(
                     timeframe=timeframe,
@@ -317,6 +375,60 @@ class RedisMarketStore(MarketStore):
     def store_ohlc(self, bar: OHLCBar) -> None:
         if not self._available:
             return
+
+        try:
+            # Use standardized data storage manager
+            from ..data_storage_manager import DataStorageManager
+            storage_manager = DataStorageManager(self.redis)
+
+            # Prepare bar data for storage
+            bar_data = {
+                "timestamp": bar.start_at.isoformat(),
+                "open": bar.open,
+                "high": bar.high,
+                "low": bar.low,
+                "close": bar.close,
+                "volume": bar.volume or 0
+            }
+
+            # Store using standardized format
+            success = storage_manager.store_ohlc_bar(
+                bar.instrument,
+                bar.timeframe,
+                bar_data,
+                use_sorted_sets=True
+            )
+
+            if success:
+                logger.debug(f"Stored OHLC bar using DataStorageManager: {bar.instrument}:{bar.timeframe}")
+
+                # Publish OHLC data to Redis pub/sub for real-time WebSocket updates
+                try:
+                    payload = _serialize_ohlc(bar)
+                    # Add mode-aware payload to ALL messages
+                    mode_payload = create_mode_aware_payload(
+                        mode=self._mode,
+                        run_id=self._run_id,
+                        instrument=bar.instrument,
+                        timeframe=bar.timeframe
+                    )
+                    payload.update(mode_payload)
+                    payload_json = json.dumps(payload)
+                    # Publish to specific instrument/timeframe channel
+                    self.redis.publish(f"market:ohlc:{bar.instrument}:{bar.timeframe}", payload_json)
+                except Exception as pub_exc:
+                    logger.debug(f"Failed to publish OHLC to pub/sub: {pub_exc}")
+            else:
+                logger.warning(f"Failed to store OHLC bar using DataStorageManager, falling back to legacy: {bar.instrument}:{bar.timeframe}")
+                self._store_ohlc_legacy(bar)
+
+        except Exception as exc:  # noqa: BLE001
+            logger.error("Error storing ohlc: %s", exc, exc_info=True)
+            # Fallback to legacy storage
+            self._store_ohlc_legacy(bar)
+
+    def _store_ohlc_legacy(self, bar: OHLCBar) -> None:
+        """Legacy OHLC storage method for fallback."""
         payload = _serialize_ohlc(bar)
         key = f"ohlc:{bar.instrument}:{bar.timeframe}:{payload.get('start_at')}"
         try:
@@ -324,35 +436,6 @@ class RedisMarketStore(MarketStore):
             sorted_key = f"ohlc_sorted:{bar.instrument}:{bar.timeframe}"
             score = bar.start_at.timestamp()
             self.redis.zadd(sorted_key, {json.dumps(payload): float(score)})
-
-            # Publish OHLC data to Redis pub/sub for real-time WebSocket updates
-            try:
-                payload_json = json.dumps(payload)
-                # Publish to specific instrument/timeframe channel
-                self.redis.publish(f"market:ohlc:{bar.instrument}:{bar.timeframe}", payload_json)
-                # Also publish to general OHLC channel
-                self.redis.publish("market:ohlc", payload_json)
-                # And to instrument-specific OHLC channel
-                self.redis.publish(f"market:ohlc:{bar.instrument}", payload_json)
-            except Exception as pub_exc:
-                # Don't fail if pub/sub fails (may not be enabled)
-                logger.debug(f"Failed to publish OHLC to pub/sub: {pub_exc}")
-
-            # Update technical indicators when OHLC data is stored
-            if self._enable_technical_indicators and self._technical_service:
-                try:
-                    candle_dict = {
-                        "open": bar.open,
-                        "high": bar.high,
-                        "low": bar.low,
-                        "close": bar.close,
-                        "volume": bar.volume or 0,
-                        "start_at": bar.start_at.isoformat(),
-                        "timestamp": bar.start_at.isoformat()
-                    }
-                    self._technical_service.update_candle(bar.instrument, candle_dict)
-                except Exception as e:
-                    logger.debug(f"Error updating technical indicators for OHLC: {e}")
 
             # Skip cleanup for historical data (older than 1 hour) to preserve historical OHLC data
             # Only clean up recent/live data that may have expired TTL
@@ -366,12 +449,44 @@ class RedisMarketStore(MarketStore):
             except (TypeError, AttributeError):
                 # If timezone handling fails, skip cleanup for safety
                 pass
-        except Exception as exc:  # noqa: BLE001
-            logger.error("Error storing ohlc: %s", exc, exc_info=True)
+        except Exception as exc:
+            logger.error("Error in legacy OHLC storage: %s", exc)
 
     def get_ohlc(self, instrument: str, timeframe: str, limit: int = 100) -> Iterable[OHLCBar]:
         if not self._available:
             return []
+
+        try:
+            # Use standardized data storage manager
+            from ..data_storage_manager import DataStorageManager
+            storage_manager = DataStorageManager(self.redis)
+
+            # Get bars from storage manager
+            bars_data = storage_manager.get_ohlc_bars(instrument, timeframe, limit=limit, prefer_sorted_sets=True)
+
+            # Convert to OHLCBar objects
+            bars = []
+            for bar_data in bars_data:
+                try:
+                    bar = _parse_ohlc(json.dumps(bar_data))
+                    if bar:
+                        bars.append(bar)
+                except Exception as parse_exc:
+                    logger.warning(f"Failed to parse OHLC bar: {parse_exc}")
+                    continue
+
+            if bars:
+                return bars
+            else:
+                logger.warning("DataStorageManager returned no OHLC bars, falling back to legacy")
+                return self._get_ohlc_legacy(instrument, timeframe, limit)
+
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Error reading ohlc via DataStorageManager, falling back to legacy: %s", exc)
+            return self._get_ohlc_legacy(instrument, timeframe, limit)
+
+    def _get_ohlc_legacy(self, instrument: str, timeframe: str, limit: int = 100) -> Iterable[OHLCBar]:
+        """Legacy OHLC retrieval method for fallback."""
         # Normalize timeframe: "minute" -> "1min", "5minute" -> "5min", etc.
         timeframe_normalized = timeframe.lower()
         if timeframe_normalized == "minute":
@@ -389,6 +504,6 @@ class RedisMarketStore(MarketStore):
                     bars.append(bar)
             return bars
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Error reading ohlc: %s", exc)
+            logger.warning("Error reading ohlc (legacy): %s", exc)
             return []
 

@@ -135,32 +135,59 @@ def build_news_service(mongo_collection: Collection,
 
 
 def get_default_news_sources() -> list:
-    """Get default news sources configuration.
+    """Get default news sources configuration with improved reliability.
 
     Returns:
-        List of NewsSource objects for major Indian financial news
+        List of NewsSource objects for major Indian financial news with fallbacks
     """
     return [
+        # Primary reliable sources (highest priority)
         NewsSource(
             name="moneycontrol-rss",
             url="https://www.moneycontrol.com/rss/latestnews.xml",
             type="rss",
             update_interval_minutes=15,
-            categories=["markets", "economy", "companies"]
+            categories=["markets", "economy", "companies"],
+            priority=1  # High priority - very reliable
         ),
         NewsSource(
             name="economictimes-rss",
             url="https://economictimes.indiatimes.com/rssfeedsdefault.cms",
             type="rss",
             update_interval_minutes=15,
-            categories=["markets", "economy", "companies"]
+            categories=["markets", "economy", "companies"],
+            priority=1  # High priority - very reliable
         ),
+
+        # Secondary sources (medium priority)
+        NewsSource(
+            name="bloombergquint-rss",
+            url="https://www.bloombergquint.com/feeder/rss",
+            type="rss",
+            update_interval_minutes=20,
+            categories=["markets", "economy", "companies"],
+            priority=2  # Medium priority
+        ),
+
+        # Tertiary sources (lower priority, may be blocked)
         NewsSource(
             name="business-standard-rss",
             url="https://www.business-standard.com/rss/home_page_top_stories.rss",
             type="rss",
-            update_interval_minutes=15,
-            categories=["markets", "economy", "companies"]
+            update_interval_minutes=30,  # Longer interval for blocked sources
+            categories=["markets", "economy", "companies"],
+            priority=3,  # Low priority - often blocked
+            retry_count=2  # Fewer retries for unreliable sources
+        ),
+
+        # Fallback sources
+        NewsSource(
+            name="financialexpress-rss",
+            url="https://www.financialexpress.com/feed/",
+            type="rss",
+            update_interval_minutes=25,
+            categories=["markets", "economy", "companies"],
+            priority=2
         )
     ]
 

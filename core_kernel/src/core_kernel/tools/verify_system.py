@@ -113,14 +113,17 @@ class SystemVerifier:
         self.section("Redis Verification")
         
         try:
+            import os
+            redis_host = os.getenv('REDIS_HOST', 'localhost')
+            redis_port = int(os.getenv('REDIS_PORT', '6379'))
             self.redis_client = redis.Redis(
-                host='localhost',
-                port=6380,
+                host=redis_host,
+                port=redis_port,
                 decode_responses=True,
                 socket_timeout=5
             )
             self.redis_client.ping()
-            self.check("Redis connection", True, "localhost:6380 reachable")
+            self.check("Redis connection", True, f"{redis_host}:{redis_port} reachable")
             
             keys = self.redis_client.keys("*")
             self.check("Redis keys", len(keys) > 0, f"{len(keys)} keys found")

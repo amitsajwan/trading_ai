@@ -1,11 +1,60 @@
-version: '3.8'
-
 services:
+  # Mock data publisher for testing
+  mock-data-publisher:
+    build: .
+    container_name: zerodha-mock-publisher
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - PYTHONPATH=/app:/app/market_data/src
+    volumes:
+      - ./logs:/app/logs
+    command: ["python", "mock_data_publisher.py"]
+    restart: unless-stopped
+    networks:
+      - trading-network
+
+  # Mock options chain provider
+  mock-options-provider:
+    build: .
+    container_name: zerodha-mock-options
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - INSTRUMENT_SYMBOL=BANKNIFTY26FEBFUT
+    volumes:
+      - ./logs:/app/logs
+    command: ["python", "mock_options_provider.py"]
+    restart: unless-stopped
+    networks:
+      - trading-network
+
+  # Disable live-only services in mock mode
+  websocket-tick-collector-banknifty:
+    profiles: ["live"]
+
+  kite-auth-service:
+    profiles: ["live"]
+
+  historical-replay-service:
+    profiles: ["historical"]
+
   # Override env to force mock provider for collectors and backends
   ltp-collector-banknifty:
     environment:
       - TRADING_PROVIDER=mock
       - USE_MOCK_KITE=1
+    volumes:
+      - ./logs:/app/logs
+      - ./credentials.json:/app/credentials.json:ro
+      - ./market_data:/app/market_data
+      - ./redis_key_manager.py:/app/redis_key_manager.py:ro
 
   depth-collector-banknifty:
     environment:
@@ -16,6 +65,10 @@ services:
     environment:
       - TRADING_PROVIDER=mock
       - USE_MOCK_KITE=1
+    volumes:
+      - ./logs:/app/logs
+      - ./credentials.json:/app/credentials.json:ro
+      - ./redis_key_manager.py:/app/redis_key_manager.py:ro
 
   depth-collector-nifty:
     environment:
@@ -32,8 +85,27 @@ services:
       - TRADING_PROVIDER=mock
       - USE_MOCK_KITE=1
 
-  # Optionally ensure dashboard and other services use mock provider
-  zerodha-dashboard-service:
+  # Optionally ensure dashboard backend uses mock provider
+  dashboard-backend:
     environment:
       - TRADING_PROVIDER=mock
       - USE_MOCK_KITE=1
+
+  market-data-api:
+    environment:
+      - TRADING_PROVIDER=mock
+      - USE_MOCK_KITE=1
+    volumes:
+      - ./market_data:/app/market_data:ro
+
+  market-data-dashboard:
+    volumes:
+      - ./market_data_dashboard/templates:/app/templates:ro
+      - ./market_data_dashboard/app.py:/app/app.py:ro
+
+  ohlc-aggregator:
+    volumes:
+      - ./logs:/app/logs
+      - ./market_data:/app/market_data
+      - ./redis_key_manager.py:/app/redis_key_manager.py:ro
+      - ./ohlc_aggregator_service.py:/app/ohlc_aggregator_service.py:ro

@@ -12,8 +12,8 @@ from typing import Any, Dict
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 
-from dashboard_pro_genai import get_genai_health_fragment
-from dashboard_pro_trading import get_trading_health_fragment
+from .dashboard_pro_genai import get_genai_health_fragment
+from .dashboard_pro_trading import get_trading_health_fragment
 
 
 async def enrich_health_response(request: Request, response: Response) -> Response:

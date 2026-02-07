@@ -9,6 +9,9 @@ logger = logging.getLogger(__name__)
 
 
 class ReviewAgent(Agent):
+    def __init__(self):
+        self._agent_name = "ReviewAgent"
+
     async def analyze(self, context: Dict[str, Any]) -> AnalysisResult:
         # Summarize existing analysis
         summary = {k: bool(v) for k, v in context.items() if k in ("technical", "sentiment", "macro", "fundamental")}

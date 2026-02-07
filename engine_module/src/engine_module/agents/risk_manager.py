@@ -11,6 +11,7 @@ class RiskManager(Agent):
     """Manages risk debate between different risk perspectives."""
 
     def __init__(self, llm_client=None):
+        self._agent_name = "RiskManager"
         self.llm_client = llm_client  # For debate synthesis
 
     async def analyze(self, context: Dict[str, Any]) -> AnalysisResult:

@@ -19,9 +19,9 @@ class TradingConfig:
         self.redis_port = int(os.getenv("REDIS_PORT", "6379"))
 
         # Trading instrument (configurable)
-        self.instrument_symbol = os.getenv("INSTRUMENT_SYMBOL", "BANKNIFTY")
+        self.instrument_symbol = os.getenv("INSTRUMENT_SYMBOL", "BANKNIFTY26FEBFUT")
         self.instrument_trading_symbol = os.getenv("INSTRUMENT_TRADING_SYMBOL", "")
-        self.instrument_exchange = os.getenv("INSTRUMENT_EXCHANGE", "NSE")
+        self.instrument_exchange = os.getenv("INSTRUMENT_EXCHANGE", "NFO")
 
         # Kite API
         self.kite_api_key = os.getenv("KITE_API_KEY", "")
@@ -92,9 +92,37 @@ class TradingConfig:
         }
 
     def setup_logging(self):
-        """Setup centralized logging configuration for the trading system."""
-        # Ensure logs directory exists
-        os.makedirs(os.path.dirname(self.log_file), exist_ok=True)
+        """Setup centralized logging configuration for the trading system with module-specific log files."""
+        # Ensure main logs directory exists (guard against empty LOG_FILE)
+        if not self.log_file:
+            # Fallback to default logs path when LOG_FILE env is empty
+            self.log_file = "logs/trading_system.log"
+        # Determine directory to create (use 'logs' if dirname is empty)
+        log_dir = os.path.dirname(self.log_file) or "logs"
+        os.makedirs(log_dir, exist_ok=True)
+
+        # Define all modules with their log directories
+        modules = [
+            'backtesting_module',
+            'core_kernel',
+            'dashboard',
+            'data',
+            'engine_module',
+            'genai_module',
+            'market_data',
+            'monitoring',
+            'news_module',
+            'redis_ws_gateway',
+            'risk_module',
+            'services',
+            'ui_shell',
+            'user_module'
+        ]
+
+        # Ensure module log directories exist
+        for module in modules:
+            module_log_dir = os.path.join(module, 'logs')
+            os.makedirs(module_log_dir, exist_ok=True)
 
         # Base logging configuration
         log_config = {
@@ -117,7 +145,13 @@ class TradingConfig:
                     'level': self.log_level,
                     'stream': 'ext://sys.stdout'
                 },
-                'file': {
+                'console_utf8': {
+                    'class': 'logging.StreamHandler',
+                    'formatter': 'standard' if not self.enable_json_logging else 'json',
+                    'level': self.log_level,
+                    'stream': 'ext://sys.stdout'
+                },
+                'main_file': {
                     'class': 'logging.handlers.RotatingFileHandler',
                     'formatter': 'standard' if not self.enable_json_logging else 'json',
                     'level': self.log_level,
@@ -127,42 +161,39 @@ class TradingConfig:
                 }
             },
             'root': {
-                'handlers': ['console', 'file'],
+                'handlers': ['console', 'main_file'],
                 'level': self.log_level,
             },
-            'loggers': {
-                'market_data': {
-                    'handlers': ['console', 'file'],
-                    'level': self.log_level,
-                    'propagate': False
-                },
-                'engine_module': {
-                    'handlers': ['console', 'file'],
-                    'level': self.log_level,
-                    'propagate': False
-                },
-                'news_module': {
-                    'handlers': ['console', 'file'],
-                    'level': self.log_level,
-                    'propagate': False
-                },
-                'genai_module': {
-                    'handlers': ['console', 'file'],
-                    'level': self.log_level,
-                    'propagate': False
-                },
-                'user_module': {
-                    'handlers': ['console', 'file'],
-                    'level': self.log_level,
-                    'propagate': False
-                }
-            }
+            'loggers': {}
         }
+
+        # Add module-specific handlers and loggers
+        for module in modules:
+            module_log_file = os.path.join(module, 'logs', f'{module}.log')
+            handler_name = f'{module}_file'
+
+            # Add module-specific file handler
+            log_config['handlers'][handler_name] = {
+                'class': 'logging.handlers.RotatingFileHandler',
+                'formatter': 'standard' if not self.enable_json_logging else 'json',
+                'level': self.log_level,
+                'filename': module_log_file,
+                'maxBytes': 10 * 1024 * 1024,  # 10MB
+                'backupCount': 5
+            }
+
+            # Add module-specific logger
+            log_config['loggers'][module] = {
+                'handlers': ['console', handler_name],
+                'level': self.log_level,
+                'propagate': False
+            }
 
         logging.config.dictConfig(log_config)
         logger = logging.getLogger(__name__)
-        logger.info("Centralized logging configuration applied")
+        logger.info("Module-specific logging configuration applied")
         logger.info(f"Log level: {self.log_level}, JSON logging: {self.enable_json_logging}")
+        logger.info(f"Created separate log files for {len(modules)} modules")
 
     def get_logger(self, name: str) -> logging.Logger:
         """Get a configured logger for the given module name."""

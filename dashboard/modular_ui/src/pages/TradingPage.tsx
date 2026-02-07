@@ -2,7 +2,7 @@ import React, { useEffect } from 'react'
 import { useDispatch, useSelector } from 'react-redux'
 import { Activity, AlertCircle, CheckCircle2 } from 'lucide-react'
 import { RootState } from '../store'
-import { fetchLatestDecision, fetchPortfolio, clearError } from '../store/slices/tradingSlice'
+import { fetchLatestDecision, fetchPortfolio, fetchSignals, clearError } from '../store/slices/tradingSlice'
 // ENABLED: Trading widgets (WebSocket-based or mock data)
 import { QuickActionsWidget } from '../components/widgets/QuickActionsWidget'
 import { CurrentSignalWidget } from '../components/widgets/CurrentSignalWidget'
@@ -17,17 +17,19 @@ export const TradingPage: React.FC = () => {
   const { error, portfolio, latestDecision } = useSelector((state: RootState) => state.trading)
 
   useEffect(() => {
-    // DISABLED: No backend API calls to prevent errors
-    // dispatch(fetchLatestDecision() as any)
-    // dispatch(fetchPortfolio() as any)
+    // Load trading data
+    dispatch(fetchLatestDecision() as any)
+    dispatch(fetchPortfolio() as any)
+    dispatch(fetchSignals() as any)
 
-    // DISABLED: No auto-refresh
-    // const interval = setInterval(() => {
-    //   dispatch(fetchLatestDecision() as any)
-    //   dispatch(fetchPortfolio() as any)
-    // }, 10000)
+    // Auto-refresh every 30 seconds
+    const interval = setInterval(() => {
+      dispatch(fetchLatestDecision() as any)
+      dispatch(fetchPortfolio() as any)
+      dispatch(fetchSignals() as any)
+    }, 30000)
 
-    // return () => clearInterval(interval)
+    return () => clearInterval(interval)
   }, [dispatch])
 
   useEffect(() => {

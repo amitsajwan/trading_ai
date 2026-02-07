@@ -20,7 +20,7 @@ async def test_tick_processing_triggers_signal_check():
     from engine_module.signal_monitor import TradingCondition, ConditionOperator
     
     # Mock the realtime processor
-    with patch('engine_module.src.engine_module.realtime_tick_integration._initialize_realtime_processor') as mock_init:
+    with patch('engine_module.realtime_tick_integration._initialize_realtime_processor') as mock_init:
         mock_processor = MagicMock()
         mock_processor.on_tick = AsyncMock(return_value={
             "processed": True,
@@ -28,6 +28,9 @@ async def test_tick_processing_triggers_signal_check():
             "indicators_updated": True
         })
         mock_init.return_value = mock_processor
+
+        import engine_module.realtime_tick_integration as rti
+        rti._realtime_processor = None
         
         # Process a tick
         tick_dict = {
@@ -51,8 +54,12 @@ async def test_condition_evaluation_met():
     """Test condition evaluation when condition is met."""
     from engine_module.src.engine_module.signal_monitor import TradingCondition, ConditionOperator, SignalMonitor
     
+    class DummyTechnicalService:
+        async def get_indicators(self, instrument):
+            return indicators
+
     # Create signal monitor
-    monitor = SignalMonitor()
+    monitor = SignalMonitor(technical_service=DummyTechnicalService())
     
     # Create a signal with condition: price > 45000
     signal = TradingCondition(
@@ -74,10 +81,11 @@ async def test_condition_evaluation_met():
     }
     
     # Check signals
-    triggered = await monitor.check_signals("BANKNIFTY", indicators)
+    triggered = await monitor.check_signals("BANKNIFTY")
     
     # Should trigger since 45100 > 45000
-    assert len(triggered) > 0 or signal.threshold < indicators["current_price"]
+    assert len(triggered) > 0
+    assert triggered[0].instrument == "BANKNIFTY"
     
     print("✅ Test passed: Condition evaluation detects when condition is met")
 
@@ -87,8 +95,12 @@ async def test_condition_evaluation_not_met():
     """Test condition evaluation when condition is not met."""
     from engine_module.src.engine_module.signal_monitor import TradingCondition, ConditionOperator, SignalMonitor
     
+    class DummyTechnicalService:
+        async def get_indicators(self, instrument):
+            return indicators
+
     # Create signal monitor
-    monitor = SignalMonitor()
+    monitor = SignalMonitor(technical_service=DummyTechnicalService())
     
     # Create a signal with condition: price > 45500
     signal = TradingCondition(
@@ -110,11 +122,10 @@ async def test_condition_evaluation_not_met():
     }
     
     # Check signals
-    triggered = await monitor.check_signals("BANKNIFTY", indicators)
+    triggered = await monitor.check_signals("BANKNIFTY")
     
     # Should NOT trigger since 45100 < 45500
-    # (Note: exact behavior depends on implementation, but price check should fail)
-    assert 45100.0 < 45500.0  # Condition is not met
+    assert triggered == []
     
     print("✅ Test passed: Condition evaluation correctly identifies when condition is not met")
 
@@ -135,8 +146,12 @@ async def test_execution_callback_called():
     async def test_execution_callback(event: SignalTriggerEvent):
         callback_called.append(event)
     
+    class DummyTechnicalService:
+        async def get_indicators(self, instrument):
+            return indicators
+
     # Create signal monitor
-    monitor = SignalMonitor()
+    monitor = SignalMonitor(technical_service=DummyTechnicalService())
     monitor.set_execution_callback(test_execution_callback)
     
     # Create a signal
@@ -159,11 +174,10 @@ async def test_execution_callback_called():
     }
     
     # Check signals (should trigger and call callback)
-    triggered = await monitor.check_signals("BANKNIFTY", indicators)
+    triggered = await monitor.check_signals("BANKNIFTY")
     
-    # Verify callback structure exists (even if not called in test environment)
-    # The actual callback execution depends on real signal trigger logic
-    assert hasattr(monitor, '_execution_callback')
+    assert len(triggered) > 0
+    assert callback_called
     
     print("✅ Test passed: Execution callback structure is set up correctly")
 

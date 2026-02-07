@@ -32,17 +32,17 @@ class TestOfflineDataFlow:
         replay.stop()
 
         # Verify data was stored
-        latest_tick = store.get_latest_tick("BANKNIFTY")
+        latest_tick = store.get_latest_tick("BANKNIFTY26JANFUT")
         assert latest_tick is not None
-        assert latest_tick.instrument == "BANKNIFTY"
+        assert latest_tick.instrument == "BANKNIFTY26JANFUT"
         assert latest_tick.last_price > 0
 
         # Check OHLC data
-        ohlc_bars = list(store.get_ohlc("BANKNIFTY", "1min", limit=5))
+        ohlc_bars = list(store.get_ohlc("BANKNIFTY26JANFUT", "1min", limit=5))
         assert len(ohlc_bars) > 0
 
         for bar in ohlc_bars:
-            assert bar.instrument == "BANKNIFTY"
+            assert bar.instrument == "BANKNIFTY26JANFUT"
             assert bar.open > 0
             assert bar.high >= bar.open
             assert bar.low <= bar.open
@@ -81,10 +81,10 @@ class TestOfflineDataFlow:
         replay.stop()
 
         # Verify store has data
-        tick = store.get_latest_tick("BANKNIFTY")
+        tick = store.get_latest_tick("BANKNIFTY26JANFUT")
         assert tick is not None
 
-        bars = list(store.get_ohlc("BANKNIFTY", "1min", limit=10))
+        bars = list(store.get_ohlc("BANKNIFTY26JANFUT", "1min", limit=10))
         assert len(bars) >= 1  # Should have at least some bars
 
         # Verify data consistency

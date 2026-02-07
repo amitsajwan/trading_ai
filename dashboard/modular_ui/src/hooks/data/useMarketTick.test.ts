@@ -53,7 +53,7 @@ describe('useMarketTick', () => {
     expect(mockUseData).toHaveBeenCalledWith(
       expect.objectContaining({
         key: 'tick:BANKNIFTY',
-        wsChannel: 'market:tick:BANKNIFTY',
+        wsChannel: 'market:tick:BANKNIFTY:INDEX',
         cacheTTL: 5 * 60 * 1000, // 5 minutes
       })
     )
@@ -79,7 +79,7 @@ describe('useMarketTick', () => {
     expect(mockUseData).toHaveBeenCalledWith(
       expect.objectContaining({
         key: 'tick:BANKNIFTY',
-        wsChannel: 'market:tick:BANKNIFTY',
+        wsChannel: 'market:tick:BANKNIFTY:INDEX',
       })
     )
   })

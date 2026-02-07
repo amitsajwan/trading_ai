@@ -8,9 +8,11 @@ This document summarizes each agent in the `engine_module`, their expected input
 
 - Agents implement `Agent.analyze(context) -> AnalysisResult`.
 - Typical AnalysisResult: { decision: str, confidence: float, details: dict }
-- Main orchestrator: `EnhancedTradingOrchestrator` (orchestrator runs agents each cycle, aggregates results).
-- Signal creation: `signal_creator.create_signals_from_decision()` converts decisions -> conditional `TradingCondition`s and persists them to MongoDB + Redis pub/sub.
-- Real-time flow: `TechnicalIndicatorsService` -> `SignalMonitor` -> triggers -> execution callback -> `ExecutionAgent` or `PositionManager`.
+- **RESEARCH-FIRST ARCHITECTURE**: `EnhancedResearchManager` establishes primary thesis, supporting agents validate.
+- Main orchestrator: `EnhancedTradingOrchestrator` (research-first: EnhancedResearchManager → Supporting Agents → LLM Risk Assessment → Signals).
+- Signal creation: `signal_creator.create_signals_from_decision()` converts decisions → conditional `TradingCondition`s (5-min deduplication).
+- Real-time flow: `TechnicalIndicatorsService` → Optimized `SignalMonitor` → triggers → execution callback → `ExecutionAgent` or `PositionManager`.
+- **ENHANCED FEATURES**: Multi-timeframe confirmation, ATR-based risk management, dynamic position sizing.
 
 ---
 
@@ -30,18 +32,20 @@ This document summarizes each agent in the `engine_module`, their expected input
 
 ### MomentumAgent & EnhancedMomentumAgent ⚡
 - MomentumAgent:
-  - Purpose: RSI + volume-based momentum signals.
-  - Inputs: context['technical_indicators'], 'current_price', optional position flags.
-  - Outputs: AnalysisResult(decision=BUY/SELL/HOLD, confidence, details including entry_price, stop_loss, take_profit).
+  - Purpose: RSI + volume-based momentum signals with multi-timeframe confirmation and ATR risk management.
+  - Inputs: context['technical_indicators'] (including 1h timeframe), 'current_price', optional position flags.
+  - Outputs: AnalysisResult(decision=BUY/SELL/HOLD, confidence, details with ATR stops, position sizing, multi-timeframe validation).
+  - **ENHANCED FEATURES**: Multi-timeframe confirmation (1m + 1h), ATR-based stop losses (2x ATR), dynamic position sizing based on R:R ratio.
 - EnhancedMomentumAgent (BaseAgent subclass):
   - Adds multi-timeframe, exit checks, structured reports, position recommendations.
-- Consumers: Orchestrator, SignalCreator (to create conditional signals), PositionManager.
+- Consumers: Orchestrator (supporting validation), SignalCreator (to create conditional signals), PositionManager.
 
 ### TrendAgent 📈
-- Purpose: MA crossovers + ADX trend following.
+- Purpose: MA crossovers + ADX trend following with ATR-based risk management.
 - Inputs: context['ohlc'] (sufficient length), optional positions.
-- Outputs: AnalysisResult with entry/stop/target and reasoning.
-- Consumers: Orchestrator, PortfolioManager.
+- Outputs: AnalysisResult with ATR-based stops (2x ATR), position sizing, trend strength assessment.
+- **ENHANCED FEATURES**: ATR-based stop losses (vs fixed %), dynamic position sizing (ADX > 30 gets larger positions), trend strength classification.
+- Consumers: Orchestrator (supporting validation), PortfolioManager.
 
 ### MeanReversionAgent 🔄
 - Purpose: Bollinger Bands + RSI mean reversion signals.
@@ -79,11 +83,12 @@ This document summarizes each agent in the `engine_module`, their expected input
 - Outputs: Options-strategy-style decision (BULL_CALL_SPREAD / BEAR_PUT_SPREAD), thesis, confidence, stored memory experiences.
 - Consumers: ResearchManager (or EnhancedResearchManager).
 
-### ResearchManager / EnhancedResearchManager 🧠
-- Purpose: Run bull vs bear analyses, conduct debate (simple or formal DebateProtocol), synthesize a final research decision (including options strategy suggestions like IRON_CONDOR).
-- Inputs: Market/technical context, bull/bear outputs.
-- Outputs: Synthesized decision (options strategy name or HOLD), confidence, research_plan.
-- Consumers: Orchestrator (for options strategy execution), PortfolioManager.
+### ResearchManager / EnhancedResearchManager 🧠 **PRIMARY DECISION MAKER**
+- Purpose: **ESTABLISHES PRIMARY MARKET THESIS** through formal debate between BullResearcher vs BearResearcher using DebateProtocol.
+- Inputs: Market/technical context, bull/bear researcher outputs.
+- Outputs: **PRIMARY DECISION** (options strategy or directional bias), confidence, research thesis with debate winner analysis.
+- **ARCHITECTURAL ROLE**: Runs FIRST in research-first architecture, establishes thesis that supporting agents validate.
+- Consumers: **ALL OTHER AGENTS** (provides thesis context), Orchestrator (primary decision), PortfolioManager.
 
 ### OptionsAnalysisAgent & OptionsStrategyAgent 🪙
 - OptionsAnalysisAgent:
@@ -163,31 +168,55 @@ This document summarizes each agent in the `engine_module`, their expected input
 
 ## Notes & Recommendations
 
+### Architecture Changes (v2.0 - Research-First)
+- **EnhancedResearchManager is now PRIMARY DECISION MAKER** - establishes thesis first, all other agents provide validation.
+- **Research-First Flow**: EnhancedResearchManager → Supporting Agents → LLM Risk Assessment → Signals.
+- **Enhanced Agent Features**: Multi-timeframe confirmation, ATR-based risk management, dynamic position sizing.
+- **Optimized Performance**: 5-minute signal deduplication (vs 30min), batched Redis operations, performance monitoring.
+
+### Agent Development Guidelines
 - BaseAgent defines a common interface and structured reporting — prefer it for new agents to get consistent `structured_report` output.
 - Agents should not directly perform DB writes or publish to Redis; instead return AnalysisResult and let `signal_creator` and orchestrator handle persistence/publishing. This keeps agents testable and side-effect free.
-- Suggested next steps:
+- **NEW**: Supporting agents should check for `research_thesis` in context and align their analysis accordingly.
+
+### Enhanced Features Implemented
+- **Multi-Timeframe**: Agents now validate signals across 1m + 1h timeframes where available.
+- **ATR Risk Management**: Dynamic stop losses based on volatility (2x ATR for trends, 1.5x ATR for momentum).
+- **Position Sizing**: Risk-based position sizing (1% risk per trade, adjusted by R:R ratio and trend strength).
+- **Signal Deduplication**: Reduced from 30 minutes to 5 minutes for more responsive trading.
+
+### Suggested Next Steps
 - Add a short template for writing agents (mandatory fields, context keys, expected detail keys). See `agents/agent_template.py`.
-  - Add unit tests that assert AnalysisResult contract (decision strings, confidence ranges, key details) for each agent.
+- Add unit tests that assert AnalysisResult contract (decision strings, confidence ranges, key details) for each agent.
+- Consider adding more research agents (SentimentResearcher, MacroResearcher) following the EnhancedResearchManager pattern.
 
 ---
 
-## Flow diagram (Mermaid)
+## Flow diagram (Mermaid) - RESEARCH-FIRST ARCHITECTURE
 
 ```mermaid
 flowchart TD
-  Orchestrator["EnhancedTradingOrchestrator\n(15-min cycle)"] -->|Decision| SignalCreator["signal_creator.create_signals_from_decision()"]
+  Orchestrator["EnhancedTradingOrchestrator\n(15-min cycle)"] -->|1. Research First| ResearchManager["EnhancedResearchManager\n(PRIMARY DECISION MAKER)"]
+  ResearchManager -->|Thesis: BULL/BEAR/NEUTRAL| SupportingAgents["Supporting Agents\n(Momentum, Trend, Technical, etc.)"]
+  SupportingAgents -->|Validation Evidence| DecisionValidation["Decision Validation\n(Consensus + LLM Risk Assessment)"]
+  DecisionValidation -->|Final Decision| SignalCreator["signal_creator.create_signals_from_decision()\n(5-min deduplication)"]
   SignalCreator -->|Persist & Publish| MongoDB[(MongoDB Signals Collection)]
   SignalCreator -->|Publish| RedisPub["Redis Pub/Sub (engine:signal)"]
-  RedisPub -->|Notify| SignalMonitor["SignalMonitor (real-time)"]
+  RedisPub -->|Notify| SignalMonitor["Optimized SignalMonitor\n(batch processing, performance stats)"]
   TechnicalService["TechnicalIndicatorsService\n(tick updates)"] -->|Indicators| SignalMonitor
-  SignalMonitor -->|Trigger Event| RealtimeProcessor["RealtimeSignalProcessor"]
+  SignalMonitor -->|Trigger Event| RealtimeProcessor["RealtimeSignalProcessor\n(batched Redis listener)"]
   RealtimeProcessor -->|Execute Callback| ExecutionAgent["ExecutionAgent / OrderExecutionProvider"]
   ExecutionAgent -->|Open/Close| PositionManager["PositionManager"]
   PositionManager -->|Update| MongoDB
   Orchestrator -. feedback .-> PositionManager
 
+  classDef research fill:#ffeb3b,stroke:#f57f17,stroke-width:2px;
+  classDef enhanced fill:#4caf50,stroke:#2e7d32,stroke-width:2px;
   classDef service fill:#f8f,stroke:#333,stroke-width:1px;
-  class Orchestrator,SignalCreator,RealtimeProcessor,ExecutionAgent,PositionManager service
+
+  class ResearchManager research
+  class SupportingAgents,SignalMonitor,RealtimeProcessor enhanced
+  class Orchestrator,SignalCreator,ExecutionAgent,PositionManager service
 ```
 
 ---

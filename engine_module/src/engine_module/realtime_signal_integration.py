@@ -12,11 +12,24 @@ Flow:
 """
 
 import asyncio
+import json
 import logging
 import sys
 import os
 from typing import Dict, Any, Optional, Callable
 from datetime import datetime
+
+# Fix Windows console encoding for emojis
+if sys.platform == 'win32':
+    try:
+        # Try to set UTF-8 encoding for Windows console
+        sys.stdout.reconfigure(encoding='utf-8')
+        sys.stderr.reconfigure(encoding='utf-8')
+    except (AttributeError, ValueError):
+        # Fallback for older Python versions
+        import io
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
 logger = logging.getLogger(__name__)
 
@@ -77,10 +90,12 @@ class RealtimeSignalProcessor:
 
             # Start background listener depending on availability
             if self._aioredis is not None:
+                logger.info("Using async Redis listener (aioredis available)")
                 # Asyncio-based listener
                 import asyncio
                 self._pubsub_task = asyncio.create_task(self._async_redis_listener())
             else:
+                logger.info("Using threaded Redis listener (aioredis not available)")
                 # Fallback to threaded listener using sync redis client
                 import threading
                 t = threading.Thread(target=self._threaded_redis_listener, daemon=True)
@@ -95,33 +110,73 @@ class RealtimeSignalProcessor:
         logger.info("RealtimeSignalProcessor initialized")
 
     
+    async def _publish_indicators(self, instrument: str, indicators: Dict[str, Any]):
+        """Publish indicator updates to Redis pub/sub for real-time monitoring.
+
+        Args:
+            instrument: Instrument symbol
+            indicators: Dictionary of indicator values
+        """
+        try:
+            # Import here to avoid circular imports
+            from engine_module.api_service import get_redis_client
+            redis_client = get_redis_client()
+
+            # Determine instrument type for channel pattern
+            from market_data.timestamp_utils import detect_instrument_type
+            instrument_type = detect_instrument_type(instrument)
+
+            # Publish each indicator update
+            for indicator_name, value in indicators.items():
+                try:
+                    # Use the correct channel format: indicators:{instrument}:{type}
+                    channel = f"indicators:{instrument}:{instrument_type}"
+                    message = {
+                        "type": "indicator_update",
+                        "instrument": instrument,
+                        "indicator": indicator_name,
+                        "value": value,
+                        "timestamp": datetime.now().isoformat()
+                    }
+                    redis_client.publish(channel, json.dumps(message))
+                    logger.debug(f"Published {indicator_name}={value} for {instrument} on {channel}")
+                except Exception as e:
+                    logger.warning(f"Failed to publish {indicator_name} for {instrument}: {e}")
+
+        except Exception as e:
+            logger.warning(f"Failed to publish indicators for {instrument}: {e}")
+
     async def on_tick(self, instrument: str, tick: Dict[str, Any]) -> Dict[str, Any]:
         """Process market tick: Update indicators → Check signals → Execute trades.
-        
+
         This should be called on EVERY market tick from your WebSocket handler.
-        
+
         Args:
             instrument: Instrument symbol
             tick: Tick data with last_price, volume, timestamp
-            
+
         Returns:
             Dict with processing results
         """
         self.ticks_processed += 1
-        
+
         # Step 1: Update technical indicators
         indicators = self.technical_service.update_tick(instrument, tick)
-        
-        # Step 2: Check if any signals should trigger
+
+        # Step 2: Publish indicator updates to Redis pub/sub
+        if indicators:
+            await self._publish_indicators(instrument, indicators)
+
+        # Step 3: Check if any signals should trigger
         triggered_events = await self.signal_monitor.check_signals(instrument)
-        
+
         if triggered_events:
             self.signals_triggered += len(triggered_events)
             logger.info(
-                f"✅ {len(triggered_events)} signal(s) triggered for {instrument} "
+                f"[OK] {len(triggered_events)} signal(s) triggered for {instrument} "
                 f"at price {tick.get('last_price')}"
             )
-        
+
         # After processing, return a compact summary
         return {
             "instrument": instrument,
@@ -141,92 +196,170 @@ class RealtimeSignalProcessor:
             redis_port = int(os.getenv("REDIS_PORT", "6379"))
             client = aioredis.Redis(host=redis_host, port=redis_port, db=0, decode_responses=True)
             pubsub = client.pubsub()
-            await pubsub.psubscribe("indicators:*")
-            logger.info("Subscribed to Redis channel pattern indicators:*")
+            # Subscribe to type-specific channels only (INDEX, FUT, OPT)
+            await pubsub.psubscribe("indicators:*:INDEX")
+            await pubsub.psubscribe("indicators:*:FUT")
+            await pubsub.psubscribe("indicators:*:OPT")
+            logger.info("Subscribed to Redis channel patterns: indicators:*:INDEX, indicators:*:FUT, indicators:*:OPT")
 
             async for message in pubsub.listen():
                 # Message types: pmessage (pattern), message
                 try:
+                    logger.debug(f"📡 Raw Redis message received: type={message.get('type')}, channel={message.get('channel')}")
                     if message and message.get("type") in ("pmessage", "message"):
                         channel = message.get("channel") or message.get("pattern")
                         data = message.get("data")
+                        logger.debug(f"Processing indicator message on channel {channel}")
                         if not data:
                             continue
                         import json
                         try:
                             payload = json.loads(data)
-                        except Exception:
+                            logger.debug(f"Parsed indicator payload: {payload}")
+                        except Exception as e:
+                            logger.debug(f"Failed to parse JSON payload: {e}")
                             payload = {}
 
-                        # Channel is like 'indicators:INSTRUMENT'
+                        # Channel is like 'indicators:INSTRUMENT:TYPE' or 'indicators:INSTRUMENT' (legacy)
                         ch = channel if isinstance(channel, str) else channel.decode("utf-8")
                         if ch and ch.startswith("indicators:"):
-                            instr = ch.split(":", 1)[1]
-                            # Trigger signal checks for this instrument
-                            try:
-                                await self.signal_monitor.check_signals(instr)
-                            except Exception as e:
-                                logger.error(f"Error checking signals for {instr}: {e}")
+                            # Parse instrument from channel name
+                            # Format: indicators:INSTRUMENT:TYPE or indicators:INSTRUMENT (legacy)
+                            parts = ch.split(":")
+                            if len(parts) >= 2:
+                                instr = parts[1]  # Extract instrument name (e.g., "BANKNIFTY26JANFUT")
+                                
+                                # Count indicators in payload (exclude metadata fields)
+                                indicator_keys = [k for k in payload.keys() if k not in ['instrument', 'timestamp', 'current_price']]
+                                logger.info(f"[SIGNAL] Processing {len(indicator_keys)} indicator updates for {instr}")
+
+                                # Trigger signal checks for this instrument
+                                try:
+                                    logger.debug(f"Checking signals for {instr}...")
+                                    triggered_events = await self.signal_monitor.check_signals(instr)
+                                    if triggered_events:
+                                        logger.info(f"🔔 SIGNAL TRIGGERED for {instr}: {len(triggered_events)} events!")
+                                        for event in triggered_events:
+                                            logger.info(f"  - {event.condition_id}: {event.indicator_value} {event.threshold}")
+                                    else:
+                                        logger.debug(f"No signals triggered for {instr} ({len(indicator_keys)} indicators updated)")
+                                except Exception as e:
+                                    logger.error(f"Error checking signals for {instr}: {e}")
+                        else:
+                            logger.debug(f"Ignored non-indicator channel: {ch}")
+                    else:
+                        logger.debug(f"Ignored non-data message type: {message.get('type')}")
                 except Exception as e:
-                    logger.debug(f"Ignored pubsub message error: {e}")
+                    logger.error(f"Error processing pubsub message: {e}")
+                    logger.debug(f"Problematic message: {message}")
         except Exception as e:
             logger.warning(f"Async Redis listener stopped: {e}")
 
     def _threaded_redis_listener(self):
-        """Threaded listener for sync redis client.
-        Uses blocking pubsub.get_message with timeout polling and schedules asyncio checks.
+        """Optimized threaded listener for sync redis client.
+
+        Optimizations:
+        - Batches signal checks to reduce async scheduling overhead
+        - Uses immediate blocking listen instead of polling
+        - Deduplicates rapid updates for same instrument
+        - Reduces JSON parsing overhead
         """
         try:
             from engine_module.api_service import get_redis_client
             import time, json
             redis_client = get_redis_client()
             pubsub = redis_client.pubsub()
+
+            # Subscribe to all indicator updates (more efficient than multiple subscriptions)
             pubsub.psubscribe("indicators:*")
-            logger.info("Threaded Redis listener subscribed to indicators:*")
+            logger.info("Optimized Redis listener subscribed to: indicators:*")
+
+            # Batching and deduplication
+            last_check_time = {}
+            batch_check_interval = 0.1  # Check signals max once per 100ms per instrument
+            pending_checks = set()
 
             while True:
-                message = pubsub.get_message(timeout=1.0)
-                if message and message.get("type") in ("pmessage", "message"):
-                    channel = message.get("channel")
-                    data = message.get("data")
+                # Use immediate listen for better responsiveness
+                message = pubsub.listen()
+                for msg in message:
+                    if msg and msg.get("type") in ("pmessage", "message"):
+                        channel = msg.get("channel")
+                        data = msg.get("data")
+
+                        ch = channel if isinstance(channel, str) else channel.decode("utf-8")
+                        if ch.startswith("indicators:"):
+                            # Parse instrument from channel name
+                            parts = ch.split(":")
+                            if len(parts) >= 2:
+                                instr = parts[1]  # Extract instrument name
+                                logger.debug(f"Threaded listener: Received indicator update for {instr} on channel {ch}")
+
+                                # Deduplication: skip if checked recently
+                                current_time = time.time()
+                                if instr in last_check_time:
+                                    time_since_last = current_time - last_check_time[instr]
+                                    if time_since_last < batch_check_interval:
+                                        continue  # Skip this update, too soon
+
+                                # Mark for checking
+                                pending_checks.add(instr)
+                                last_check_time[instr] = current_time
+
+                # Process batched checks
+                if pending_checks:
                     try:
-                        payload = json.loads(data) if data else {}
-                    except Exception:
-                        payload = {}
+                        import asyncio
+                        loop = asyncio.get_event_loop()
 
-                    ch = channel if isinstance(channel, str) else channel.decode("utf-8")
-                    if ch.startswith("indicators:"):
-                        instr = ch.split(":", 1)[1]
-                        # Schedule check_signals in event loop
-                        try:
-                            import asyncio
-                            loop = asyncio.get_event_loop()
-                            asyncio.run_coroutine_threadsafe(self.signal_monitor.check_signals(instr), loop)
-                        except Exception as e:
-                            logger.error(f"Failed to schedule signal check for {instr}: {e}")
+                        # Check signals for all pending instruments
+                        for instr in pending_checks:
+                            try:
+                                logger.debug(f"Checking signals for {instr}")
+                                future = asyncio.run_coroutine_threadsafe(
+                                    self.signal_monitor.check_signals(instr),
+                                    loop
+                                )
+                                # Log result in a non-blocking way
+                                future.add_done_callback(
+                                    lambda f, i=instr: logger.debug(f"Signal check completed for {i}")
+                                )
+                            except Exception as e:
+                                logger.error(f"Failed to schedule signal check for {instr}: {e}")
 
-                time.sleep(0.01)
+                        pending_checks.clear()
+
+                    except Exception as e:
+                        logger.error(f"Failed to process batched signal checks: {e}")
+
+                # Small sleep to prevent tight loop
+                time.sleep(0.001)  # Reduced from 0.01 to 0.001 for better responsiveness
+
         except Exception as e:
-            logger.warning(f"Threaded Redis listener stopped: {e}")    
+            logger.warning(f"Optimized Redis listener stopped: {e}")    
     async def on_candle(self, instrument: str, candle: Dict[str, Any]) -> Dict[str, Any]:
         """Process completed candle: Update indicators → Check signals.
-        
+
         Args:
             instrument: Instrument symbol
             candle: OHLCV candle data
-            
+
         Returns:
             Dict with processing results
         """
         # Update indicators with completed candle
         indicators = self.technical_service.update_candle(instrument, candle)
-        
+
+        # Publish indicator updates to Redis pub/sub
+        if indicators:
+            await self._publish_indicators(instrument, indicators)
+
         # Check signals
         triggered_events = await self.signal_monitor.check_signals(instrument)
-        
+
         if triggered_events:
             self.signals_triggered += len(triggered_events)
-        
+
         return {
             "instrument": instrument,
             "candle_close": candle.get("close"),
@@ -306,7 +439,7 @@ def create_realtime_processor(trade_executor: Optional[Callable] = None) -> Real
     
     processor = RealtimeSignalProcessor(trade_executor=trade_executor)
     
-    logger.info("✓ RealtimeSignalProcessor created")
+    logger.info("[OK] RealtimeSignalProcessor created")
     logger.info("  - TechnicalIndicatorsService: Connected")
     logger.info("  - SignalMonitor: Connected")
     logger.info("  - Trade Executor: Registered")

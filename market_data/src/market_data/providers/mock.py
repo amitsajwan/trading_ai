@@ -4,7 +4,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List
 
 from .base import ProviderBase
-from schemas import Quote, Depth, PriceLevel
+from .schemas import Quote, Depth, PriceLevel
 
 
 class MockProvider(ProviderBase):

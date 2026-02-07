@@ -91,7 +91,7 @@ export const ApprovalHistoryWidget: React.FC = () => {
                     {item.decision.toUpperCase()}
                   </span>
                   <span className="text-xs text-gray-500 dark:text-gray-400">
-                    {new Date(item.timestamp).toLocaleTimeString()}
+                    {new Date(item.timestamp).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' })}
                   </span>
                 </div>
                 <div className="text-xs text-gray-600 dark:text-gray-400 mb-1">

@@ -159,6 +159,14 @@ python start_local.py --provider historical --historical-source ./data/historica
   - Faster startup for testing
   - Not recommended for production
 
+- `--docker-market-data` - Use Docker market-data-api service instead of starting locally
+  - Requires Docker infrastructure running: `docker-compose -f docker-compose.data.yml up -d`
+  - Useful for decoupling market data from live trading during development
+
+- `--docker-dashboard` - Use Docker dashboard services instead of starting locally
+  - Requires Docker dashboard services running: `docker-compose up -d dashboard-backend dashboard-frontend`
+  - Enables complete UI decoupling from local development
+
 ---
 
 ## Environment Variables
@@ -234,6 +242,31 @@ python start_local.py \
   --historical-source zerodha \
   --historical-from 2026-01-09 \
   --skip-validation
+```
+
+### Example 7: Docker Market Data (Decoupled Development)
+```bash
+# First start Docker infrastructure
+docker-compose -f docker-compose.data.yml up -d
+docker-compose up -d market-data-api
+
+# Then start other services locally with Docker market data
+python start_local.py \
+  --provider zerodha \
+  --docker-market-data
+```
+
+### Example 8: Docker Dashboard (Complete UI Decoupling)
+```bash
+# First start Docker infrastructure and dashboard
+docker-compose -f docker-compose.data.yml up -d
+docker-compose up -d market-data-api dashboard-backend dashboard-frontend
+
+# Then start remaining services locally with Docker UI
+python start_local.py \
+  --provider zerodha \
+  --docker-market-data \
+  --docker-dashboard
 ```
 
 ---

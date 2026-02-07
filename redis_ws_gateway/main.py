@@ -2,8 +2,13 @@
 
 import logging
 import sys
+import os
 import uvicorn
-from redis_ws_gateway.gateway import app, GATEWAY_HOST, GATEWAY_PORT
+
+# Add current directory to path for imports
+sys.path.insert(0, os.path.dirname(__file__))
+
+from gateway import app, GATEWAY_HOST, GATEWAY_PORT
 
 # Configure logging
 logging.basicConfig(

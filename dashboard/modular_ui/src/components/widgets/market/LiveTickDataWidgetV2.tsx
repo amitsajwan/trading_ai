@@ -11,6 +11,7 @@
 import React, { useState, useEffect } from 'react'
 import { TrendingUp, TrendingDown, Activity, RefreshCw } from 'lucide-react'
 import { useMarketTick } from '../../../hooks/data/useMarketTick'
+import { formatTimestampForDisplay } from '../../../utils/dateUtils'
 
 interface LiveTickDataWidgetV2Props {
   instrument?: string
@@ -169,7 +170,7 @@ export const LiveTickDataWidgetV2: React.FC<LiveTickDataWidgetV2Props> = ({
 
         {/* Timestamp */}
         <div className="text-xs text-gray-500 dark:text-gray-400 text-right pt-2 border-t border-gray-200 dark:border-gray-600">
-          Last updated: {currentTick.timestamp ? new Date(currentTick.timestamp).toLocaleTimeString() : 'N/A'}
+          Last updated: {formatTimestampForDisplay(currentTick.timestamp)}
         </div>
       </div>
     </div>

@@ -224,3 +224,14 @@ class CandleData:
         self.tick_count += 1
 
 
+# Re-export canonical implementation from processors (preferred)
+try:
+    from market_data.processors.ohlc_builder import CandleBuilder as _CandleBuilder
+    from market_data.processors.ohlc_builder import CandleData as _CandleData
+
+    CandleBuilder = _CandleBuilder
+    CandleData = _CandleData
+except Exception:
+    pass
+
+

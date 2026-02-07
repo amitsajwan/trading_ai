@@ -15,7 +15,7 @@ import type {
   ApprovalStats
 } from './types'
 
-const BASE = import.meta.env.VITE_DASHBOARD_API_URL ?? 'http://localhost:8888'
+const BASE = import.meta.env.VITE_DASHBOARD_API_URL ?? ''
 
 export const dashboardApi = createApi({
   reducerPath: 'dashboardApi',
@@ -24,6 +24,10 @@ export const dashboardApi = createApi({
   endpoints: (builder) => ({
     getHealth: builder.query<{ status: string }, void>({
       query: () => ({ url: '/api/health' }),
+    }),
+
+    getConfig: builder.query<{ instrument: string; env: string }, void>({
+      query: () => ({ url: '/api/config' }),
     }),
 
     getSystemHealth: builder.query<SystemHealth, void>({
@@ -53,7 +57,7 @@ export const dashboardApi = createApi({
     }),
 
     getTechnicalIndicators: builder.query<any, { symbol: string }>({
-      query: ({ symbol }) => ({ url: `/api/technical-indicators?symbol=${encodeURIComponent(symbol)}` }),
+      query: ({ symbol }) => ({ url: `http://localhost:8004/api/v1/technical/indicators/${encodeURIComponent(symbol)}` }),
     }),
 
     // Risk Management API (Layer 8)
@@ -113,6 +117,7 @@ export const dashboardApi = createApi({
 
 export const {
   useGetHealthQuery,
+  useGetConfigQuery,
   useGetSystemHealthQuery,
   useGetLatestSignalQuery,
   useGetMarketDataQuery,

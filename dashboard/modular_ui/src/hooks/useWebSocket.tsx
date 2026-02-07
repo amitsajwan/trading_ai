@@ -1,9 +1,12 @@
 import React, { createContext, useContext, useEffect, useRef, useCallback } from 'react'
 import { useDispatch } from 'react-redux'
 import { updateTick, updateIndicators, updateOHLC, updateOptionsChain, TickData } from '../store/slices/marketDataSlice'
-import { updateDecision, updatePortfolio, addTrade, addOrUpdateSignal, updateAgentResponse, updateOrchestratorDecision } from '../store/slices/tradingSlice'
-import { addNotification } from '../store/slices/uiSlice'
+import { updateDecision, updatePortfolio, addTrade, addOrUpdateSignal, updateAgentResponse, updateAgentStatus, updateOrchestratorDecision } from '../store/slices/tradingSlice'
+import { addNotification, setExecutionMode } from '../store/slices/uiSlice'
 import { messageRouter } from '../services/data/WebSocketMessageRouter'
+
+// Engine API base URL
+const ENGINE_BASE = (import.meta.env.VITE_ENGINE_API_URL as string) || 'http://localhost:8006'
 
 interface WebSocketContextType {
   ws: WebSocket | null
@@ -17,7 +20,7 @@ interface WebSocketContextType {
 const WebSocketContext = createContext<WebSocketContextType | undefined>(undefined)
 
 // Redis WebSocket Gateway URL
-const WS_URL = import.meta.env.VITE_WS_URL ?? 'ws://localhost:8889/ws'
+const WS_URL = (import.meta.env.VITE_WS_URL || 'ws://localhost:8889') + '/ws'
 
 // Log the WebSocket URL for debugging (only in development)
 if (import.meta.env.DEV) {
@@ -131,17 +134,21 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
     try {
       // Ensure we're using the correct URL (port 8889, not 8888)
-      const wsUrl = WS_URL || 'ws://localhost:8889/ws'
-      console.log('🔌 Connecting to WebSocket:', wsUrl)
+      // Add dummy token to satisfy gateway authentication (even if REQUIRE_AUTH=false)
+      const baseUrl = WS_URL || 'ws://localhost:8889/ws'
+      const wsUrl = baseUrl + (baseUrl.includes('?') ? '&' : '?') + 'token=dummy'
+      console.log('[WS] Connecting to WebSocket:', wsUrl)
+      console.log('[WS] WS_URL config:', WS_URL)
+      console.log('[WS] VITE_WS_URL env:', import.meta.env.VITE_WS_URL)
 
       const ws = new WebSocket(wsUrl)
       wsRef.current = ws
-      console.log('🔌 WebSocket instance created:', ws)
+      console.log('[WS] WebSocket instance created:', ws)
 
       // Handle WebSocket connection opened
       ws.onopen = () => {
-        console.log('🔌 WebSocket connection OPENED successfully')
-        console.log('✅ WebSocket connection opened')
+        console.log('[WS] WebSocket connection OPENED successfully')
+        console.log('[OK] WebSocket connection opened')
         setConnected(true)
         reconnectAttempts.current = 0 // Reset reconnect attempts on successful connection
         lastPong.current = Date.now() // Initialize lastPong timestamp
@@ -183,7 +190,7 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
       // Handle WebSocket errors
       ws.onerror = (error) => {
-        console.error('🔌 WebSocket ERROR:', error)
+        console.error('[WS] WebSocket ERROR:', error)
         setConnected(false)
         // Note: onclose will be called after onerror, so we don't schedule reconnect here
         // to avoid double reconnection attempts
@@ -233,6 +240,7 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
               messageRouter.route(channel, data)
 
               // Map channels to Redux actions
+              // Handle type-specific channels: market:tick:BANKNIFTY:INDEX, market:tick:BANKNIFTY:FUT, etc.
               if (channel.startsWith('market:tick:') || channel === 'market:tick') {
                 // Market tick update - debounce rapid updates to prevent flickering
                 if (import.meta.env.DEV) {
@@ -260,10 +268,19 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
                       last_price: rawTick.price || rawTick.last_price || rawTick.ltp,
                       timestamp: rawTick.ts || rawTick.timestamp || new Date().toISOString(),
                       volume: rawTick.volume,
-                      oi: rawTick.oi
+                      volume_source: rawTick.volume_source || 'direct', // New: volume data source
+                      core_instrument: rawTick.core_instrument, // New: underlying instrument for volume
+                      oi: rawTick.oi,
+                      mode: rawTick.mode,
+                      run_id: rawTick.run_id
                     }
 
                     dispatch(updateTick(transformedTick))
+
+                    // Update execution mode if available
+                    if (rawTick.mode) {
+                      dispatch(setExecutionMode({ mode: rawTick.mode, runId: rawTick.run_id || '' }))
+                    }
                     tickUpdateQueue.current = []
                   }
                 }, 100)
@@ -311,40 +328,29 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
                   message: `Signal: ${data.action || data.signal || 'N/A'} (${(Number(data.confidence ?? 0)).toFixed(1)}% confidence)`
                 }))
                 return // Prevent further processing of signal messages
-              } else if (channel.startsWith('engine:decision:') || channel === 'engine:decision') {
-                // Agent decision update (consolidated handler)
-                console.log('📊 WebSocket decision received:', channel, data)
-                dispatch(updateDecision(data))
+            } else if (channel.startsWith('engine:orchestrator_decision:') || channel === 'engine:orchestrator_decision') {
+              // Orchestrator final decision update (with agent breakdown)
+              console.log('🎯 WebSocket orchestrator decision received:', channel, data)
+              dispatch(updateDecision(data))
 
-                // Individual agent decision update (from API service)
-                console.log('🤖 WebSocket agent decision received:', channel, data)
-                dispatch(updateAgentResponse({
-                  agent: data.agent_name || data.agent || 'unknown',
-                  decision: data.direction || data.decision || data.signal || 'HOLD',
-                  confidence: data.confidence || 0,
-                  timestamp: data.timestamp || new Date().toISOString(),
-                  details: {
-                    reasoning: data.signal || 'Agent analysis completed',
-                    direction: data.direction
-                  }
-                }))
+              // Publish orchestrator decision to orchestrator decisions store
+              dispatch(updateOrchestratorDecision({
+                decision_id: `decision_${Date.now()}`,
+                instrument: data.instrument || 'BANKNIFTY',
+                final_decision: data.final_decision || data.signal || 'HOLD',
+                confidence: data.confidence,
+                reasoning: data.reasoning,
+                agent_responses: data.agent_responses || [],
+                signal_created: data.signal_created || false,
+                signal_id: data.signal_id,
+                timestamp: data.timestamp
+              }))
 
-                // Publish orchestrator decision to orchestrator decisions store
-                dispatch(updateOrchestratorDecision({
-                  decision_id: `decision_${Date.now()}`,
-                  instrument: data.instrument || 'BANKNIFTY',
-                  final_decision: data.final_decision,
-                  confidence: data.confidence,
-                  reasoning: data.reasoning,
-                  agent_responses: data.agent_responses || [],
-                  signal_created: data.signal_created || false,
-                  signal_id: data.signal_id,
-                  timestamp: data.timestamp
-                }))
-
-                return // Prevent further processing of decision messages
-              } else if (channel.startsWith('engine:agent:') || channel === 'engine:agent') {
-                // Detailed agent analysis update
+              return // Prevent further processing of orchestrator decision messages
+            } else if ((channel.startsWith('engine:agent:') || channel === 'engine:agent') ||
+                        (channel.startsWith('engine:decision:') && !channel.startsWith('engine:orchestrator_decision:')) ||
+                        (channel === 'engine:decision')) {
+                // Detailed agent analysis update (not orchestrator decisions)
                 console.log('🤖 WebSocket detailed agent analysis received:', channel, data)
 
                 // Update agent status with rich data
@@ -366,37 +372,53 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
                   confidence: data.confidence,
                   timestamp: data.timestamp,
                   details: {
-                    reasoning: data.reasoning || 'Analysis completed',
+                    reasoning: data.details?.reasoning || data.reasoning || 'Analysis completed',
                     technical_indicators: data.technical_indicators,
-                    cycle_info: data.cycle_info
-                  }
+                    cycle_info: data.cycle_info,
+                    ...data.details  // Include all other details fields
+                  },
+                  input_data: data.input_data  // Include input data
                 }))
 
                 return // Prevent further processing of agent messages
               } else if (channel.startsWith('indicators:')) {
                 // Technical indicators update
-                console.log('📊 WebSocket indicator update:', channel, {
+                console.log('📊 WebSocket indicator update RECEIVED on channel:', channel, {
                   atr_14: data.atr_14,
                   atr_20: data.atr_20,
                   rsi_14: data.rsi_14,
                   macd_value: data.macd_value,
                   adx_14: data.adx_14,
+                  mode: data.mode,
+                  run_id: data.run_id,
                   has_atr_14: 'atr_14' in data,
+                  has_rsi_14: 'rsi_14' in data,
                   data_keys: Object.keys(data).slice(0, 15) // Limit to first 15 keys
                 })
 
-                // Extract instrument and timeframe from channel (e.g., "indicators:BANKNIFTY:1min" -> "BANKNIFTY", "1min")
+                // Extract instrument and timeframe from channel
+                // Format: "indicators:BANKNIFTY:INDEX" or "indicators:BANKNIFTY:FUT" (type-specific)
+                // Legacy format: "indicators:BANKNIFTY:1min" (old format with timeframe)
                 const parts = channel.split(':')
                 const instrument = parts[1] || 'BANKNIFTY'
-                const timeframe = parts[2] || data.timeframe || '1min' // Support both channel-based and data-based timeframe
+                // Check if last part is instrument type (INDEX, FUT, OPT) or timeframe (1min, 5min, etc.)
+                const lastPart = parts[2] || ''
+                const isInstrumentType = ['INDEX', 'FUT', 'OPT', 'UNKNOWN'].includes(lastPart)
+                const timeframe = isInstrumentType ? (data.timeframe || '1min') : (lastPart || data.timeframe || '1min')
 
-                console.log('🚀 Dispatching updateIndicators for', instrument, timeframe, 'ATR_14:', data.atr_14)
+                console.log('🚀 Dispatching updateIndicators for', instrument, timeframe, 'ATR_14:', data.atr_14, 'MODE:', data.mode)
                 dispatch(updateIndicators({
                   ...data,
                   instrument,
                   timeframe,
                   timestamp: data.timestamp || new Date().toISOString(),
                 }))
+
+                // Update execution mode if available
+                if (data.mode) {
+                  dispatch(setExecutionMode({ mode: data.mode, runId: data.run_id || '' }))
+                }
+
                 console.log('✅ updateIndicators dispatched - ATR should now be in Redux')
                 return
               } else if (channel.startsWith('market:ohlc:') || channel === 'market:ohlc') {
@@ -530,22 +552,65 @@ export const WebSocketProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     return () => clearInterval(interval)
   }, [connected, connect, disconnect, scheduleReconnect])
 
-  // Auto-subscribe to common channels on connect
+  // Fetch current mode and conditionally subscribe
+  const [currentMode, setCurrentMode] = React.useState<string>('LIVE')
+
+  useEffect(() => {
+    const fetchMode = async () => {
+      try {
+        const response = await fetch(`${ENGINE_BASE}/api/control/mode/info`)
+        const data = await response.json()
+        setCurrentMode(data.mode?.toUpperCase() || 'LIVE')
+      } catch (error) {
+        console.warn('Could not fetch mode info, defaulting to LIVE:', error)
+        setCurrentMode('LIVE')
+      }
+    }
+    fetchMode()
+  }, [])
+
+  // Auto-subscribe to common channels on connect (mode-aware)
   useEffect(() => {
     if (connected) {
-      // Subscribe to common channels (reduced to stay under limit)
-      subscribe([
-        'market:tick:*',
+      const baseChannels = [
         'engine:signal',
-        'engine:signal:*',
         'engine:decision',
-        'engine:decision:*',
-        'engine:agent',
-        'engine:agent:*',
-        'indicators:*'
-      ])
+        'engine:agent'
+      ]
+
+      const modeChannels = []
+
+      if (currentMode === 'BACKTEST') {
+        // In BACKTEST mode, use specific channels (wildcards not needed for replay)
+        modeChannels.push(
+          'market:tick:BANKNIFTY:INDEX',
+          'indicators:BANKNIFTY:INDEX',
+          'engine:signal:BANKNIFTY',
+          'engine:decision:BANKNIFTY',
+          'engine:orchestrator_decision:BANKNIFTY',
+          'engine:orchestrator_decision:BANKNIFTY26JANFUT',
+          'engine:agent'
+        )
+      } else {
+        // In LIVE/PAPER modes, use wildcard patterns that match ACL permissions
+        modeChannels.push(
+          'market:tick:*:INDEX',     // Matches ACL: market:tick:*:INDEX
+          'market:tick:*:FUT',       // Matches ACL: market:tick:*:FUT
+          'indicators:*:INDEX',      // Matches ACL: indicators:*:INDEX
+          'indicators:*:FUT',        // Matches ACL: indicators:*:FUT
+          'engine:signal:BANKNIFTY', // Specific signal channel (allowed)
+          'engine:decision:BANKNIFTY',     // Specific decision channel (allowed)
+          'engine:orchestrator_decision:BANKNIFTY',     // Specific orchestrator (allowed)
+          'engine:orchestrator_decision:BANKNIFTY26JANFUT', // Specific instrument (allowed)
+          'engine:agent'              // Non-wildcard agent channel (allowed)
+        )
+      }
+
+      const allChannels = [...baseChannels, ...modeChannels]
+      console.log(`WebSocket: Subscribing to ${allChannels.length} channels in ${currentMode} mode`)
+      subscribe(allChannels)
     }
-  }, [connected, subscribe])
+  }, [connected, subscribe, currentMode])
 
   return (
     <WebSocketContext.Provider value={{ 

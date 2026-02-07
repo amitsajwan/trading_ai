@@ -1,0 +1,36 @@
+[
+  {
+    "instrument": "CLEANUP_TEST",
+    "timeframe": "1min",
+    "key": "ohlc:CLEANUP_TEST:1min:20260124T120000",
+    "value": {
+      "timestamp": "2026-01-24T12:00:00+00:00",
+      "open": 100,
+      "high": 101,
+      "low": 99,
+      "close": 100.5,
+      "_format_version": "2.0",
+      "instrument": "CLEANUP_TEST",
+      "timeframe": "1min",
+      "_stored_at": "2026-01-24T06:39:29.441182+00:00",
+      "_stored_by": "unknown_process"
+    }
+  },
+  {
+    "instrument": "CLEANUP_TEST",
+    "timeframe": "1min",
+    "key": "ohlc:CLEANUP_TEST:1min:20260124T120000_0000_legacy",
+    "value": {
+      "timestamp": "2026-01-24T12:00:00+00:00",
+      "open": 100,
+      "high": 101,
+      "low": 99,
+      "close": 100.5,
+      "_format_version": "2.0",
+      "instrument": "CLEANUP_TEST",
+      "timeframe": "1min",
+      "_stored_at": "2026-01-24T06:39:29.441182+00:00",
+      "_stored_by": "unknown_process"
+    }
+  }
+]

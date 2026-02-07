@@ -5,6 +5,29 @@ from typing import Iterable, Optional, Protocol
 
 
 @dataclass
+class MacroIndicator:
+    """Individual macroeconomic indicator data point."""
+
+    name: str
+    value: float
+    unit: str  # e.g., "percent", "rupees", "index"
+    timestamp: datetime
+    source: str  # e.g., "RBI", "Ministry of Commerce"
+
+
+class MacroData(Protocol):
+    """Protocol for accessing macroeconomic data."""
+
+    async def get_inflation_data(self, months: int = 12) -> list[MacroIndicator]:
+        """Get inflation data for the specified period."""
+        ...
+
+    async def get_rbi_data(self, indicator: str, days: int = 30) -> list[MacroIndicator]:
+        """Get RBI indicator data (repo_rate, reverse_repo_rate, npa_ratio, crR, etc.)."""
+        ...
+
+
+@dataclass
 class MarketInstrument:
     """Normalized instrument identifier."""
 

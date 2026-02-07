@@ -4,17 +4,14 @@ import { TrendingUp, TrendingDown, Activity, RefreshCw } from 'lucide-react'
 import { RootState } from '../../store'
 import { fetchCurrentTick, updateTick, TickData } from '../../store/slices/marketDataSlice'
 import { useWebSocket } from '../../hooks/useWebSocket'
+import { formatTimestampForDisplay } from '../../utils/dateUtils'
 
 interface LiveTickDataWidgetProps {
   instrument?: string
-  autoRefresh?: boolean
-  refreshInterval?: number
 }
 
 export const LiveTickDataWidget: React.FC<LiveTickDataWidgetProps> = ({
   instrument = 'BANKNIFTY',
-  autoRefresh = true,
-  refreshInterval = 2000,
 }) => {
   const dispatch = useDispatch()
   const { currentTick, loading, lastUpdated } = useSelector((state: RootState) => state.marketData)
@@ -22,26 +19,9 @@ export const LiveTickDataWidget: React.FC<LiveTickDataWidgetProps> = ({
   const [previousPrice, setPreviousPrice] = useState<number | null>(null)
 
   useEffect(() => {
-    // Initial fetch
+    // Initial fetch to populate data on component mount
     dispatch(fetchCurrentTick(instrument) as any)
-
-    // Only poll if WebSocket is not connected or autoRefresh is explicitly enabled
-    // When WebSocket is connected, ticks come in real-time, so polling is less critical
-    if (autoRefresh && !wsConnected) {
-      const interval = setInterval(() => {
-        dispatch(fetchCurrentTick(instrument) as any)
-      }, refreshInterval)
-
-      return () => clearInterval(interval)
-    } else if (autoRefresh && wsConnected) {
-      // Still poll occasionally as a fallback, but less frequently
-      const interval = setInterval(() => {
-        dispatch(fetchCurrentTick(instrument) as any)
-      }, refreshInterval * 5) // Poll 5x less frequently when WebSocket is connected
-
-      return () => clearInterval(interval)
-    }
-  }, [dispatch, instrument, autoRefresh, refreshInterval, wsConnected])
+  }, [dispatch, instrument])
 
   useEffect(() => {
     if (currentTick?.last_price) {
@@ -155,7 +135,7 @@ export const LiveTickDataWidget: React.FC<LiveTickDataWidgetProps> = ({
 
         {/* Timestamp */}
         <div className="text-xs text-gray-500 dark:text-gray-400 text-right pt-2 border-t border-gray-200 dark:border-gray-600">
-          Last updated: {currentTick.timestamp ? new Date(currentTick.timestamp).toLocaleTimeString() : 'N/A'}
+          Last updated: {formatTimestampForDisplay(currentTick.timestamp)}
         </div>
       </div>
     </div>

@@ -1,6 +1,7 @@
 import React, { useState } from 'react'
 import { useSelector } from 'react-redux'
 import { RootState } from '../../store'
+import { formatTimestampForDisplay } from '../../utils/dateUtils'
 
 export const TechnicalIndicatorsWidget: React.FC = () => {
   const [symbol, setSymbol] = useState('BANKNIFTY')
@@ -69,7 +70,7 @@ export const TechnicalIndicatorsWidget: React.FC = () => {
         ) : (
           <>
             <div className="flex items-center justify-between mb-2">
-              <div className="text-xs text-gray-500">Last updated: {new Date(data.timestamp).toLocaleTimeString()}</div>
+              <div className="text-xs text-gray-500">Last updated: {formatTimestampForDisplay(data.timestamp)}</div>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">

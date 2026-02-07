@@ -138,7 +138,7 @@ export const PortfolioWidget: React.FC = () => {
         </div>
       )}
 
-      <div className="mt-3 text-xs text-gray-500">Updated: {new Date(data.updated_at ?? Date.now()).toLocaleTimeString()}</div>
+      <div className="mt-3 text-xs text-gray-500">Updated: {new Date(data.updated_at ?? Date.now()).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata' })}</div>
     </section>
   )
 }

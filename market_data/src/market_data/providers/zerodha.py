@@ -21,6 +21,18 @@ class ZerodhaProvider(ProviderBase):
     def from_credentials_file(path: str = "credentials.json") -> Optional["ZerodhaProvider"]:
         if not KiteConnect:
             return None
+
+        # First try environment variables (like the startup script does)
+        api_key = os.getenv('KITE_API_KEY')
+        access_token = os.getenv('KITE_ACCESS_TOKEN')
+
+        if api_key and access_token:
+            try:
+                return ZerodhaProvider(api_key, access_token)
+            except Exception:
+                pass
+
+        # Fall back to credentials.json file
         if not os.path.exists(path):
             return None
         try:
@@ -37,7 +49,7 @@ class ZerodhaProvider(ProviderBase):
     def quote(self, symbols: List[str]) -> Dict[str, Any]:
         # Convert Kite quote response into Quote dataclass instances
         quotes = self.kite.quote(symbols)
-        from schemas import Quote, Depth, PriceLevel
+        from .schemas import Quote, Depth, PriceLevel
         out = {}
         from datetime import datetime
         for symbol, data in quotes.items():

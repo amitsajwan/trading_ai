@@ -8,6 +8,7 @@ import { SignalsPage } from './pages/SignalsPage'
 import { AnalyticsPage } from './pages/AnalyticsPage'
 import { NewsPage } from './pages/NewsPage'
 import { SettingsPage } from './pages/SettingsPage'
+import { AgentDetailPage } from './pages/AgentDetailPage'
 import { NotFoundPage } from './pages/NotFoundPage'
 import { WebSocketProvider } from './hooks/useWebSocket'
 import { ThemeProvider } from './hooks/useTheme'
@@ -26,6 +27,7 @@ function App() {
             <Route path="/analytics" element={<AnalyticsPage />} />
             <Route path="/news" element={<NewsPage />} />
             <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/agents/:agentName" element={<AgentDetailPage />} />
             <Route path="*" element={<NotFoundPage />} />
           </Routes>
         </DashboardLayout>

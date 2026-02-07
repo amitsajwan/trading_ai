@@ -106,7 +106,7 @@ async function fetchWithErrorHandling(url, defaultValue = {}) {
 
 async function loadData() {
     try {
-        const [signal, market, metrics, risk, trades, agents, portfolio, health, technicals, latestAnalysis, llm, orderflow, optionsChain, optionsStrategy, systemTime] = await Promise.all([
+        const [signal, market, metrics, risk, trades, agents, portfolio, health, technicals, latestAnalysis, llm, orderflow, optionsChain, optionsStrategy, systemTime, authStatus] = await Promise.all([
             fetchWithErrorHandling('/api/latest-signal', {}),
             fetchWithErrorHandling('/api/market-data', {}),
             fetchWithErrorHandling('/metrics/trading', {}),
@@ -122,7 +122,8 @@ async function loadData() {
             fetchWithErrorHandling('/api/options-chain', {available:false}),
             // Prefer advanced strategy; fallback to basic
             fetchWithErrorHandling('/api/options-strategy-advanced', {available:false}),
-            fetchWithErrorHandling('/api/system-time', {})
+            fetchWithErrorHandling('/api/system-time', {}),
+            fetchWithErrorHandling('/api/auth-status', {})
         ]);
         
         // Update currency symbol based on instrument
@@ -151,6 +152,7 @@ async function loadData() {
         updateLLMProviders(llm);
         displayOrderFlow(orderflow);
         displayOptionsChain(optionsChain);
+        updateAuthStatus(authStatus);
         // Persist latest strategy for trade button
         window.LATEST_OPTIONS_STRATEGY = optionsStrategy || {};
         displayOptionsStrategy(optionsStrategy);
@@ -1068,6 +1070,43 @@ function updateLLMProviders(metrics) {
 
     html += '</div>';
     container.innerHTML = html;
+}
+
+function updateAuthStatus(authData) {
+    const statusElement = document.getElementById('auth-connection-status');
+    if (!statusElement || !authData) return;
+    
+    // Update status text and styling based on auth status
+    switch (authData.status) {
+        case 'authenticated':
+            statusElement.textContent = 'Authenticated';
+            statusElement.style.color = '#10b981'; // green
+            break;
+        case 'failed':
+            statusElement.textContent = 'Authentication Failed';
+            statusElement.style.color = '#ef4444'; // red
+            // Show alert for failed auth
+            if (authData.message && authData.action_required === 'manual_login') {
+                alert(`❌ ${authData.message}\n\nPlease visit the authentication page to complete login.`);
+            }
+            break;
+        case 'expired':
+            statusElement.textContent = 'Token Expired';
+            statusElement.style.color = '#f59e0b'; // yellow
+            break;
+        case 'pending':
+            statusElement.textContent = 'Authenticating...';
+            statusElement.style.color = '#3b82f6'; // blue
+            break;
+        default:
+            statusElement.textContent = 'Unknown Status';
+            statusElement.style.color = '#6b7280'; // gray
+    }
+    
+    // Update timestamp if available
+    if (authData.timestamp) {
+        updateTimestamp('auth-status-timestamp', authData.timestamp);
+    }
 }
 
 function displayOrderFlow(data) {

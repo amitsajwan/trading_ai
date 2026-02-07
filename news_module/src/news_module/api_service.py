@@ -121,8 +121,23 @@ app.add_middleware(
 )
 
 # Global service instance
-_news_service: Optional[NewsData] = None
-_mongo_client: Optional[MongoClient] = None
+_news_service = None  # type: Optional[NewsData]
+_mongo_client = None  # type: Optional[MongoClient]
+
+
+@app.get("/")
+async def root():
+    """Root endpoint returning service information."""
+    return {
+        "service": "News API",
+        "version": "1.0.0",
+        "description": "REST API for news collection, retrieval, and sentiment analysis",
+        "docs": "/docs",
+        "health": "/health"
+    }
+
+
+@app.get("/health", response_model=HealthResponse)
 
 
 def get_mongo_client() -> MongoClient:

@@ -110,8 +110,8 @@ def test_technical_service_publishes_indicators(monkeypatch):
     # Call update_candle which should publish
     svc.update_candle('BANKNIFTY', candle)
 
-    # Verify a publication was made to "indicators:BANKNIFTY"
-    published = [p for p in fake_redis.published if p[0].startswith('indicators:BANKNIFTY')]
+    # Verify a publication was made to "indicators:BANKNIFTY:INDEX" (type-specific channel)
+    published = [p for p in fake_redis.published if p[0].startswith('indicators:BANKNIFTY:INDEX')]
     assert len(published) == 1, "Should publish one indicators message"
 
     # Payload should contain rsi_14 or macd keys (or current_price)

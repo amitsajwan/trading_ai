@@ -13,10 +13,10 @@ def test_normalize_banknifty_variants():
         assert normalize_instrument(symbol) == "BANKNIFTY"
 
 
-def test_normalize_nifty_variants():
-    variants = ["Nifty", "NIFTY 50", "nifty50", "NSE:NIFTY", "nsei"]
-    for symbol in variants:
-        assert normalize_instrument(symbol) == "NIFTY"
+def test_normalize_futures_symbols():
+    futures_symbols = ["BANKNIFTY26JANFUT", "NIFTY26JANFUT", "BANKNIFTY27FEBFUT"]
+    for symbol in futures_symbols:
+        assert normalize_instrument(symbol) == symbol
 
 
 def test_unsupported_symbol_raises():

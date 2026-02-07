@@ -1,22 +1,15 @@
-# GENAI_MODULE - Complete LLM Intelligence Layer
+# GENAI_MODULE - LLM Intelligence Layer
 
-**Status: ✅ COMPLETE** - Full LLM provider orchestration, prompt management, and client abstraction with single-provider optimization.
+**Status: ✅ COMPLETE** - Full LLM provider orchestration with multi-provider support and single-provider optimization.
 
 A comprehensive GenAI module providing intelligent LLM orchestration with multi-provider support, automatic failover, and optimized performance through single-provider mode.
 
-## 🏗️ Architecture Overview
+## 🎯 Purpose & Architecture
+
+The GenAI module provides complete LLM intelligence for the trading system:
 
 ```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   LLM Clients   │    │ Provider Mgmt   │    │  Prompt Store   │
-│   (Contracts)   │◄──►│  (Core Logic)   │◄──►│  (Persistence)  │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-         │                        │                        │
-         ▼                        ▼                        ▼
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│  Groq/OpenAI/  │    │ Single Provider │    │ File/MongoDB    │
-│  Google/etc.   │    │ Mode & Fallback │    │ Storage         │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
+Prompt Management → Provider Orchestration → Response Processing → Fallback Handling
 ```
 
 ### **Core Components:**
@@ -26,11 +19,137 @@ A comprehensive GenAI module providing intelligent LLM orchestration with multi-
 - **Single Provider Mode**: Optimized performance with reduced load distribution
 - **Automatic Failover**: Seamless fallback between providers
 
-## 🤖 LLM Provider Orchestration
+## 🚀 Quick Start
 
-### **LLMProviderManager** - Production-Ready Multi-Provider System
+### Prerequisites
+- Python 3.8+
+- LLM API keys (Groq, Cohere, AI21)
+- MongoDB (optional, for prompt storage)
 
-The system now uses **3 production-grade LLM providers** with **multi-key load balancing**:
+### Installation
+```bash
+# Install dependencies
+pip install -r requirements.txt
+```
+
+### Basic Usage
+```python
+from genai_module.api import build_llm_service
+
+# Create LLM service
+llm = build_llm_service()
+
+# Generate response
+response = await llm.generate("Analyze this market trend...")
+print(f"Analysis: {response}")
+```
+
+## 🔧 API Reference
+
+### Factory Functions
+```python
+from genai_module.api import (
+    build_llm_service,        # Main LLM service factory
+    create_provider_manager,  # Provider orchestration
+    get_prompt_store         # Prompt management
+)
+```
+
+### Key Classes
+```python
+class LLMProviderManager:
+    """Multi-provider LLM manager with load balancing."""
+
+    async def generate(self, prompt: str, **kwargs) -> str:
+        """Generate response using best available provider."""
+
+    async def get_available_providers(self) -> List[str]:
+        """List currently available providers."""
+```
+
+### Supported Providers
+- **Groq**: llama-3.1-70b-versatile (Primary)
+- **Cohere**: command-r-plus (Secondary)
+- **AI21**: jamba-instruct (Tertiary)
+
+## 🧪 Testing
+
+### Run Tests
+```bash
+# From genai_module directory
+cd genai_module
+pytest tests/
+
+# Run provider tests
+pytest tests/test_providers.py
+
+# With coverage
+pytest --cov=src --cov-report=html
+```
+
+### Test Structure
+- `tests/test_providers.py` - Provider integration tests
+- `tests/test_prompts.py` - Prompt management tests
+- `tests/test_fallback.py` - Failover mechanism tests
+
+## 🏗️ Development
+
+### Project Structure
+```
+genai_module/
+├── src/
+│   ├── __init__.py
+│   ├── providers/           # Provider implementations
+│   ├── prompts/            # Prompt management
+│   └── api.py              # Public API
+├── tests/
+│   ├── __init__.py
+│   ├── test_providers.py
+│   └── test_prompts.py
+├── contracts/             # LLM protocol definitions
+├── tools/                 # Prompt utilities
+└── README.md             # This file
+```
+
+### Adding New Providers
+1. Define provider contract in `contracts/`
+2. Implement provider in `src/providers/`
+3. Add to provider manager
+4. Add tests in `tests/`
+5. Update this README
+
+## 📊 Dependencies
+
+### Internal Dependencies
+- `core_kernel` - Service container
+
+### External Dependencies
+- `httpx` - HTTP client for API calls
+- `pymongo` - MongoDB driver (optional)
+- `groq` - Groq API client
+- `cohere` - Cohere API client
+- `ai21` - AI21 API client
+
+## 🔍 Troubleshooting
+
+### Common Issues
+- **API key errors**: Verify API keys are set correctly
+- **Rate limiting**: Implement backoff and retry logic
+- **Provider failures**: Check provider status and fallback configuration
+
+### Debug Mode
+```bash
+# Enable debug logging
+export LOG_LEVEL=DEBUG
+python -c "from genai_module.api import build_llm_service; print('GenAI ready')"
+```
+
+## 🤝 Contributing
+
+1. Follow the existing code style
+2. Add tests for new providers
+3. Update prompt documentation
+4. Submit PR with clear description
 
 1. **Groq** (Primary) - llama-3.1-70b-versatile, fastest, free tier
 2. **Cohere** (Secondary) - command-r-plus, enterprise-grade

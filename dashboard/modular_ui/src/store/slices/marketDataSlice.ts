@@ -6,6 +6,8 @@ export interface TickData {
   last_price: number
   timestamp: string
   volume?: number
+  volume_source?: 'direct' | 'core' | 'synthetic'  // Source of volume data
+  core_instrument?: string  // Underlying instrument providing volume data
   oi?: number
 }
 
@@ -142,8 +144,9 @@ export const fetchOptionsChain = createAsyncThunk(
 
 export const fetchMarketOverview = createAsyncThunk(
   'marketData/fetchMarketOverview',
-  async () => {
-    const response = await axios.get('/api/market-data')
+  async (symbol?: string) => {
+    const url = symbol ? `/api/market-data?symbol=${encodeURIComponent(symbol)}` : '/api/market-data'
+    const response = await axios.get(url)
     return response.data
   }
 )
@@ -160,6 +163,18 @@ export const fetchOrderFlow = createAsyncThunk(
         return { data: [], flow: {} }
       }
       return rejectWithValue(err.response?.data?.error || err.message || 'Failed to fetch order flow')
+    }
+  }
+)
+
+export const fetchTechnicalIndicators = createAsyncThunk(
+  'marketData/fetchTechnicalIndicators',
+  async (instrument: string = 'BANKNIFTY') => {
+    const response = await axios.get(`http://localhost:8004/api/v1/technical/indicators/${instrument}`)
+    return {
+      instrument: instrument.toUpperCase(),
+      indicators: response.data.indicators,
+      timestamp: response.data.timestamp
     }
   }
 )
@@ -231,6 +246,16 @@ const marketDataSlice = createSlice({
     },
     updateIndicators: (state, action: PayloadAction<TechnicalIndicators>) => {
       const { instrument, timeframe = '1min', ...indicators } = action.payload
+      console.log('🔄 Redux updateIndicators called:', {
+        instrument,
+        timeframe,
+        atr_14: indicators.atr_14,
+        rsi_14: indicators.rsi_14,
+        macd_value: indicators.macd_value,
+        allKeys: Object.keys(indicators),
+        stateBefore: state.technicalIndicators?.[instrument]?.[timeframe]
+      })
+
       if (instrument) {
         if (!state.technicalIndicators) {
           state.technicalIndicators = {}
@@ -242,6 +267,7 @@ const marketDataSlice = createSlice({
           ...indicators,
           timestamp: action.payload.timestamp || new Date().toISOString(),
         }
+        console.log('✅ Redux state updated for', instrument, timeframe, '- ATR_14 now in state:', state.technicalIndicators?.[instrument]?.[timeframe]?.atr_14)
       }
       state.lastUpdated = new Date().toISOString()
     },
@@ -259,11 +285,12 @@ const marketDataSlice = createSlice({
         state.ohlcData[instrument][timeframe] = []
       }
 
-      const candles = state.ohlcData[instrument][timeframe]
+      // Work with a copy of the current candles array to avoid Immer issues
+      const currentCandles = [...state.ohlcData[instrument][timeframe]]
 
       // For OHLC data, check for exact duplicates (same timestamp AND same OHLC values)
       // This prevents overwriting candles with different data that happen to have the same timestamp
-      const existingIndex = candles.findIndex(
+      const existingIndex = currentCandles.findIndex(
         (candle) =>
           candle.start_at === newCandle.start_at &&
           candle.open === newCandle.open &&
@@ -272,22 +299,29 @@ const marketDataSlice = createSlice({
           candle.close === newCandle.close
       )
 
+      let updatedCandles: OHLCData[]
       if (existingIndex >= 0) {
-        // Update existing candle with identical data
-        candles[existingIndex] = newCandle
+        // Update existing candle with identical data - create new array with updated item
+        updatedCandles = currentCandles.map((candle, index) =>
+          index === existingIndex ? newCandle : candle
+        )
       } else {
-        // Add new candle and sort by timestamp
-        candles.push(newCandle)
-        candles.sort((a, b) => {
+        // Add new candle and sort by timestamp (Immer-compatible)
+        const newCandles = [...currentCandles, newCandle]
+        updatedCandles = newCandles.sort((a, b) => {
           const timeA = new Date(a.timestamp || a.start_at || '').getTime()
           const timeB = new Date(b.timestamp || b.start_at || '').getTime()
           return timeA - timeB
         })
+
         // Keep only last 500 candles per timeframe to prevent memory issues
-        if (candles.length > 500) {
-          candles.splice(0, candles.length - 500)
+        if (updatedCandles.length > 500) {
+          updatedCandles = updatedCandles.slice(-500)
         }
       }
+
+      // Assign the new array to state
+      state.ohlcData[instrument][timeframe] = updatedCandles
       state.lastUpdated = new Date().toISOString()
     },
     updateOptionsChain: (state, action: PayloadAction<Partial<OptionsChain>>) => {
@@ -332,7 +366,61 @@ const marketDataSlice = createSlice({
       })
       .addCase(fetchOHLCData.fulfilled, (state, action) => {
         state.loading.ohlc = false
-        state.ohlcData = action.payload
+
+        // action.payload is likely an array of OHLC data or a single object
+        // We need to structure it properly for the state
+        const data = action.payload
+
+        // If it's an array of candles, we need to group them by instrument and timeframe
+        if (Array.isArray(data)) {
+          data.forEach((candle: OHLCData) => {
+            const instrument = candle.instrument || 'BANKNIFTY26JANFUT'
+            const timeframe = candle.timeframe || '1min'
+
+            if (!state.ohlcData[instrument]) {
+              state.ohlcData[instrument] = {}
+            }
+            if (!state.ohlcData[instrument][timeframe]) {
+              state.ohlcData[instrument][timeframe] = []
+            }
+
+            // Check for duplicates and add/update
+            const existingIndex = state.ohlcData[instrument][timeframe].findIndex(
+              (existing) => existing.start_at === candle.start_at
+            )
+
+            if (existingIndex >= 0) {
+              state.ohlcData[instrument][timeframe][existingIndex] = candle
+            } else {
+              state.ohlcData[instrument][timeframe].push(candle)
+            }
+
+            // Keep only last 500 candles
+            if (state.ohlcData[instrument][timeframe].length > 500) {
+              state.ohlcData[instrument][timeframe] = state.ohlcData[instrument][timeframe].slice(-500)
+            }
+          })
+        } else if (data && typeof data === 'object') {
+          // Single candle object - this shouldn't normally happen for fetchOHLCData
+          const instrument = data.instrument || 'BANKNIFTY26JANFUT'
+          const timeframe = data.timeframe || '1min'
+
+          if (!state.ohlcData[instrument]) {
+            state.ohlcData[instrument] = {}
+          }
+          if (!state.ohlcData[instrument][timeframe]) {
+            state.ohlcData[instrument][timeframe] = []
+          }
+
+          state.ohlcData[instrument][timeframe].push(data)
+
+          // Keep only last 500 candles
+          if (state.ohlcData[instrument][timeframe].length > 500) {
+            state.ohlcData[instrument][timeframe] = state.ohlcData[instrument][timeframe].slice(-500)
+          }
+        }
+
+        state.lastUpdated = new Date().toISOString()
       })
       .addCase(fetchOHLCData.rejected, (state, action) => {
         state.loading.ohlc = false
@@ -379,6 +467,57 @@ const marketDataSlice = createSlice({
       .addCase(fetchOrderFlow.rejected, (state, action) => {
         state.loading.orderFlow = false
         state.error = action.error.message || 'Failed to fetch order flow'
+      })
+
+    // Technical Indicators
+    builder
+      .addCase(fetchTechnicalIndicators.pending, (state) => {
+        state.loading.overview = true
+        console.log('📊 Fetching technical indicators...')
+      })
+      .addCase(fetchTechnicalIndicators.fulfilled, (state, action) => {
+        state.loading.overview = false
+        // Update the technical indicators in Redux state
+        const { instrument, indicators, timestamp } = action.payload
+
+        console.log('📊 Technical indicators received:', {
+          instrument,
+          timestamp,
+          atr_14: indicators?.atr_14,
+          atr_20: indicators?.atr_20,
+          rsi_14: indicators?.rsi_14,
+          macd_value: indicators?.macd_value,
+          adx_14: indicators?.adx_14,
+          total_indicators: Object.keys(indicators || {}).length,
+          raw_indicators_sample: Object.keys(indicators || {}).slice(0, 10)
+        })
+
+        // Extra debug for ATR specifically
+        console.log('🔍 ATR Debug:', {
+          atr_14_exists: 'atr_14' in (indicators || {}),
+          atr_14_value: indicators?.atr_14,
+          atr_14_type: typeof indicators?.atr_14,
+          indicators_has_atr: indicators && 'atr_14' in indicators
+        })
+
+        if (!state.technicalIndicators) {
+          state.technicalIndicators = {}
+        }
+        if (!state.technicalIndicators[instrument]) {
+          state.technicalIndicators[instrument] = {}
+        }
+        state.technicalIndicators[instrument]['1min'] = {
+          ...indicators,
+          timestamp,
+          instrument
+        }
+
+        console.log('📊 Updated Redux state with indicators for', instrument)
+      })
+      .addCase(fetchTechnicalIndicators.rejected, (state, action) => {
+        state.loading.overview = false
+        state.error = action.error.message || 'Failed to fetch technical indicators'
+        console.error('❌ Failed to fetch technical indicators:', action.error)
       })
   },
 })

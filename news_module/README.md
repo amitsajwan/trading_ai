@@ -1,53 +1,170 @@
-# News Module - Financial News Collection & Sentiment Analysis
+# NEWS_MODULE - Financial News Collection & Sentiment Analysis
 
-**Status: ✅ PRODUCTION READY**
+**Status: ✅ PRODUCTION READY** - Complete financial news collection with real-time RSS processing and AI-powered sentiment analysis.
 
 A comprehensive financial news collection and sentiment analysis module for Indian markets with real-time RSS feed processing, MongoDB storage, and advanced sentiment analysis.
 
-## 🎯 Features
+## 🎯 Purpose & Architecture
 
-- **Real-time RSS Collection**: Collect news from Moneycontrol, Economic Times, Business Standard
-- **Sentiment Analysis**: Rule-based and AI-powered sentiment scoring (-1.0 to 1.0)
-- **Instrument Relevance**: Automatic mapping of news to financial instruments
-- **MongoDB Storage**: Persistent storage with efficient querying and indexing
-- **Comprehensive API**: Full news data access and sentiment analytics
-- **Offline Testing**: Complete functionality without live news feeds
-
-## 📦 Architecture
+The news module provides financial news intelligence for trading decisions:
 
 ```
-news_module/
-├── contracts/          # Protocol definitions (NewsData, NewsItem, etc.)
-├── store/             # MongoDB storage implementation
-├── collectors/        # RSS feed collectors
-├── adapters/          # Sentiment analysis and main data adapter
-├── tools/             # Utilities and scripts
-└── api.py             # Public API factory functions
+RSS Feeds → News Collection → Sentiment Analysis → Instrument Mapping → Storage & API
 ```
+
+### **Core Components:**
+- **RSS Collectors**: Real-time news collection from financial sources
+- **Sentiment Analyzer**: Rule-based and AI-powered sentiment scoring
+- **Instrument Mapper**: Automatic mapping of news to financial instruments
+- **News Store**: MongoDB-backed news storage and retrieval
+- **News API**: RESTful access to news data and sentiment analytics
 
 ## 🚀 Quick Start
 
-### 1. Setup MongoDB Collection
+### Prerequisites
+- Python 3.8+
+- MongoDB (running)
+- Internet connection (for RSS feeds)
 
+### Installation
 ```bash
-# Make sure MongoDB is running
+# Install dependencies
+pip install -r requirements.txt
+
+# Setup MongoDB collection
 mongosh
 use zerodha_trading
 db.createCollection("news")
 ```
 
-### 2. Basic Usage
-
+### Basic Usage
 ```python
-import asyncio
-from pymongo import MongoClient
 from news_module.api import build_news_service
 
-async def main():
-    # Setup MongoDB connection
-    client = MongoClient("mongodb://localhost:27017/")
-    db = client['zerodha_trading']
-    news_collection = db['news']
+# Create news service
+news_service = build_news_service()
+
+# Get latest news with sentiment
+news_items = await news_service.get_latest_news(limit=10)
+for item in news_items:
+    print(f"{item.title}: {item.sentiment_score}")
+```
+
+## 🔧 API Reference
+
+### Factory Functions
+```python
+from news_module.api import (
+    build_news_service,      # Main news service factory
+    create_rss_collector,    # RSS feed collector
+    get_sentiment_analyzer  # Sentiment analysis service
+)
+```
+
+### Key Classes
+```python
+class NewsService:
+    """Complete news collection and analysis service."""
+
+    async def get_latest_news(self, limit: int = 10) -> List[NewsItem]:
+        """Get latest news with sentiment scores."""
+
+    async def analyze_sentiment(self, text: str) -> float:
+        """Analyze sentiment of text (-1.0 to 1.0)."""
+
+class NewsItem:
+    """News item with sentiment analysis."""
+    title: str
+    content: str
+    sentiment_score: float  # -1.0 (negative) to 1.0 (positive)
+    instruments: List[str]  # Related financial instruments
+```
+
+### Endpoints
+- `GET /api/v1/news/latest` - Get latest news
+- `GET /api/v1/news/sentiment/{instrument}` - Sentiment for instrument
+- `POST /api/v1/news/analyze` - Analyze custom text sentiment
+- `GET /api/v1/news/sources` - Available news sources
+
+## 🧪 Testing
+
+### Run Tests
+```bash
+# From news_module directory
+cd news_module
+pytest tests/
+
+# Run sentiment tests
+pytest tests/test_sentiment.py
+
+# With coverage
+pytest --cov=src --cov-report=html
+```
+
+### Test Structure
+- `tests/test_collectors.py` - RSS collection tests
+- `tests/test_sentiment.py` - Sentiment analysis tests
+- `tests/test_storage.py` - MongoDB storage tests
+
+## 🏗️ Development
+
+### Project Structure
+```
+news_module/
+├── src/
+│   ├── __init__.py
+│   ├── collectors/        # RSS feed collectors
+│   ├── sentiment/         # Sentiment analysis
+│   ├── store/            # MongoDB storage
+│   └── api.py            # Public API
+├── tests/
+│   ├── __init__.py
+│   ├── test_collectors.py
+│   └── test_sentiment.py
+├── contracts/            # News data contracts
+├── adapters/             # Analysis adapters
+└── README.md            # This file
+```
+
+### Adding New News Sources
+1. Define source contract in `contracts/`
+2. Implement collector in `src/collectors/`
+3. Add to service configuration
+4. Add tests in `tests/`
+5. Update this README
+
+## 📊 Dependencies
+
+### Internal Dependencies
+- `core_kernel` - Service container
+- `genai_module` - AI-powered sentiment analysis
+
+### External Dependencies
+- `pymongo` - MongoDB driver
+- `feedparser` - RSS feed parsing
+- `fastapi` - Web framework
+- `httpx` - HTTP client
+
+## 🔍 Troubleshooting
+
+### Common Issues
+- **RSS feed errors**: Check internet connection and feed URLs
+- **MongoDB connection failed**: Ensure MongoDB is running
+- **Sentiment analysis failures**: Verify GenAI module configuration
+
+### Debug Mode
+```bash
+# Enable debug logging
+export LOG_LEVEL=DEBUG
+python -c "from news_module.api import build_news_service; print('News module ready')"
+```
+
+## 🤝 Contributing
+
+1. Follow the existing code style
+2. Add tests for new sources
+3. Update sentiment analysis docs
+4. Submit PR with clear description
 
     # Build news service
     news_service = build_news_service(news_collection)

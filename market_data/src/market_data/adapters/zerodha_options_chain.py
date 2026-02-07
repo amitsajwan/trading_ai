@@ -3,6 +3,7 @@
 This adapter provides options chain data by using:
 - Real NFO instruments from Zerodha Kite API
 - Real prices from Zerodha API (kite.quote() for live or kite.ltp() for historical/after-hours)
+- Implied volatility and Greeks calculations
 - Works for both live trading and historical backtesting
 """
 
@@ -12,6 +13,24 @@ from datetime import datetime, date, timedelta
 import pandas as pd
 
 from ..contracts import OptionsData
+
+# Defer scipy-dependent imports to avoid blocking module load
+OPTIONS_CALCULATIONS_AVAILABLE = False
+calculate_option_metrics = None
+time_to_expiry = None
+
+def _lazy_load_options_calculations():
+    global OPTIONS_CALCULATIONS_AVAILABLE, calculate_option_metrics, time_to_expiry
+    if OPTIONS_CALCULATIONS_AVAILABLE:
+        return
+    try:
+        from ..options_calculations import calculate_option_metrics as _calc, time_to_expiry as _tte
+        calculate_option_metrics = _calc
+        time_to_expiry = _tte
+        OPTIONS_CALCULATIONS_AVAILABLE = True
+    except Exception as e:
+        OPTIONS_CALCULATIONS_AVAILABLE = False
+        print("WARNING: Options calculations not available - IV and Greeks will be disabled")
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +56,35 @@ class ZerodhaOptionsChainAdapter(OptionsData):
         self._instruments_df: Optional[pd.DataFrame] = None
         self._options_df: Optional[pd.DataFrame] = None
         self._last_prices: Dict[str, Dict] = {}
+    
+    def _extract_underlying_symbol(self, symbol: str) -> str:
+        """Extract underlying symbol from futures/options contract.
+        
+        Examples:
+            BANKNIFTY26FEBFUT -> BANKNIFTY
+            BANKNIFTY26FEB24000CE -> BANKNIFTY
+            NIFTY26JANFUT -> NIFTY
+            BANKNIFTY -> BANKNIFTY (already underlying)
+        """
+        symbol_upper = symbol.upper()
+        
+        # Remove common suffixes
+        for suffix in ['FUT', 'CE', 'PE']:
+            if suffix in symbol_upper:
+                # Find the position and extract everything before it
+                # Also remove date pattern like 26FEB, 27JAN, etc.
+                import re
+                # Match pattern: SYMBOL + DATE (YYMMMDD or YYMM) + TYPE (FUT/CE/PE)
+                match = re.match(r'^([A-Z]+)\d{2}[A-Z]{3}', symbol_upper)
+                if match:
+                    return match.group(1)
+                # Fallback: just remove the suffix
+                symbol_upper = symbol_upper.replace(suffix, '')
+        
+        # Remove any remaining digits and return
+        symbol_upper = re.sub(r'\d+', '', symbol_upper)
+        return symbol_upper.strip()
+
 
     async def initialize(self) -> None:
         """Initialize by downloading and caching NFO instruments."""
@@ -56,10 +104,16 @@ class ZerodhaOptionsChainAdapter(OptionsData):
             logger.info(f"Loaded {len(self._instruments_df)} NFO instruments")
 
             # Filter for our underlying options
-            self._options_df = self._instruments_df[
-                (self._instruments_df["name"] == self.instrument_symbol) &
-                (self._instruments_df["instrument_type"].isin(["CE", "PE"]))
-            ].copy()
+            try:
+                self._options_df = self._instruments_df[
+                    (self._instruments_df["name"] == self.instrument_symbol) &
+                    (self._instruments_df["instrument_type"].isin(["CE", "PE"]))
+                ].copy()
+            except Exception as e:
+                logger.warning(f"Zerodha instruments dataframe missing expected columns, falling back to empty: {e}")
+                self._instruments_df = pd.DataFrame()
+                self._options_df = pd.DataFrame()
+                return
 
             logger.info(f"Filtered {len(self._options_df)} {self.instrument_symbol} options")
 
@@ -76,8 +130,10 @@ class ZerodhaOptionsChainAdapter(OptionsData):
                 logger.info(f"Strike range: {strikes[0]} - {strikes[-1]} (interval: {strikes[1] - strikes[0] if len(strikes) > 1 else 'N/A'})")
 
         except Exception as e:
-            logger.error(f"Failed to initialize Zerodha options chain: {e}")
-            raise
+            logger.warning(f"Failed to initialize Zerodha options chain (falling back to empty): {e}")
+            self._instruments_df = pd.DataFrame()
+            self._options_df = pd.DataFrame()
+            return
 
     async def fetch_options_chain(self, instrument: Optional[str] = None, expiry: Optional[str] = None,
                                  strikes: Optional[List[int]] = None) -> Dict[str, Any]:
@@ -85,6 +141,10 @@ class ZerodhaOptionsChainAdapter(OptionsData):
 
         try:
             target_instrument = instrument or self.instrument_symbol
+            
+            # Extract underlying symbol from futures contract (e.g., BANKNIFTY26FEBFUT -> BANKNIFTY)
+            underlying_symbol = self._extract_underlying_symbol(target_instrument)
+            logger.info(f"Fetching options chain for {target_instrument}, underlying: {underlying_symbol}")
 
             if self._options_df is None or len(self._options_df) == 0:
                 logger.warning("No options data available, initializing...")
@@ -93,17 +153,17 @@ class ZerodhaOptionsChainAdapter(OptionsData):
                 else:
                     return self._create_empty_response("No kite client available for initialization")
 
-            # Filter options for target instrument
+            # Filter options for underlying symbol (not the futures contract)
             options_df = self._options_df
-            if instrument and instrument.upper() != self.instrument_symbol:
+            if underlying_symbol.upper() != self.instrument_symbol:
                 # If different instrument requested, filter from main instruments
                 if self._instruments_df is not None:
                     options_df = self._instruments_df[
-                        (self._instruments_df["name"] == instrument.upper()) &
+                        (self._instruments_df["name"] == underlying_symbol.upper()) &
                         (self._instruments_df["instrument_type"].isin(["CE", "PE"]))
                     ]
                 else:
-                    return self._create_empty_response(f"No data for {instrument}")
+                    return self._create_empty_response(f"No data for {underlying_symbol}")
 
             if len(options_df) == 0:
                 return self._create_empty_response(f"No options found for {target_instrument}")
@@ -128,8 +188,28 @@ class ZerodhaOptionsChainAdapter(OptionsData):
             # Get last prices for these options
             price_data = await self._get_last_prices(expiry_options)
 
-            # Organize by strikes
-            strikes_data = self._organize_by_strikes(expiry_options, price_data)
+            # Get underlying price for IV calculations
+            underlying_price = None
+            try:
+                if self.kite:
+                    # Try to get spot price for the underlying
+                    underlying_symbol = target_instrument
+                    if underlying_symbol == "BANKNIFTY":
+                        spot_symbol = "NSE:NIFTY BANK"
+                    elif underlying_symbol == "NIFTY":
+                        spot_symbol = "NSE:NIFTY 50"
+                    else:
+                        spot_symbol = f"NSE:{underlying_symbol}"
+
+                    spot_data = self.kite.ltp([spot_symbol])
+                    if spot_data and spot_symbol in spot_data:
+                        underlying_price = spot_data[spot_symbol].get('last_price')
+                        logger.info(f"Using underlying price {underlying_price} for {underlying_symbol}")
+            except Exception as e:
+                logger.warning(f"Could not get underlying price for IV calculations: {e}")
+
+            # Organize by strikes and calculate IV/Greeks
+            strikes_data = self._organize_by_strikes(expiry_options, price_data, underlying_price)
 
             return {
                 "available": True,
@@ -229,8 +309,9 @@ class ZerodhaOptionsChainAdapter(OptionsData):
             else:
                 raise ValueError(f"Failed to fetch LTP from Zerodha API: {e}")
 
-    def _organize_by_strikes(self, options_df: pd.DataFrame, price_data: Dict[str, Dict]) -> List[Dict]:
-        """Organize options data by strike prices."""
+    def _organize_by_strikes(self, options_df: pd.DataFrame, price_data: Dict[str, Dict],
+                           underlying_price: float = None) -> List[Dict]:
+        """Organize options data by strike prices and calculate IV/Greeks."""
 
         strikes_data = []
 
@@ -250,16 +331,71 @@ class ZerodhaOptionsChainAdapter(OptionsData):
 
                 if token in price_data:
                     price_info = price_data[token]
+
+                    # Get expiry date
+                    expiry_date = option['expiry']
+                    if isinstance(expiry_date, pd.Timestamp):
+                        expiry_str = expiry_date.strftime('%Y-%m-%d')
+                    else:
+                        expiry_str = str(expiry_date).split(' ')[0]  # Handle datetime objects
+
+                    # Calculate option metrics (IV and Greeks) with mode awareness
+                    market_price = price_info['last_price']
+                    option_metrics = {}
+
+                    if underlying_price and market_price > 0 and OPTIONS_CALCULATIONS_AVAILABLE:
+                        try:
+                            # Calculate time to expiry only if options calculations available
+                            T = time_to_expiry(expiry_str)
+                            
+                            if T > 0:
+                                # Determine execution mode for context-aware calculations
+                                execution_mode = "LIVE"  # Default assumption
+                                try:
+                                    import redis
+                                    r = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
+                                    mode = r.get("system:execution_mode") or "LIVE"
+                                    if mode in ["LIVE", "HISTORICAL"]:
+                                        execution_mode = mode
+                                except Exception:
+                                    pass  # Keep default LIVE mode
+
+                                option_metrics = calculate_option_metrics(
+                                    market_price=market_price,
+                                    S=underlying_price,
+                                    K=float(strike),
+                                    T=T,
+                                    option_type=option_type.lower(),
+                                    mode=execution_mode,
+                                    data_timestamp=price_info.get('timestamp')
+                                )
+                        except Exception as e:
+                            logger.warning(f"Failed to calculate metrics for {option_type} {strike}: {e}")
+                            option_metrics = {'calculation_note': f'Calculation failed: {str(e)}'}
+                    else:
+                        option_metrics = {'calculation_note': 'Options calculations not available (scipy not installed)'}
+
                     option_data = {
                         "tradingsymbol": option['tradingsymbol'],
                         "instrument_token": option['instrument_token'],
-                        "expiry": option['expiry'],
+                        "expiry": expiry_str,
                         "strike": int(strike),
                         "option_type": option_type,
                         "last_price": price_info['last_price'],
                         "volume": price_info['volume'],
                         "oi": price_info['oi'],
-                        "timestamp": price_info['timestamp']
+                        "timestamp": price_info['timestamp'],
+                        # Add IV and Greeks
+                        "iv": option_metrics.get('implied_volatility'),
+                        "delta": option_metrics.get('delta'),
+                        "gamma": option_metrics.get('gamma'),
+                        "theta": option_metrics.get('theta'),
+                        "vega": option_metrics.get('vega'),
+                        "rho": option_metrics.get('rho'),
+                        "theoretical_price": option_metrics.get('theoretical_price'),
+                        "intrinsic_value": option_metrics.get('intrinsic_value'),
+                        "extrinsic_value": option_metrics.get('extrinsic_value'),
+                        "calculation_note": option_metrics.get('calculation_note')
                     }
                     strike_data[option_type] = option_data
 

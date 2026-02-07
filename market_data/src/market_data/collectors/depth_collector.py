@@ -33,13 +33,16 @@ except ImportError:
 def get_symbol_config():
     """Get instrument configuration from environment variables."""
     trading_symbol = os.getenv("INSTRUMENT_TRADING_SYMBOL")
-    symbol = os.getenv("INSTRUMENT_SYMBOL", "NIFTY BANK")
+    symbol = os.getenv("INSTRUMENT_SYMBOL", "BANKNIFTY26JANFUT")
     exchange = os.getenv("INSTRUMENT_EXCHANGE", "NSE")
     
+    # Determine correct exchange based on symbol type
+    if trading_symbol and ("FUT" in trading_symbol.upper() or "CE" in trading_symbol.upper() or "PE" in trading_symbol.upper()):
+        exchange = "NFO"  # Futures & Options
+    elif "FUT" in symbol.upper() or "CE" in symbol.upper() or "PE" in symbol.upper():
+        exchange = "NFO"  # Futures & Options
+    
     if trading_symbol:
-        # Determine correct exchange based on symbol type
-        if "FUT" in trading_symbol.upper() or "CE" in trading_symbol.upper() or "PE" in trading_symbol.upper():
-            exchange = "NFO"  # Futures & Options
         return exchange, trading_symbol
     return exchange, symbol
 
@@ -64,7 +67,6 @@ def get_banknifty_futures_symbol(kite, exchange: str = "NFO") -> Optional[str]:
         instruments = kite.instruments(exchange)
         
         # Filter for BANKNIFTY futures
-        from datetime import datetime
         today = datetime.now()
         
         banknifty_futures = [
@@ -339,6 +341,21 @@ def main():
     interval = float(os.getenv("DEPTH_COLLECTOR_INTERVAL", "5.0"))
     
     collector.run_forever(interval=interval)
+
+
+# Re-export canonical implementation from sources (preferred)
+try:
+    from market_data.sources.depth import (
+        DepthCollector as _DepthCollector,
+        build_kite_client as _build_kite_client,
+        main as _sources_main,
+    )
+
+    DepthCollector = _DepthCollector
+    build_kite_client = _build_kite_client
+    main = _sources_main
+except Exception:
+    pass
 
 
 if __name__ == "__main__":

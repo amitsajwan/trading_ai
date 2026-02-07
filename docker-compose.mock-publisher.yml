@@ -1,0 +1,22 @@
+services:
+  # Mock data publisher for testing
+  mock-data-publisher:
+    build: .
+    container_name: zerodha-mock-publisher
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - PYTHONPATH=/app:/app/market_data/src
+    volumes:
+      - ./logs:/app/logs
+    command: ["python", "mock_data_publisher.py"]
+    restart: unless-stopped
+    networks:
+      - trading-network
+
+networks:
+  trading-network:
+    external: true

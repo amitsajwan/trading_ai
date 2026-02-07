@@ -280,3 +280,13 @@ class LTPDataAdapter(MarketIngestion):
             logger.info("Stopping LTP data collection...")
             # LTP collector cleanup if needed
 
+
+# Unified replayer alias (preferred)
+try:
+    from .unified_replayer import UnifiedHistoricalReplayer as _UnifiedHistoricalReplayer
+
+    HistoricalDataReplay = _UnifiedHistoricalReplayer
+except Exception:
+    # If unified replayer isn't available, keep the legacy implementation
+    pass
+

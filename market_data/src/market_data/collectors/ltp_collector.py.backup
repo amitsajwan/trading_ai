@@ -1,0 +1,487 @@
+#!/usr/bin/env python3
+"""LTP Processor - Processes WebSocket ticks from Redis and applies volume logic.
+
+This processor:
+1. Subscribes to raw WebSocket ticks from Redis pub/sub
+2. Applies volume source prioritization (core instrument > direct > synthetic)
+3. Publishes enhanced tick data with proper volume for technical analysis
+4. Handles dual-instrument volume logic for derivatives
+
+Architecture: WebSocket Collector → Redis Pub/Sub → LTP Processor → Enhanced Data
+"""
+
+import asyncio
+import json
+import logging
+import os
+import random
+import sys
+import time
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional, Tuple
+
+try:
+    import pytz
+except ImportError:
+    pytz = None
+
+try:
+    import redis  # type: ignore
+except ImportError:
+    redis = None
+
+try:
+    from kiteconnect import KiteConnect  # type: ignore
+except ImportError:
+    KiteConnect = None
+
+# Import config
+try:
+    from config import get_config
+    config = get_config()
+except ImportError:
+    config = None
+
+
+def get_symbol_config():
+    if config:
+        trading_symbol = config.instrument_trading_symbol
+        symbol = config.instrument_symbol
+        exchange = config.instrument_exchange
+        if trading_symbol:
+            # Determine correct exchange based on symbol type
+            if "FUT" in trading_symbol.upper() or "CE" in trading_symbol.upper() or "PE" in trading_symbol.upper():
+                exchange = "NFO"  # Futures & Options
+            return exchange, trading_symbol
+        return exchange, symbol
+    else:
+        # Fallback to environment variables
+        trading_symbol = os.getenv("INSTRUMENT_TRADING_SYMBOL")
+        symbol = os.getenv("INSTRUMENT_SYMBOL", "BANKNIFTY26JANFUT")
+        exchange = os.getenv("INSTRUMENT_EXCHANGE", "NSE")
+        if trading_symbol:
+            # Determine correct exchange based on symbol type
+            if "FUT" in trading_symbol.upper() or "CE" in trading_symbol.upper() or "PE" in trading_symbol.upper():
+                exchange = "NFO"  # Futures & Options
+            return exchange, trading_symbol
+        return exchange, symbol
+
+
+def sanitize_key(symbol: str) -> str:
+    return symbol.upper().replace(" ", "")
+
+
+class LTPDataCollector:
+    """Lightweight LTP collector for Zerodha with dual instrument support (futures + core)."""
+
+    # Core instrument mapping for derivatives
+    CORE_INSTRUMENT_MAPPING = {
+        'BANKNIFTY26JANFUT': 'BANKNIFTY',
+        'BANKNIFTY27JANFUT': 'BANKNIFTY',
+        'NIFTY26JANFUT': 'NIFTY',
+        'NIFTY27JANFUT': 'NIFTY',
+        # Add more mappings as needed for other derivatives
+    }
+
+    def __init__(self, kite: Any, market_memory: Any) -> None:
+        self.kite = kite
+        self.market_memory = market_memory
+        self.exchange, self.symbol = get_symbol_config()
+        self.key = config.instrument_key if config else sanitize_key(self.symbol)
+        self.price = 44000.0  # seed
+        self.drift = 0.0
+        self.r = None
+
+        # Determine core instrument for volume data
+        self.core_instrument = self._get_core_instrument()
+        self.volume_source = self._determine_volume_source()
+
+        if redis:
+            redis_config = config.get_redis_config() if config else {
+                "host": os.getenv("REDIS_HOST", "localhost"),
+                "port": int(os.getenv("REDIS_PORT", "6379")),
+                "db": 0,
+                "decode_responses": True
+            }
+            self.r = redis.Redis(**redis_config)
+
+    def _get_core_instrument(self) -> str:
+        """Get the core/underlying instrument for this symbol."""
+        return self.CORE_INSTRUMENT_MAPPING.get(self.symbol.upper(), self.symbol.upper())
+
+    def _determine_volume_source(self) -> str:
+        """Determine where to get volume data for this instrument."""
+        symbol_upper = self.symbol.upper()
+
+        # Check if it's a mapped derivative contract
+        if symbol_upper in self.CORE_INSTRUMENT_MAPPING:
+            return "core"  # Use core instrument volume
+
+        # Check for derivative patterns (more specific matching)
+        # Futures: contain "FUT" anywhere in the name
+        if "FUT" in symbol_upper:
+            return "core"  # Futures contracts
+
+        # Options: more sophisticated detection
+        # Options typically have format: SYMBOL + DATE + STRIKE + CE/PE
+        # Look for digit + CE/PE pattern (strike price followed by option type)
+        import re
+        if re.search(r'\d+(CE|PE)$', symbol_upper):
+            return "core"  # Options contracts with strike price
+
+        # Default: stocks and indices use their own volume
+        return "direct"
+
+    def fetch_quote(self) -> Any:
+        if self.kite:
+            # Normalize symbol: BANKNIFTY -> NIFTY BANK (Zerodha format)
+            normalized_symbol = self.symbol
+            if normalized_symbol.upper() == "BANKNIFTY":
+                normalized_symbol = "NIFTY BANK"
+            elif normalized_symbol.upper() == "NIFTYBANK":
+                normalized_symbol = "NIFTY BANK"
+            elif normalized_symbol.upper() == "NIFTY":
+                normalized_symbol = "NIFTY 50"
+            
+            try:
+                # Try primary format: NSE:NIFTY BANK
+                primary_symbol = f"{self.exchange}:{normalized_symbol}"
+                quotes = self.kite.quote([primary_symbol])
+                if quotes and len(quotes) > 0:
+                    q = list(quotes.values())[0]
+                    return q
+            except (IndexError, KeyError, ValueError) as e:
+                pass
+            
+            # Try alternative symbol formats
+            alt_symbols = [
+                f"NSE:{normalized_symbol}",
+                f"NSE:{self.symbol}",  # Original symbol
+                f"NFO:{normalized_symbol}",
+                normalized_symbol,  # Just symbol without exchange
+                self.symbol,  # Original symbol without exchange
+            ]
+            
+            for alt_symbol in alt_symbols:
+                try:
+                    quotes = self.kite.quote([alt_symbol])
+                    if quotes and len(quotes) > 0:
+                        q = list(quotes.values())[0]
+                        return q
+                except:
+                    continue
+            
+            # All attempts failed
+            raise ValueError(f"Could not fetch quote for {self.exchange}:{self.symbol} (tried: NSE:NIFTY BANK, {self.exchange}:{self.symbol}, and alternatives)")
+        else:
+            # No kite client available - fail with clear error instead of synthetic fallback
+            raise RuntimeError(
+                f"No Zerodha kite client available for live data collection. "
+                f"Please ensure KITE_API_KEY and KITE_ACCESS_TOKEN are set in environment variables "
+                f"or credentials.json exists. Current kite client: {self.kite}"
+            )
+
+    def _quote_to_dict(self, quote: Any) -> Dict[str, Any]:
+        """Normalize Quote dataclass or dict to a plain dict for downstream processing."""
+        if hasattr(quote, "to_dict"):
+            return quote.to_dict()
+        if isinstance(quote, dict):
+            return quote
+        # Fallback: try to build dict from attributes
+        try:
+            return {"last_price": getattr(quote, "last_price"), "depth": getattr(quote, "depth"), "timestamp": getattr(quote, "timestamp")}
+        except Exception:
+            return {"last_price": self.price, "depth": {}}
+
+    def collect_once(self) -> None:
+        """Collect data for both the derivative instrument and its core instrument."""
+        if pytz:
+            ist = pytz.timezone('Asia/Kolkata')
+            ts = datetime.now(ist).replace(tzinfo=None)
+        else:
+            ts = datetime.now(timezone.utc).replace(tzinfo=None)
+
+        print(f"[ltp] Starting dual collection for {self.symbol} (core: {self.core_instrument})")
+
+        # PHASE 1: Collect futures/derivative price data
+        try:
+            futures_data = self._collect_futures_data(ts)
+            print(f"[ltp] Futures data collected: {self.symbol} @ ₹{futures_data['price']:.2f}")
+        except Exception as e:
+            print(f"[ltp] ERROR: Failed to collect futures data for {self.symbol}: {e}")
+            return
+
+        # PHASE 2: Collect core instrument volume data (if different from futures)
+        core_data = None
+        if self.core_instrument != self.symbol.upper():
+            try:
+                core_data = self._collect_core_instrument_data(ts)
+                if core_data:
+                    print(f"[ltp] Core data collected: {self.core_instrument} volume: {core_data['volume']:,}")
+            except Exception as e:
+                print(f"[ltp] WARNING: Failed to collect core data for {self.core_instrument}: {e}")
+                print("[ltp] Will use synthetic volume for technical analysis")
+
+        # PHASE 3: Determine final volume to use for technical analysis
+        final_volume, volume_source = self._determine_final_volume(futures_data, core_data)
+
+        # PHASE 4: Store both data streams
+        self._store_dual_instrument_data(futures_data, core_data, final_volume, volume_source, ts)
+
+        # PHASE 5: Publish to WebSocket for real-time updates
+        self._publish_real_time_updates(futures_data, core_data, final_volume, volume_source, ts)
+
+    def _collect_futures_data(self, ts: datetime) -> Dict[str, Any]:
+        """Collect futures/derivative instrument data."""
+        quote = self.fetch_quote()
+        qd = self._quote_to_dict(quote)
+
+        # Validate we got real data from Zerodha
+        price = qd.get("last_price") or qd.get("last")
+        if price is None or price <= 0:
+            raise ValueError(f"Invalid price received from Zerodha API: {price}")
+
+        price = float(price)
+        depth = qd.get("depth") or {}
+
+        return {
+            "price": price,
+            "depth": depth,
+            "raw_volume": qd.get("volume", 0),
+            "timestamp": ts,
+            "instrument": self.symbol
+        }
+
+    def _collect_core_instrument_data(self, ts: datetime) -> Optional[Dict[str, Any]]:
+        """Collect core/underlying instrument data for volume reference."""
+        try:
+            # Map core instrument to proper Zerodha symbol
+            # Note: Indices don't provide individual trade volume, but we try anyway
+            core_symbol = self.core_instrument
+            if core_symbol == "BANKNIFTY":
+                # Try both the index and ETF versions
+                core_formats = [
+                    "NSE:NIFTY BANK",  # Index
+                    "NSE:BANKNIFTY",   # Index direct
+                    "NSE:BANKBEES",    # ETF as volume proxy
+                ]
+            elif core_symbol == "NIFTY":
+                core_formats = [
+                    "NSE:NIFTY 50",   # Index
+                    "NSE:NIFTYBEES",  # ETF as volume proxy
+                ]
+            else:
+                core_formats = [
+                    f"NSE:{self.core_instrument}",
+                    self.core_instrument,
+                ]
+
+            for symbol_format in core_formats:
+                try:
+                    quotes = self.kite.quote([symbol_format])
+                    if quotes and len(quotes) > 0:
+                        q = list(quotes.values())[0]
+                        qd = self._quote_to_dict(q)
+
+                        price = qd.get("last_price") or qd.get("last")
+                        volume = qd.get("volume", 0)
+
+                        if price and volume > 0:
+                            return {
+                                "price": float(price),
+                                "volume": int(volume),
+                                "symbol": self.core_instrument,
+                                "raw_data": qd
+                            }
+                except:
+                    continue
+
+            print(f"[ltp] No volume data available for core instrument {self.core_instrument}")
+            return None
+
+        except Exception as e:
+            print(f"[ltp] Error collecting core instrument data: {e}")
+            return None
+
+    def _determine_final_volume(self, futures_data: Dict, core_data: Optional[Dict]) -> Tuple[int, str]:
+        """Determine which volume to use for technical analysis."""
+
+        # Priority order: Core instrument volume > Futures volume > Synthetic volume
+        if core_data and core_data.get("volume", 0) > 0:
+            volume = core_data["volume"]
+            source = "core"
+            print(f"[ltp] Using core instrument volume: {volume:,} from {self.core_instrument}")
+        elif futures_data.get("raw_volume", 0) > 0:
+            volume = futures_data["raw_volume"]
+            source = "direct"
+            print(f"[ltp] Using futures volume: {volume:,} from {self.symbol}")
+        else:
+            # Fallback to synthetic volume
+            volume = self._generate_synthetic_volume()
+            source = "synthetic"
+            print(f"[ltp] Using synthetic volume: {volume:,} for {self.symbol}")
+
+        return volume, source
+
+    def _generate_synthetic_volume(self) -> int:
+        """Generate market-appropriate synthetic volume for technical analysis."""
+        if "BANKNIFTY" in self.symbol.upper():
+            return int(random.uniform(150_000, 300_000))  # Intraday estimate
+        elif "NIFTY" in self.symbol.upper():
+            return int(random.uniform(200_000, 500_000))  # Intraday estimate
+        else:
+            return int(random.uniform(10_000, 50_000))  # Stock estimate
+
+    def _store_dual_instrument_data(self, futures_data: Dict, core_data: Optional[Dict],
+                                   final_volume: int, volume_source: str, ts: datetime) -> None:
+        """Store both futures and core instrument data in Redis."""
+
+        if not self.r:
+            return
+
+        instrument_name = "BANKNIFTY" if "BANK" in self.symbol.upper() else self.symbol.upper()
+
+        try:
+            # Store futures price data (existing format)
+            futures_tick_data = {
+                "instrument": instrument_name,
+                "timestamp": ts.isoformat(),
+                "last_price": futures_data["price"],
+                "volume": final_volume,
+                "volume_source": volume_source,
+                "core_instrument": self.core_instrument if self.core_instrument != instrument_name else None
+            }
+
+            # Store core instrument data separately (new)
+            if core_data:
+                core_tick_data = {
+                    "instrument": self.core_instrument,
+                    "timestamp": ts.isoformat(),
+                    "last_price": core_data["price"],
+                    "volume": core_data["volume"],
+                    "is_core_instrument": True
+                }
+
+                # Store core instrument data
+                self.r.setex(f"tick:{self.core_instrument}:latest", 86400, json.dumps(core_tick_data))
+                self.r.set(f"price:{self.core_instrument}:latest", str(core_data["price"]))
+                self.r.set(f"volume:{self.core_instrument}:latest", str(core_data["volume"]))
+
+            # Store futures data with metadata
+            self.r.setex(f"tick:{instrument_name}:latest", 86400, json.dumps(futures_tick_data))
+            self.r.set(f"price:{instrument_name}:last_price", str(futures_data["price"]))
+            self.r.set(f"volume:{instrument_name}:latest", str(final_volume))
+            self.r.set(f"price:{instrument_name}:latest_ts", ts.isoformat())
+
+            # Store metadata about data sources
+            self.r.set(f"instrument:{instrument_name}:core_instrument", self.core_instrument)
+            self.r.set(f"instrument:{instrument_name}:volume_source", volume_source)
+
+            # Update price for backward compatibility
+            self.price = futures_data["price"]
+
+        except Exception as e:
+            print(f"[ltp] Redis storage error: {e}")
+
+    def _publish_real_time_updates(self, futures_data: Dict, core_data: Optional[Dict],
+                                  final_volume: int, volume_source: str, ts: datetime) -> None:
+        """Publish real-time updates to WebSocket channels."""
+
+        if not self.r:
+            return
+
+        try:
+            from market_data.timestamp_utils import get_instrument_channel, create_canonical_timestamp_payload
+        except ImportError:
+            # Fallback if timestamp_utils not available
+            return
+
+        instrument_name = "BANKNIFTY" if "BANK" in self.symbol.upper() else self.symbol.upper()
+
+        # Create enhanced tick data with canonical timestamps
+        timestamp_payload = create_canonical_timestamp_payload(
+            market_timestamp=ts,
+            original_timestamp=None
+        )
+
+        # Publish futures data
+        futures_enhanced_data = {
+            "instrument": instrument_name,
+            "timestamp": ts.isoformat(),
+            "last_price": futures_data["price"],
+            "volume": final_volume,
+            "volume_source": volume_source,
+            "core_instrument": self.core_instrument if self.core_instrument != instrument_name else None,
+            **timestamp_payload
+        }
+
+        type_specific_channel = get_instrument_channel(instrument_name, "tick")
+        self.r.publish(type_specific_channel, json.dumps(futures_enhanced_data))
+
+        # Publish core instrument data separately
+        if core_data:
+            core_enhanced_data = {
+                "instrument": self.core_instrument,
+                "timestamp": ts.isoformat(),
+                "last_price": core_data["price"],
+                "volume": core_data["volume"],
+                "is_core_instrument": True,
+                **timestamp_payload
+            }
+
+            core_channel = get_instrument_channel(self.core_instrument, "tick")
+            self.r.publish(core_channel, json.dumps(core_enhanced_data))
+
+        # Store tick using MarketStore interface (for live mode compatibility)
+        if self.market_memory:
+            try:
+                from ..contracts import MarketTick
+                tick = MarketTick(
+                    instrument=instrument_name,
+                    timestamp=ts,
+                    last_price=futures_data["price"],
+                    volume=final_volume,
+                )
+                self.market_memory.store_tick(tick)
+            except Exception as e:
+                print(f"[ltp] Error storing tick via store: {e}")
+
+        print(f"[ltp] Published dual data: {instrument_name} @ ₹{futures_data['price']:.2f} (vol: {final_volume:,} from {volume_source})")
+
+    def run_forever(self, interval_seconds: float = 2.0) -> None:
+        while True:
+            try:
+                self.collect_once()
+            except Exception as e:
+                print(f"[ltp] error: {e}", file=sys.stderr)
+            time.sleep(interval_seconds)
+
+
+def main():
+    # Standalone runner mainly for container entrypoint
+    kite_client = build_kite_client()
+    
+    # Initialize market store for technical indicators
+    try:
+        import redis
+        redis_config = config.get_redis_config() if config else {
+            "host": os.getenv("REDIS_HOST", "localhost"),
+            "port": int(os.getenv("REDIS_PORT", "6379")),
+            "db": 0,
+            "decode_responses": True
+        }
+        redis_client = redis.Redis(**redis_config)
+        from ..api import build_store
+        market_memory = build_store(redis_client=redis_client)
+        print("[ltp] Initialized Redis-backed market store for technical indicators")
+    except Exception as e:
+        print(f"[ltp] Failed to initialize market store: {e}")
+        market_memory = None
+    
+    collector = LTPDataCollector(kite_client, market_memory)
+    collector.run_forever(interval_seconds=2.0)
+
+
+if __name__ == "__main__":
+    main()
+
