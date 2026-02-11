@@ -19,6 +19,23 @@ A standalone dashboard for monitoring market data status and visualization, comp
 # Dashboard: http://localhost:8000/
 ```
 
+
+### Full historical replay (specific date + speed)
+
+**Bash (Linux/macOS/WSL):**
+
+```bash
+./start_all.sh --source historical --historical-source zerodha --historical-from 2026-02-11 --historical-speed 1
+```
+
+**PowerShell (Windows):**
+
+```powershell
+.\start_system.ps1 -Source historical -HistoricalSource zerodha -HistoricalFrom 2026-02-11 -HistoricalSpeed 1 -FreshStart
+```
+
+This starts the full chain (**ticks/collector -> market data API -> dashboard**) and replays from `2026-02-11` at `1x` speed.
+
 ### Local dashboard-only run
 
 ```bash
