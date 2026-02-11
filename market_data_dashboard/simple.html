@@ -125,9 +125,9 @@
                 <div class="mt-4 pt-4 border-t">
                     <div class="text-sm text-gray-600">Volume: ${latest.volume.toLocaleString()}</div>
                     <div class="text-xs text-gray-500 mt-2">Total bars: ${data.length}</div>
-                    <div class="text-xs text-gray-500">Latest: ${latest.start_at ? (() => {
-                        const date = new Date(latest.start_at);
-                        return isNaN(date.getTime()) ? 'Invalid Date: ' + latest.start_at : date.toLocaleString();
+                    <div class="text-xs text-gray-500">Latest: ${(latest.start_at || latest.timestamp) ? (() => {
+                        const date = new Date(latest.start_at || latest.timestamp);
+                        return isNaN(date.getTime()) ? 'Invalid Date: ' + (latest.start_at || latest.timestamp) : date.toLocaleString();
                     })() : 'N/A'}</div>
                 </div>
             `;

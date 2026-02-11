@@ -102,7 +102,7 @@ r = redis.Redis(host=host, port=port, db=0, decode_responses=True)
 cursor = 0
 deleted = 0
 while True:
-    cursor, keys = r.scan(cursor=cursor, match=f"{mode}:*", count=1000)
+    cursor, keys = r.scan(cursor=cursor, match="{}:*".format(mode), count=1000)
     if keys:
         deleted += r.delete(*keys)
     if cursor == 0:

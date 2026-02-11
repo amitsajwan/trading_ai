@@ -266,7 +266,6 @@
 
         let wsFailureCount = 0;
         let wsConnectedOnce = false;
-        let attemptedLegacyFallback = false;
         let aggressivePollingHandle = null;
 
         function startAggressivePolling(reason = '') {
@@ -468,7 +467,6 @@
                     console.log('STOMP connected');
                     wsConnectedOnce = true;
                     wsFailureCount = 0;
-                    attemptedLegacyFallback = false;
                     stopAggressivePolling();
                     setWsStatus('Connected', 'text-green-600', 'w-3 h-3 rounded-full mr-2 bg-green-500');
                     subscribeStompTopics();
@@ -478,14 +476,6 @@
                     setWsStatus('Disconnected', 'text-red-600', 'w-3 h-3 rounded-full mr-2 bg-red-500');
                     clearStompSubscriptions();
                     recordWsFailure('stomp socket close');
-
-                    if (!wsConnectedOnce && !attemptedLegacyFallback) {
-                        attemptedLegacyFallback = true;
-                        try {
-                            if (stompClient && stompClient.active) stompClient.deactivate();
-                        } catch (e) {}
-                        connectLegacyWebSocket(wsUrl);
-                    }
                 };
 
                 stompClient.onStompError = function(frame) {
@@ -497,22 +487,14 @@
                 stompClient.onWebSocketError = function(event) {
                     console.error('STOMP websocket transport error:', event);
                     recordWsFailure('stomp transport error');
-
-                    if (!attemptedLegacyFallback) {
-                        attemptedLegacyFallback = true;
-                        try {
-                            if (stompClient && stompClient.active) stompClient.deactivate();
-                        } catch (e) {}
-                        connectLegacyWebSocket(wsUrl);
-                    }
                 };
 
                 stompClient.activate();
                 return;
             }
 
-            // Fallback to legacy JSON protocol
-            connectLegacyWebSocket(wsUrl);
+            // STOMP not available, cannot connect
+            setWsStatus('WebSocket library not available', 'text-red-600', 'w-3 h-3 rounded-full mr-2 bg-red-500');
         }
 
         async function fetchStatus() {
@@ -650,7 +632,7 @@
                     return;
                 }
 
-                const labels = bankniftyData.map(d => formatTime(d.start_at));
+                const labels = bankniftyData.map(d => formatTime(d.start_at || d.timestamp));
                 const prices = bankniftyData.map(d => d.close);
                 const volumes = bankniftyData.map(d => d.volume / 1000000); // Convert to millions for better scaling
 
@@ -809,7 +791,7 @@
                     
                     // Extract close prices
                     const closes = ohlcData.map(d => d.close);
-                    const labels = ohlcData.map(d => (parseTimestamp(d.start_at)?.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'}) || 'Invalid Date'));
+                    const labels = ohlcData.map(d => (parseTimestamp(d.start_at || d.timestamp)?.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'}) || 'Invalid Date'));
                     
                     // Calculate indicators
                     const rsiValues = calculateRSI(closes, 14);

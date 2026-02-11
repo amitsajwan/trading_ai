@@ -1,2 +1,10 @@
-Redis unavailable: Error 10061 connecting to localhost:6379. No connection could be made because the target machine actively refused it.
-MarketStore: Could not read execution mode from Redis: Error 10061 connecting to localhost:6379. No connection could be made because the target machine actively refused it.
+Traceback (most recent call last):
+  File "<frozen runpy>", line 189, in _run_module_as_main
+  File "<frozen runpy>", line 112, in _get_module_details
+  File "C:\code\zerodha\market_data\src\market_data\__init__.py", line 27, in <module>
+    from .technical_indicators_service import (
+    ...<3 lines>...
+    )
+  File "C:\code\zerodha\market_data\src\market_data\technical_indicators_service.py", line 24, in <module>
+    import pandas as pd
+ModuleNotFoundError: No module named 'pandas'

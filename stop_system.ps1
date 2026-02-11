@@ -12,13 +12,13 @@ function Stop-TrackedProcess {
     param([string]$Name)
     $pidFile = Join-Path $runDir "$Name.pid"
     if (Test-Path $pidFile) {
-        $pid = Get-Content $pidFile -ErrorAction SilentlyContinue
-        if ($pid) {
+        $processId = Get-Content $pidFile -ErrorAction SilentlyContinue
+        if ($processId) {
             try {
-                Stop-Process -Id ([int]$pid) -Force -ErrorAction Stop
-                Write-Host "[stop_system] Stopped $Name (pid=$pid)" -ForegroundColor Yellow
+                Stop-Process -Id ([int]$processId) -Force -ErrorAction Stop
+                Write-Host "[stop_system] Stopped $Name (pid=$processId)" -ForegroundColor Yellow
             } catch {
-                Write-Host "[stop_system] $Name not running (pid=$pid)" -ForegroundColor DarkYellow
+                Write-Host "[stop_system] $Name not running (pid=$processId)" -ForegroundColor DarkYellow
             }
         }
         Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
