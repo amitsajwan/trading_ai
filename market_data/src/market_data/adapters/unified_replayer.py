@@ -456,6 +456,7 @@ class UnifiedHistoricalReplayer(MarketIngestion):
 
                 normalized_instrument = self._resolve_instrument_key()
 
+                end_at = timestamp + timedelta(minutes=1)
                 ohlc_bar = OHLCBar(
                     instrument=normalized_instrument,
                     timeframe="1min",
@@ -465,6 +466,7 @@ class UnifiedHistoricalReplayer(MarketIngestion):
                     close=close_price,
                     volume=volume,
                     start_at=timestamp,
+                    end_at=end_at,
                 )
                 self.store.store_ohlc(ohlc_bar)
 
@@ -660,6 +662,7 @@ class UnifiedHistoricalReplayer(MarketIngestion):
                     close=closes,
                     volume=volume,
                     start_at=start_at,
+                    end_at=start_at + timedelta(minutes=1),
                 )
             )
         return bars
@@ -699,6 +702,7 @@ class UnifiedHistoricalReplayer(MarketIngestion):
                     close=point["close"],
                     volume=point.get("volume", 0),
                     start_at=timestamp,
+                    end_at=timestamp + timedelta(minutes=1),
                 )
                 self.store.store_ohlc(bar)
 

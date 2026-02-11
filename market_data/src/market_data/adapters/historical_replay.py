@@ -216,7 +216,8 @@ class HistoricalDataReplay(MarketIngestion):
                     low=point["low"],
                     close=point["close"],
                     volume=point.get("volume", 0),
-                    start_at=timestamp
+                    start_at=timestamp,
+                    end_at=timestamp + timedelta(minutes=1)
                 )
                 self.store.store_ohlc(bar)
 

@@ -137,7 +137,31 @@ class DataStorageManager:
             for json_data in results:
                 try:
                     entry = json.loads(json_data)
-                    # Match on timestamp and format version as a best-effort check
+                except Exception:
+                    continue
+
+                entry_ts_raw = entry.get('timestamp') or entry.get('start_at')
+                bar_ts_raw = bar_data.get('timestamp') or bar_data.get('start_at')
+
+                try:
+                    def _to_dt(ts_raw):
+                        if ts_raw is None:
+                            return None
+                        if isinstance(ts_raw, (int, float)):
+                            return datetime.fromtimestamp(float(ts_raw), tz=timezone.utc)
+                        if isinstance(ts_raw, str):
+                            return datetime.fromisoformat(ts_raw.replace('Z', '+00:00'))
+                        return None
+
+                    entry_dt = _to_dt(entry_ts_raw)
+                    bar_dt = _to_dt(bar_ts_raw)
+
+                    # If both parsed, accept within 2 seconds tolerance
+                    if entry_dt and bar_dt:
+                        if abs((entry_dt - bar_dt).total_seconds()) < 2 and entry.get('_format_version') == bar_data.get('_format_version'):
+                            return True
+
+                    # Fallback to string equality if parsing failed
                     if entry.get('timestamp') == bar_data.get('timestamp') and entry.get('_format_version') == bar_data.get('_format_version'):
                         return True
                 except Exception:

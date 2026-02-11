@@ -63,6 +63,25 @@ Generate credentials interactively:
 
 ## 🧰 One-command full startup (repo root)
 
+## ✅ Startup command clarity (important)
+
+Use these as the only startup commands:
+
+- Linux/macOS/Git-Bash:
+  - `./start_all.sh --source kite`
+  - `./start_all.sh --source historical --historical-source synthetic`
+  - `./start_all.sh --source mock`
+  - Stop: `./stop_all.sh`
+
+- PowerShell users (native, no bash):
+  - `./start_system.ps1 -Source kite`
+  - `./start_system.ps1 -Source historical -HistoricalSource synthetic`
+  - `./start_system.ps1 -Source mock`
+  - Stop: `./stop_system.ps1`
+
+Legacy compatibility:
+- `-Mode live|historical|paper` is still accepted and mapped to `-Source kite|historical|mock`.
+
 From the repository root you can start the full stack (ingestion + API + dashboard) with a single command:
 
 - `./start_all.sh --source kite`
@@ -108,7 +127,8 @@ Behavior:
 - `python -m market_data.runner` — supervisor for API + collectors + replay
 - `python -m market_data.collectors.websocket_tick_collector` — websocket collector (source via `KITE_WS_SOURCE=real|mock|historical`)
 - `python -m market_data.runner_historical` — legacy replay-only path
-- `./start_all.sh --source kite|mock|historical` — recommended full-stack startup from repo root
+- `./start_all.sh --source kite|mock|historical` — bash full-stack startup from repo root
+- `./start_system.ps1 -Source kite|mock|historical` — PowerShell-native full-stack startup
 
 ## 🧱 Core runtime files (current)
 
@@ -138,7 +158,7 @@ market_data/
 
 ### API starts but has no data
 - In live mode: ensure credentials are valid and collectors started.
-- In historical/mock: ensure replay is running and Redis keys are populated.
+- In historical/mock: ensure websocket source is running (`--source historical` or `--source mock`) and Redis keys are populated.
 
 ### Wrong mode data
 - Set `EXECUTION_MODE` explicitly before starting services.

@@ -1,0 +1,2 @@
+Redis unavailable: Error 10061 connecting to localhost:6379. No connection could be made because the target machine actively refused it.
+MarketStore: Could not read execution mode from Redis: Error 10061 connecting to localhost:6379. No connection could be made because the target machine actively refused it.

@@ -179,7 +179,8 @@ class HistoricalTickReplayer(MarketIngestion):
                                 low=lows,
                                 close=closes,
                                 volume=volume,
-                                start_at=start_at
+                                start_at=start_at,
+                                end_at=start_at + timedelta(minutes=1)
                             ))
                         return bars
 

@@ -1,57 +1,38 @@
 #!/usr/bin/env pwsh
 <#
 .SYNOPSIS
-    Stop all trading system services
-
-.DESCRIPTION
-    Stops all running services and cleans up connections
+    Stop services started by start_system.ps1 (PowerShell-native).
 #>
 
-Write-Host "[STOP] Stopping Trading System..." -ForegroundColor Red
-Write-Host ""
+$ErrorActionPreference = 'Stop'
+$root = Split-Path -Parent $MyInvocation.MyCommand.Path
+$runDir = Join-Path $root '.run'
 
-# Function to stop processes on a port
-function Stop-ProcessOnPort {
-    param([int]$Port)
-    
-    $connections = Get-NetTCPConnection -LocalPort $Port -ErrorAction SilentlyContinue
-    if ($connections) {
-        foreach ($conn in $connections) {
-            $process = Get-Process -Id $conn.OwningProcess -ErrorAction SilentlyContinue
-            if ($process) {
-                Write-Host "Stopping $($process.Name) (PID: $($process.Id)) on port $Port" -ForegroundColor Yellow
-                Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+function Stop-TrackedProcess {
+    param([string]$Name)
+    $pidFile = Join-Path $runDir "$Name.pid"
+    if (Test-Path $pidFile) {
+        $pid = Get-Content $pidFile -ErrorAction SilentlyContinue
+        if ($pid) {
+            try {
+                Stop-Process -Id ([int]$pid) -Force -ErrorAction Stop
+                Write-Host "[stop_system] Stopped $Name (pid=$pid)" -ForegroundColor Yellow
+            } catch {
+                Write-Host "[stop_system] $Name not running (pid=$pid)" -ForegroundColor DarkYellow
             }
         }
-        Write-Host "[+] Stopped services on port $Port" -ForegroundColor Green
+        Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
+        return $true
     }
+    return $false
 }
 
-# Stop services by port
-Write-Host "Stopping Dashboard (port 8000)..." -ForegroundColor Cyan
-Stop-ProcessOnPort -Port 8000
+$stoppedAny = $false
+if (Stop-TrackedProcess 'dashboard') { $stoppedAny = $true }
+if (Stop-TrackedProcess 'market_data') { $stoppedAny = $true }
 
-Write-Host "Stopping API (port 8004)..." -ForegroundColor Cyan
-Stop-ProcessOnPort -Port 8004
-
-# Stop Python processes (WebSocket collector, etc.)
-Write-Host ""
-Write-Host "Stopping Python services..." -ForegroundColor Cyan
-$pythonProcesses = Get-Process python -ErrorAction SilentlyContinue | Where-Object {
-    $_.MainWindowTitle -match "market_data|websocket" -or
-    $_.CommandLine -match "market_data|websocket"
+if ($stoppedAny) {
+    Write-Host "[stop_system] ✅ Done" -ForegroundColor Green
+} else {
+    Write-Host "[stop_system] No tracked processes were running" -ForegroundColor Yellow
 }
-
-foreach ($proc in $pythonProcesses) {
-    Write-Host "Stopping Python process (PID: $($proc.Id))" -ForegroundColor Yellow
-    Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
-}
-
-if ($pythonProcesses.Count -gt 0) {
-    Write-Host "[+] Stopped $($pythonProcesses.Count) Python service(s)" -ForegroundColor Green
-}
-
-Write-Host ""
-Write-Host "[SUCCESS] System stopped" -ForegroundColor Green
-Write-Host ""
-Write-Host "Note: Redis is still running. Use 'docker stop redis' to stop it." -ForegroundColor Gray
