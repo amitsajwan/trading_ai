@@ -52,6 +52,90 @@ def get_virtual_time_info():
     
     return {"enabled": False, "current_time": None}
 
+
+def _parse_timestamp_flexible(value: Any) -> Optional[datetime]:
+    """Parse various timestamp representations into a timezone-aware datetime (UTC)."""
+    if value is None:
+        return None
+
+    # Numeric epoch support (seconds or milliseconds)
+    if isinstance(value, (int, float)):
+        ts = float(value)
+        if ts > 1e12:  # milliseconds
+            ts = ts / 1000.0
+        try:
+            return datetime.fromtimestamp(ts, tz=timezone.utc)
+        except Exception:
+            return None
+
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return None
+
+        # Numeric epoch string support
+        if raw.isdigit():
+            try:
+                num = int(raw)
+                if num > 1e12:
+                    num = num / 1000
+                return datetime.fromtimestamp(num, tz=timezone.utc)
+            except Exception:
+                return None
+
+        normalized = raw
+        # "YYYY-MM-DD HH:MM:SS" -> ISO-like
+        if " " in normalized and "T" not in normalized:
+            normalized = normalized.replace(" ", "T", 1)
+        # +0530 -> +05:30 (strict parser compatibility)
+        if len(normalized) >= 5 and (normalized[-5] in "+-") and normalized[-3] != ":":
+            if normalized[-4:].isdigit():
+                normalized = f"{normalized[:-5]}{normalized[-5:-2]}:{normalized[-2:]}"
+        normalized = normalized.replace("Z", "+00:00")
+
+        try:
+            dt = datetime.fromisoformat(normalized)
+        except Exception:
+            return None
+
+        if dt.tzinfo is None:
+            # Default naive timestamps to IST to match existing market time assumptions
+            dt = dt.replace(tzinfo=timezone(timedelta(hours=5, minutes=30)))
+        return dt.astimezone(timezone.utc)
+
+    return None
+
+
+def _normalize_timestamp_string(value: Any) -> Any:
+    """Normalize a timestamp-like value to ISO-8601 UTC string when parseable."""
+    dt = _parse_timestamp_flexible(value)
+    if not dt:
+        return value
+    return dt.isoformat().replace("+00:00", "Z")
+
+
+def _normalize_timestamp_fields(payload: Any) -> Any:
+    """Recursively normalize common timestamp/date fields in dict/list payloads."""
+    if isinstance(payload, list):
+        return [_normalize_timestamp_fields(item) for item in payload]
+
+    if isinstance(payload, dict):
+        normalized: Dict[str, Any] = {}
+        for key, value in payload.items():
+            key_l = str(key).lower()
+            if isinstance(value, (dict, list)):
+                normalized[key] = _normalize_timestamp_fields(value)
+            elif any(
+                token in key_l
+                for token in ["timestamp", "_at", "date", "time"]
+            ):
+                normalized[key] = _normalize_timestamp_string(value)
+            else:
+                normalized[key] = value
+        return normalized
+
+    return payload
+
 def filter_data_by_virtual_time(data, time_field="start_at"):
     """Filter data to only include records up to current virtual time."""
     virtual_time_info = get_virtual_time_info()
@@ -66,19 +150,18 @@ def filter_data_by_virtual_time(data, time_field="start_at"):
     for item in data:
         item_time_str = item.get(time_field) or item.get("timestamp")
         if item_time_str:
-            try:
-                # Handle both offset-naive and offset-aware timestamps
-                if '+' in item_time_str or 'Z' in item_time_str:
-                    # Already has timezone info
-                    item_time = datetime.fromisoformat(item_time_str.replace('Z', '+00:00'))
-                else:
-                    # No timezone info, assume IST (+05:30) to match virtual time
-                    item_time = datetime.fromisoformat(item_time_str).replace(tzinfo=timezone(timedelta(hours=5, minutes=30)))
-                
-                if item_time <= current_virtual_time:
-                    filtered_data.append(item)
-            except (ValueError, AttributeError):
+            item_time = _parse_timestamp_flexible(item_time_str)
+            if item_time is None:
                 # If we can't parse the timestamp, include the item
+                filtered_data.append(item)
+                continue
+
+            compare_time = current_virtual_time
+            if compare_time.tzinfo is None:
+                compare_time = compare_time.replace(tzinfo=timezone(timedelta(hours=5, minutes=30)))
+            compare_time = compare_time.astimezone(timezone.utc)
+
+            if item_time <= compare_time:
                 filtered_data.append(item)
     
     return filtered_data
@@ -736,7 +819,7 @@ async def health():
     return {
         "status": "healthy",
         "service": "market-data-dashboard",
-        "timestamp": datetime.now().isoformat()
+        "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     }
 
 @app.get("/api/market-data/health")
@@ -744,12 +827,12 @@ async def market_data_health():
     """Get market data API health"""
     try:
         response = requests.get(f"{MARKET_DATA_API_URL}/health", timeout=5)
-        return response.json()
+        return _normalize_timestamp_fields(response.json())
     except Exception as e:
         return {
             "status": "unhealthy",
             "error": str(e),
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         }
 
 @app.get("/api/v1/system/mode")
@@ -758,25 +841,25 @@ async def get_system_mode():
     try:
         response = requests.get(f"{MARKET_DATA_API_URL}/api/v1/system/mode", timeout=5)
         if response.status_code == 200:
-            return response.json()
+            return _normalize_timestamp_fields(response.json())
         else:
             return {
                 "mode": "unknown",
                 "error": f"API returned status {response.status_code}",
-                "timestamp": datetime.now().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
             }
     except Exception as e:
         return {
             "mode": "unknown",
             "error": str(e),
-            "timestamp": datetime.now().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         }
 
 @app.get("/api/market-data/status")
 async def market_data_status():
     """Get comprehensive market data status"""
     status = {
-        "timestamp": datetime.now().isoformat(),
+        "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "market_data_api": {"status": "unknown"},
         "redis": {"status": "unknown"},
         "instruments": {},
@@ -850,8 +933,8 @@ async def market_data_status():
             status["instruments"][instrument] = {
                 "status": "available",
                 "data_points": int(best_count),
-                "first_timestamp": _extract_bar_timestamp(first_bar),
-                "latest_timestamp": _extract_bar_timestamp(last_bar),
+                "first_timestamp": _normalize_timestamp_string(_extract_bar_timestamp(first_bar)),
+                "latest_timestamp": _normalize_timestamp_string(_extract_bar_timestamp(last_bar)),
                 "latest_price": last_bar.get("close") or last_bar.get("last_price"),
                 "redis_key": best_key,
             }
@@ -861,7 +944,7 @@ async def market_data_status():
     # Data validation checks
     status["data_validation"] = validate_data_availability(status)
 
-    return status
+    return _normalize_timestamp_fields(status)
 
 def validate_data_availability(status: Dict[str, Any]) -> Dict[str, Any]:
     """Validate data availability and freshness"""
@@ -914,7 +997,8 @@ async def get_ohlc_data(
         )
         if redis_bars:
             filtered = filter_data_by_virtual_time(redis_bars, "start_at")
-            return filtered[-limit:] if limit and len(filtered) > limit else filtered
+            out = filtered[-limit:] if limit and len(filtered) > limit else filtered
+            return _normalize_timestamp_fields(out)
 
         # If requested TF isn't present, aggregate from 1-min bars from Redis.
         if timeframe != "1min":
@@ -925,7 +1009,8 @@ async def get_ohlc_data(
             if base_bars:
                 base_filtered = filter_data_by_virtual_time(base_bars, "start_at")
                 aggregated = aggregate_ohlc(base_filtered, timeframe)
-                return aggregated[-limit:] if limit and len(aggregated) > limit else aggregated
+                out = aggregated[-limit:] if limit and len(aggregated) > limit else aggregated
+                return _normalize_timestamp_fields(out)
 
         # Fallback to API (useful if Redis is empty or running remotely)
         response = requests.get(
@@ -935,7 +1020,8 @@ async def get_ohlc_data(
         if response.status_code == 200:
             data = response.json()
             filtered_data = filter_data_by_virtual_time(data, "start_at")
-            return filtered_data[-limit:] if limit and len(filtered_data) > limit else filtered_data
+            out = filtered_data[-limit:] if limit and len(filtered_data) > limit else filtered_data
+            return _normalize_timestamp_fields(out)
 
         if response.status_code == 404 and timeframe != "1min":
             base_limit = _determine_base_limit(timeframe, limit)
@@ -948,7 +1034,8 @@ async def get_ohlc_data(
 
             base_data = filter_data_by_virtual_time(fallback.json(), "start_at")
             filtered_data = aggregate_ohlc(base_data, timeframe)
-            return filtered_data[-limit:] if limit and len(filtered_data) > limit else filtered_data
+            out = filtered_data[-limit:] if limit and len(filtered_data) > limit else filtered_data
+            return _normalize_timestamp_fields(out)
 
         raise HTTPException(status_code=response.status_code, detail=response.text or "Failed to fetch OHLC data")
 
@@ -974,7 +1061,7 @@ async def get_technical_indicators(instrument: str):
             timeout=10
         )
         if response.status_code == 200:
-            return response.json()
+            return _normalize_timestamp_fields(response.json())
         else:
             raise HTTPException(status_code=response.status_code, detail="Failed to fetch technical indicators")
     except Exception as e:
@@ -986,7 +1073,7 @@ async def get_available_instruments():
     try:
         response = requests.get(f"{MARKET_DATA_API_URL}/api/v1/market/instruments", timeout=5)
         if response.status_code == 200:
-            return response.json()
+            return _normalize_timestamp_fields(response.json())
         else:
             return {"instruments": ["BANKNIFTY26FEBFUT"]}
     except Exception as e:
@@ -1002,7 +1089,7 @@ async def get_market_depth(instrument: str):
             timeout=5
         )
         if response.status_code == 200:
-            return response.json()
+            return _normalize_timestamp_fields(response.json())
         
         # If API doesn't have endpoint, read directly from Redis
         r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0, decode_responses=True)
@@ -1016,7 +1103,7 @@ async def get_market_depth(instrument: str):
                 "instrument": instrument,
                 "buy": [],
                 "sell": [],
-                "timestamp": timestamp or datetime.now().isoformat(),
+                "timestamp": _normalize_timestamp_string(timestamp) or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                 "status": "no_data"
             }
         
@@ -1027,7 +1114,7 @@ async def get_market_depth(instrument: str):
             "instrument": instrument,
             "buy": buy_levels[:5],  # Top 5 bids
             "sell": sell_levels[:5],  # Top 5 asks
-            "timestamp": timestamp or datetime.now().isoformat(),
+            "timestamp": _normalize_timestamp_string(timestamp) or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "status": "ok"
         }
         
@@ -1037,7 +1124,7 @@ async def get_market_depth(instrument: str):
             "instrument": instrument,
             "buy": [],
             "sell": [],
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "error": str(e),
             "status": "error"
         }
@@ -1054,7 +1141,7 @@ async def get_options_chain(instrument: str, expiry: str = None):
             timeout=10
         )
         if response.status_code == 200:
-            return response.json()
+            return _normalize_timestamp_fields(response.json())
         
         # If API doesn't have endpoint, read directly from Redis
         r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0, decode_responses=True)
@@ -1071,12 +1158,12 @@ async def get_options_chain(instrument: str, expiry: str = None):
                 "instrument": instrument,
                 "expiry": expiry,
                 "strikes": [],
-                "timestamp": datetime.now().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                 "status": "no_data",
                 "message": "Options chain data not available. This is normal for historical mode."
             }
         
-        return json.loads(options_data)
+        return _normalize_timestamp_fields(json.loads(options_data))
         
     except Exception as e:
         logger.error(f"Error fetching options for {instrument}: {e}")
@@ -1084,7 +1171,7 @@ async def get_options_chain(instrument: str, expiry: str = None):
             "instrument": instrument,
             "expiry": expiry,
             "strikes": [],
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "error": str(e),
             "status": "error"
         }
