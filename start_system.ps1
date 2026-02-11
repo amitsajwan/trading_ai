@@ -92,12 +92,13 @@ Stop-TrackedProcess (Join-Path $runDir 'dashboard.pid')
 
 if ($FreshStart) {
     Write-Host "[start_system] Fresh start enabled: deleting '${execMode}:*' keys only" -ForegroundColor Cyan
-    $cleanup = @"
+    $env:EXEC_MODE_CLEANUP = $execMode
+    $cleanup = @'
 import os
 import redis
 host = os.getenv('REDIS_HOST', 'localhost')
 port = int(os.getenv('REDIS_PORT', '6379'))
-mode = "$execMode"
+mode = os.getenv('EXEC_MODE_CLEANUP', 'historical')
 r = redis.Redis(host=host, port=port, db=0, decode_responses=True)
 cursor = 0
 deleted = 0
@@ -109,12 +110,14 @@ while True:
         break
 if mode == 'historical':
     r.delete('system:historical:ready')
-print(f"[start_system] Deleted keys for mode '{mode}': {deleted}")
-"@
+print("[start_system] Deleted keys for mode '{}': {}".format(mode, deleted))
+'@
     try {
         python -c $cleanup
     } catch {
         Write-Host "[start_system] WARNING: Redis cleanup failed: $($_.Exception.Message)" -ForegroundColor Yellow
+    } finally {
+        Remove-Item Env:EXEC_MODE_CLEANUP -ErrorAction SilentlyContinue
     }
 }
 
