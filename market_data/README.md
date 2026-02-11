@@ -61,21 +61,20 @@ Generate credentials interactively:
 
 - `python -m market_data.runner --mode mock --historical-speed 5`
 
-## 🐳 Docker Compose (market_data only)
+## 🧰 One-command full startup (repo root)
 
-Use the single compose file in `market_data/docker-compose.yml`.
+From the repository root you can start the full stack (ingestion + API + dashboard) with a single command:
 
-### Live mode
+- `./start_all.sh --source kite`
+- `./start_all.sh --source mock`
+- `./start_all.sh --source historical --historical-source zerodha`
 
-- `TRADING_MODE=live docker compose -f market_data/docker-compose.yml up --build`
-
-### Historical mode (Zerodha)
-
-- `TRADING_MODE=historical HISTORICAL_SOURCE=zerodha HISTORICAL_FROM=2026-01-28 docker compose -f market_data/docker-compose.yml up --build`
-
-### Mock mode (synthetic)
-
-- `TRADING_MODE=mock HISTORICAL_SOURCE=synthetic docker compose -f market_data/docker-compose.yml up --build`
+Behavior:
+- Uses one websocket-source contract (`kite` / `mock` / `historical`) while keeping downstream collectors/processors/API/dashboard unchanged.
+- `--source historical` now runs through the same websocket collector path (historical websocket adapter), so switching source does not change downstream flow.
+- `--source kite` includes auth as part of startup via `market_data.runner --prompt-login`.
+- Fresh start is enabled by default and only clears the selected mode namespace (`live:*` or `historical:*`) so live and historical caches remain isolated.
+- Stop all started services with `./stop_all.sh`.
 
 ## 🧪 API health checks
 
@@ -107,36 +106,29 @@ Use the single compose file in `market_data/docker-compose.yml`.
 
 - `python -m market_data.api_service` — run API only
 - `python -m market_data.runner` — supervisor for API + collectors + replay
-- `python -m market_data.runner_historical` — historical replay only
-- `python -m market_data.services.unified_ingestion` — unified ingestion (live/historical/mock)
-- `python -m market_data.services.unified_processor` — mode-agnostic processing (volume enhancer)
+- `python -m market_data.collectors.websocket_tick_collector` — websocket collector (source via `KITE_WS_SOURCE=real|mock|historical`)
+- `python -m market_data.runner_historical` — legacy replay-only path
+- `./start_all.sh --source kite|mock|historical` — recommended full-stack startup from repo root
 
-## 🧱 Simplified structure
+## 🧱 Core runtime files (current)
 
 ```
 market_data/
+├── README.md
 ├── src/market_data/
-│   ├── adapters/
-│   │   └── unified_replayer.py
-│   ├── sources/
-│   │   ├── websocket.py
-│   │   ├── historical.py
-│   │   ├── mock.py
-│   │   └── depth.py
-│   ├── processors/
-│   │   ├── volume_enhancer.py
-│   │   ├── ohlc_builder.py
-│   │   └── indicator_engine.py
-│   ├── services/
-│   │   ├── unified_ingestion.py
-│   │   └── unified_processor.py
+│   ├── runner.py
+│   ├── api_service.py
 │   ├── collectors/
 │   │   ├── websocket_tick_collector.py
 │   │   ├── ltp_collector.py
 │   │   └── depth_collector.py
-│   ├── api_service.py
-│   └── api.py
-└── docker-compose.yml
+│   ├── sources/
+│   │   ├── mock_kite_websocket.py
+│   │   ├── historical_kite_websocket.py
+│   │   └── websocket.py
+│   └── adapters/
+│       └── unified_replayer.py
+└── ../start_all.sh
 ```
 
 ## 🛠️ Troubleshooting
@@ -153,4 +145,4 @@ market_data/
 
 ---
 
-**Last Updated:** February 2026
+**Last Updated:** March 2026

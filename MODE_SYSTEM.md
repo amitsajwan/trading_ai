@@ -1,5 +1,8 @@
 # Live vs Historical Mode - System Architecture
 
+> **Status:** Historical reference. For current runtime commands and source switching use `start_all.sh --help` and `market_data/README.md`.
+
+
 ## 🎯 Overview
 
 The system operates in **two modes** that are **completely isolated** at the Redis layer:

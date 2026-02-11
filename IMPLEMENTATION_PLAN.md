@@ -1,5 +1,8 @@
 # 🎯 Implementation Plan: Mock WebSocket → EventEngine → Bars + Indicators Pipeline
 
+> **Status:** Historical reference. For current runtime commands and source switching use `start_all.sh --help` and `market_data/README.md`.
+
+
 **Goal**: Implement end-to-end event-driven data flow from Mock WebSocket to Dashboard.
 
 **Architecture**: Uses EXISTING event-driven components (EventEngine, BarGenerator, TechnicalIndicatorsService)

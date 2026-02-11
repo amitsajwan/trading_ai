@@ -12,22 +12,23 @@ A standalone dashboard for monitoring market data status and visualization, comp
 
 ## Quick Start
 
-### Docker (Recommended)
+### Recommended (from repo root)
 
 ```bash
-# Start with Docker Compose
-docker-compose up -d market-data-dashboard
-
-# Access at http://localhost:8008/
+./start_all.sh --source mock
+# Dashboard: http://localhost:8000/
 ```
 
-### Local Development
+### Local dashboard-only run
 
 ```bash
 cd market_data_dashboard
 pip install -r requirements.txt
-python app.py
+python start_dashboard.py
+# Dashboard: http://localhost:8000/
 ```
+
+> Note: `python app.py` is still available and defaults to port `8008`, but `start_dashboard.py` is the runtime path used by `start_all.sh`.
 
 ## API Endpoints
 
@@ -42,7 +43,8 @@ python app.py
 
 Environment variables:
 - `MARKET_DATA_API_URL` - Market data API endpoint (default: http://localhost:8004)
-- `MARKET_DATA_DASHBOARD_PORT` - Dashboard port (default: 8008)
+- `DASHBOARD_PORT` - Dashboard port for `start_dashboard.py` (default: `8000`)
+- `MARKET_DATA_DASHBOARD_PORT` - Dashboard port for direct `app.py` run (default: `8008`)
 
 ## Architecture
 

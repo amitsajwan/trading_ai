@@ -44,6 +44,16 @@ try:
 except ImportError:
     REDIS_AVAILABLE = False
 
+try:
+    from market_data.sources.mock_kite_websocket import create_mock_ticker
+except Exception:
+    create_mock_ticker = None
+
+try:
+    from market_data.sources.historical_kite_websocket import create_historical_ticker
+except Exception:
+    create_historical_ticker = None
+
 from market_data.timestamp_utils import get_instrument_channel, create_canonical_timestamp_payload, normalize_timestamp, IST
 
 # Import config
@@ -82,20 +92,22 @@ class WebSocketTickCollector:
             instruments: Dict mapping trading symbols to instrument tokens
             event_engine: Optional EventEngine for publishing tick events (backward compatible)
         """
-        if not KITE_AVAILABLE:
-            raise RuntimeError("kiteconnect library not available")
-
         if not REDIS_AVAILABLE:
             raise RuntimeError("redis library not available")
 
-        # Load credentials
-        self.api_key, self.access_token = self._load_credentials()
-        if not self.api_key or not self.access_token:
-            raise RuntimeError("Kite credentials not available")
+        self.ws_source = os.getenv("KITE_WS_SOURCE", "real").strip().lower()
 
-        # Initialize Kite client
-        self.kite = KiteConnect(api_key=self.api_key)
-        self.kite.set_access_token(self.access_token)
+        # Credentials are required only for real websocket source
+        self.api_key, self.access_token = self._load_credentials()
+        if self.ws_source == "real":
+            if not KITE_AVAILABLE:
+                raise RuntimeError("kiteconnect library not available")
+            if not self.api_key or not self.access_token:
+                raise RuntimeError("Kite credentials not available")
+            self.kite = KiteConnect(api_key=self.api_key)
+            self.kite.set_access_token(self.access_token)
+        else:
+            self.kite = None
 
         # Initialize Redis
         redis_config = {
@@ -126,7 +138,7 @@ class WebSocketTickCollector:
         self.connected = False
         self.running = False
 
-        logger.info(f"WebSocketTickCollector initialized for {len(self.instruments)} instruments")
+        logger.info(f"WebSocketTickCollector initialized for {len(self.instruments)} instruments (source={self.ws_source})")
 
     def _load_credentials(self) -> tuple[str, str]:
         """Load Kite credentials from environment or file."""
@@ -180,8 +192,31 @@ class WebSocketTickCollector:
         logger.info("Starting WebSocket tick collector...")
         self.running = True
 
-        # Initialize KiteTicker
-        self.ticker = KiteTicker(self.api_key, self.access_token)
+        # Initialize upstream ticker based on source contract
+        if self.ws_source == "real":
+            self.ticker = KiteTicker(self.api_key, self.access_token)
+        elif self.ws_source == "mock":
+            if create_mock_ticker is None:
+                raise RuntimeError("Mock websocket source not available")
+            tick_interval = float(os.getenv("MOCK_TICK_INTERVAL", "1.0"))
+            self.ticker = create_mock_ticker(
+                api_key=self.api_key,
+                access_token=self.access_token,
+                tick_interval=tick_interval,
+            )
+        elif self.ws_source == "historical":
+            if create_historical_ticker is None:
+                raise RuntimeError("Historical websocket source not available")
+            tick_interval = float(os.getenv("HISTORICAL_WS_TICK_INTERVAL", "0.25"))
+            historical_source = os.getenv("HISTORICAL_WS_SOURCE", "synthetic")
+            self.ticker = create_historical_ticker(
+                api_key=self.api_key,
+                access_token=self.access_token,
+                data_source=historical_source,
+                tick_interval=tick_interval,
+            )
+        else:
+            raise RuntimeError(f"Unsupported KITE_WS_SOURCE: {self.ws_source}")
 
         # Set up callbacks
         self.ticker.on_ticks = self._on_ticks
@@ -192,7 +227,7 @@ class WebSocketTickCollector:
         # Start WebSocket connection (blocking)
         try:
             self.ticker.connect(threaded=True)
-            logger.info("WebSocket tick collector started")
+            logger.info(f"WebSocket tick collector started using source={self.ws_source}")
         except Exception as e:
             logger.error(f"Failed to start WebSocket collector: {e}")
             self.running = False
@@ -219,7 +254,8 @@ class WebSocketTickCollector:
         # Subscribe to instruments
         try:
             self.ticker.subscribe(self.instrument_tokens)
-            self.ticker.set_mode(self.ticker.MODE_FULL, self.instrument_tokens)
+            if hasattr(self.ticker, "set_mode") and hasattr(self.ticker, "MODE_FULL"):
+                self.ticker.set_mode(self.ticker.MODE_FULL, self.instrument_tokens)
             logger.info(f"Subscribed to {len(self.instrument_tokens)} instruments: {list(self.instruments.values())}")
         except Exception as e:
             logger.error(f"Error subscribing to instruments: {e}")
