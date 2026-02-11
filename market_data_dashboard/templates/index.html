@@ -264,6 +264,90 @@
         // Available timeframes
         const TIMEFRAMES = ['1min', '5min', '15min', '1h', '4h', '1d'];
 
+        let wsFailureCount = 0;
+        let wsConnectedOnce = false;
+        let attemptedLegacyFallback = false;
+        let aggressivePollingHandle = null;
+
+        function startAggressivePolling(reason = '') {
+            if (aggressivePollingHandle) return;
+            console.warn('Switching to polling mode', reason);
+            setWsStatus('Polling fallback', 'text-yellow-700', 'w-3 h-3 rounded-full mr-2 bg-yellow-500');
+            refreshData();
+            aggressivePollingHandle = setInterval(refreshData, 5000);
+        }
+
+        function stopAggressivePolling() {
+            if (!aggressivePollingHandle) return;
+            clearInterval(aggressivePollingHandle);
+            aggressivePollingHandle = null;
+        }
+
+        function recordWsFailure(context = '') {
+            wsFailureCount += 1;
+            console.warn(`WebSocket failure #${wsFailureCount}`, context);
+            if (wsFailureCount >= 3) {
+                startAggressivePolling(context || 'WebSocket unavailable');
+            }
+        }
+
+        // Timestamp parsing helpers (handles ISO, "YYYY-MM-DD HH:mm:ss", and epoch values)
+        function parseTimestamp(value) {
+            if (value === null || value === undefined || value === '') return null;
+
+            if (typeof value === 'number') {
+                const ms = value < 1e12 ? value * 1000 : value;
+                const d = new Date(ms);
+                return Number.isNaN(d.getTime()) ? null : d;
+            }
+
+            if (typeof value !== 'string') return null;
+
+            const raw = value.trim();
+            if (!raw) return null;
+
+            if (/^\d+$/.test(raw)) {
+                const num = Number(raw);
+                const ms = num < 1e12 ? num * 1000 : num;
+                const d = new Date(ms);
+                return Number.isNaN(d.getTime()) ? null : d;
+            }
+
+            let normalized = raw;
+            if (/^\d{4}-\d{2}-\d{2}\s\d{2}:\d{2}:\d{2}/.test(normalized)) {
+                normalized = normalized.replace(' ', 'T');
+            }
+            // Normalize timezone offset from +0530 to +05:30 for Safari/strict parsers
+            normalized = normalized.replace(/([+-]\d{2})(\d{2})$/, '$1:$2');
+
+            let parsed = new Date(normalized);
+            if (!Number.isNaN(parsed.getTime())) return parsed;
+
+            // Last attempt: drop trailing timezone token and parse local time
+            const withoutTz = normalized.replace(/([+-]\d{2}:?\d{2}|Z)$/, '');
+            parsed = new Date(withoutTz);
+            return Number.isNaN(parsed.getTime()) ? null : parsed;
+        }
+
+        function formatDateTime(value, fallback = 'Invalid Date') {
+            const d = parseTimestamp(value);
+            return d ? d.toLocaleString() : fallback;
+        }
+
+        function formatTime(value, fallback = 'Invalid Date') {
+            const d = parseTimestamp(value);
+            return d ? d.toLocaleTimeString() : fallback;
+        }
+
+        let realtimeRefreshTimer = null;
+        function scheduleRealtimeRefresh(delayMs = 1000) {
+            if (realtimeRefreshTimer) return;
+            realtimeRefreshTimer = setTimeout(async () => {
+                realtimeRefreshTimer = null;
+                await updateCharts();
+            }, delayMs);
+        }
+
         function setWsStatus(text, colorClass, iconClass) {
             document.getElementById('ws-status').textContent = text;
             document.getElementById('ws-status').className = colorClass;
@@ -307,6 +391,9 @@
 
             websocket.onopen = function() {
                 console.log('Legacy WebSocket connected');
+                wsConnectedOnce = true;
+                wsFailureCount = 0;
+                stopAggressivePolling();
                 setWsStatus('Connected (legacy)', 'text-green-600', 'w-3 h-3 rounded-full mr-2 bg-green-500');
 
                 if (reconnectInterval) {
@@ -342,6 +429,7 @@
             websocket.onclose = function() {
                 console.log('Legacy WebSocket disconnected');
                 setWsStatus('Disconnected', 'text-red-600', 'w-3 h-3 rounded-full mr-2 bg-red-500');
+                recordWsFailure('legacy close');
                 if (!reconnectInterval) {
                     reconnectInterval = setInterval(() => connectLegacyWebSocket(wsUrl), 5000);
                 }
@@ -350,6 +438,7 @@
             websocket.onerror = function(error) {
                 console.error('Legacy WebSocket error:', error);
                 setWsStatus('Error', 'text-red-600', 'w-3 h-3 rounded-full mr-2 bg-red-500');
+                recordWsFailure('legacy error');
             };
         }
 
@@ -366,6 +455,7 @@
                 stompClient = new StompJs.Client({
                     brokerURL: wsUrl,
                     reconnectDelay: 5000,
+                    connectionTimeout: 4000,
                     heartbeatIncoming: 0,
                     heartbeatOutgoing: 0,
                     debug: function(str) {
@@ -376,6 +466,10 @@
 
                 stompClient.onConnect = function() {
                     console.log('STOMP connected');
+                    wsConnectedOnce = true;
+                    wsFailureCount = 0;
+                    attemptedLegacyFallback = false;
+                    stopAggressivePolling();
                     setWsStatus('Connected', 'text-green-600', 'w-3 h-3 rounded-full mr-2 bg-green-500');
                     subscribeStompTopics();
                 };
@@ -383,11 +477,34 @@
                 stompClient.onWebSocketClose = function() {
                     setWsStatus('Disconnected', 'text-red-600', 'w-3 h-3 rounded-full mr-2 bg-red-500');
                     clearStompSubscriptions();
+                    recordWsFailure('stomp socket close');
+
+                    if (!wsConnectedOnce && !attemptedLegacyFallback) {
+                        attemptedLegacyFallback = true;
+                        try {
+                            if (stompClient && stompClient.active) stompClient.deactivate();
+                        } catch (e) {}
+                        connectLegacyWebSocket(wsUrl);
+                    }
                 };
 
                 stompClient.onStompError = function(frame) {
                     console.error('STOMP error:', frame.headers['message'], frame.body);
                     setWsStatus('Error', 'text-red-600', 'w-3 h-3 rounded-full mr-2 bg-red-500');
+                    recordWsFailure('stomp protocol error');
+                };
+
+                stompClient.onWebSocketError = function(event) {
+                    console.error('STOMP websocket transport error:', event);
+                    recordWsFailure('stomp transport error');
+
+                    if (!attemptedLegacyFallback) {
+                        attemptedLegacyFallback = true;
+                        try {
+                            if (stompClient && stompClient.active) stompClient.deactivate();
+                        } catch (e) {}
+                        connectLegacyWebSocket(wsUrl);
+                    }
                 };
 
                 stompClient.activate();
@@ -457,7 +574,7 @@
                 apiStatusEl.className = 'w-3 h-3 rounded-full mr-2 bg-red-500';
             }
 
-            lastUpdateEl.textContent = new Date(statusData.timestamp).toLocaleString();
+            lastUpdateEl.textContent = formatDateTime(statusData.timestamp);
 
             // Update data validation
             const validation = statusData.data_validation;
@@ -496,8 +613,8 @@
                     <div class="text-sm ${statusColor}">${statusIcon} ${info.status}</div>
                     ${info.data_points ? `<div class="text-sm text-gray-600">${info.data_points} data points</div>` : ''}
                     ${info.latest_price ? `<div class="text-sm font-mono">${info.latest_price.toFixed(2)}</div>` : ''}
-                    ${info.first_timestamp ? `<div class="text-xs text-gray-500">Start: ${new Date(info.first_timestamp).toLocaleString()}</div>` : ''}
-                    ${info.latest_timestamp ? `<div class="text-xs text-gray-500">Latest: ${new Date(info.latest_timestamp).toLocaleString()}</div>` : ''}
+                    ${info.first_timestamp ? `<div class="text-xs text-gray-500">Start: ${formatDateTime(info.first_timestamp)}</div>` : ''}
+                    ${info.latest_timestamp ? `<div class="text-xs text-gray-500">Latest: ${formatDateTime(info.latest_timestamp)}</div>` : ''}
                 `;
 
                 grid.appendChild(card);
@@ -533,7 +650,7 @@
                     return;
                 }
 
-                const labels = bankniftyData.map(d => new Date(d.start_at).toLocaleTimeString());
+                const labels = bankniftyData.map(d => formatTime(d.start_at));
                 const prices = bankniftyData.map(d => d.close);
                 const volumes = bankniftyData.map(d => d.volume / 1000000); // Convert to millions for better scaling
 
@@ -692,7 +809,7 @@
                     
                     // Extract close prices
                     const closes = ohlcData.map(d => d.close);
-                    const labels = ohlcData.map(d => new Date(d.start_at).toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'}));
+                    const labels = ohlcData.map(d => (parseTimestamp(d.start_at)?.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'}) || 'Invalid Date'));
                     
                     // Calculate indicators
                     const rsiValues = calculateRSI(closes, 14);
@@ -848,16 +965,16 @@
             } else if (channel.startsWith('market:ohlc:')) {
                 // OHLC data update - refresh charts
                 console.log('OHLC data update received');
+                scheduleRealtimeRefresh(600);
                 fetchStatus();
             } else if (channel.startsWith('indicators:')) {
                 // Indicators update - refresh indicators chart
                 console.log('Indicators update received');
                 updateIndicatorsChart();
             } else if (channel.startsWith('market:tick:')) {
-                // Tick data update - could update real-time price display
+                // Tick data update - throttle chart refresh to avoid request storms
                 console.log('Tick data update received');
-                // For now, just refresh status
-                fetchStatus();
+                scheduleRealtimeRefresh(400);
             } else if (channel.startsWith('market:depth:')) {
                 // Market depth update
                 console.log('Market depth update received');
@@ -945,9 +1062,8 @@
                 
                 // Update effective time display
                 if (data.effective_time) {
-                    const time = new Date(data.effective_time);
-                    effectiveTime.textContent = time.toLocaleString();
-                    effectiveTime.title = `System: ${new Date(data.system_time).toLocaleString()}\nMode: ${data.mode}\nVirtual Time: ${data.virtual_time_enabled ? 'Enabled' : 'Disabled'}`;
+                    effectiveTime.textContent = formatDateTime(data.effective_time);
+                    effectiveTime.title = `System: ${formatDateTime(data.system_time)}\nMode: ${data.mode}\nVirtual Time: ${data.virtual_time_enabled ? 'Enabled' : 'Disabled'}`;
                 }
                 
                 // Add mode mismatch warning if detected
@@ -995,7 +1111,7 @@
             
             // Update timestamp
             if (depthData.timestamp) {
-                depthTimestampEl.textContent = new Date(depthData.timestamp).toLocaleTimeString();
+                depthTimestampEl.textContent = formatTime(depthData.timestamp);
             }
             
             // Update buy orders
@@ -1052,7 +1168,7 @@
             
             // Update timestamp
             if (optionsData.timestamp) {
-                optionsTimestampEl.textContent = new Date(optionsData.timestamp).toLocaleTimeString();
+                optionsTimestampEl.textContent = formatTime(optionsData.timestamp);
             }
             
             // Show status message
