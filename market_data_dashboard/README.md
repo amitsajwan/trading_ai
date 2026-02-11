@@ -19,6 +19,57 @@ A standalone dashboard for monitoring market data status and visualization, comp
 # Dashboard: http://localhost:8000/
 ```
 
+
+### Full historical replay (specific date + speed)
+
+**Bash (Linux/macOS/WSL):**
+
+```bash
+./start_all.sh --source historical --historical-source zerodha --historical-from 2026-02-11 --historical-speed 1
+```
+
+**PowerShell (Windows):**
+
+```powershell
+.\start_system.ps1 -Source historical -HistoricalSource zerodha -HistoricalFrom 2026-02-11 -HistoricalSpeed 1 -FreshStart
+```
+
+This starts the full chain (**ticks/collector -> market data API -> dashboard**) and replays from `2026-02-11` at `1x` speed.
+
+### Full process (cleanup + start)
+
+Run from repo root.
+
+**PowerShell (Windows):**
+
+```powershell
+.\stop_system.ps1; .\start_system.ps1 -Source historical -HistoricalSource zerodha -HistoricalFrom 2026-02-11 -HistoricalSpeed 1 -FreshStart
+```
+
+This sequence:
+- stops old tracked processes,
+- starts historical source with Zerodha,
+- replays from `2026-02-11` at `1x`,
+- starts API + dashboard.
+
+**Equivalent Bash (WSL/Linux/macOS):**
+
+```bash
+./stop_all.sh && ./start_all.sh --source historical --historical-source zerodha --historical-from 2026-02-11 --historical-speed 1
+```
+
+### Quick verify
+
+**PowerShell:**
+
+```powershell
+iwr http://127.0.0.1:8004/health
+iwr http://127.0.0.1:8000/api/health
+Get-Content .\.run\market_data.log -Tail 100 -Wait
+Get-Content .\.run\dashboard.log -Tail 100 -Wait
+```
+
+
 ### Local dashboard-only run
 
 ```bash

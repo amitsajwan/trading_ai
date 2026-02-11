@@ -16,6 +16,7 @@
 .EXAMPLES
     ./start_system.ps1 -Source kite
     ./start_system.ps1 -Source historical -HistoricalSource synthetic
+    ./start_system.ps1 -Source historical -HistoricalSource zerodha -HistoricalFrom 2026-02-11 -HistoricalSpeed 1
     ./start_system.ps1 -Source mock -FreshStart
 #>
 
@@ -27,6 +28,10 @@ param(
     [string]$Mode,
 
     [string]$HistoricalSource = 'synthetic',
+
+    [string]$HistoricalFrom = '',
+
+    [double]$HistoricalSpeed = 5.0,
 
     [switch]$FreshStart = $true,
 
@@ -122,6 +127,10 @@ if ($wsSource -ne 'real') {
 if ($wsSource -eq 'historical') {
     $env:HISTORICAL_WS_SOURCE = $HistoricalSource
     $env:HISTORICAL_WS_TICK_INTERVAL = '0.25'
+    $env:HISTORICAL_SPEED = [string]$HistoricalSpeed
+    if (-not [string]::IsNullOrWhiteSpace($HistoricalFrom)) {
+        $env:HISTORICAL_FROM = $HistoricalFrom
+    }
 }
 
 Write-Host "[start_system] Starting market_data runner (source=$Source, ws=$wsSource, mode=$execMode)" -ForegroundColor Cyan

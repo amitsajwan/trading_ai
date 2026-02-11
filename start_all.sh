@@ -9,6 +9,7 @@ SOURCE="mock"
 FRESH_START="1"
 HISTORICAL_SOURCE="${HISTORICAL_SOURCE:-synthetic}"
 HISTORICAL_SPEED="${HISTORICAL_SPEED:-5}"
+HISTORICAL_FROM="${HISTORICAL_FROM:-}"
 REDIS_HOST="${REDIS_HOST:-localhost}"
 REDIS_PORT="${REDIS_PORT:-6379}"
 
@@ -21,6 +22,7 @@ Options:
   --fresh-start <0|1>               Delete only selected mode keys before launch (default: 1)
   --historical-source <value>       zerodha|synthetic|/path/file.csv (default: synthetic)
   --historical-speed <float>        Replay speed multiplier (default: 5)
+  --historical-from <YYYY-MM-DD>    Replay start date filter (optional)
   -h, --help                        Show this help
 USAGE
 }
@@ -35,6 +37,8 @@ while [[ $# -gt 0 ]]; do
       HISTORICAL_SOURCE="$2"; shift 2 ;;
     --historical-speed)
       HISTORICAL_SPEED="$2"; shift 2 ;;
+    --historical-from)
+      HISTORICAL_FROM="$2"; shift 2 ;;
     -h|--help)
       usage; exit 0 ;;
     *)
@@ -117,6 +121,10 @@ echo "[start_all] Starting market_data runner (source=$SOURCE, mode=$RUNNER_MODE
   if [[ "$WS_SOURCE" == "historical" ]]; then
     export HISTORICAL_WS_SOURCE="$HISTORICAL_SOURCE"
     export HISTORICAL_WS_TICK_INTERVAL="0.25"
+    export HISTORICAL_SPEED="$HISTORICAL_SPEED"
+    if [[ -n "${HISTORICAL_FROM}" ]]; then
+      export HISTORICAL_FROM="$HISTORICAL_FROM"
+    fi
   fi
   nohup python3 -m market_data.runner "${RUNNER_ARGS[@]}" > "$RUN_DIR/market_data.log" 2>&1 &
   echo $! > "$RUN_DIR/market_data.pid"
