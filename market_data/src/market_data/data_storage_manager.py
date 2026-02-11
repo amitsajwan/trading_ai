@@ -127,46 +127,27 @@ class DataStorageManager:
             return False
 
     def _verify_sorted_set_entry(self, instrument: str, timeframe: str, bar_data: Dict[str, Any]) -> bool:
-        """Verify that a recently stored bar exists in the sorted set by checking recent entries."""
+        """Verify that a recently stored bar exists in the sorted set by checking the exact entry."""
         try:
             sorted_key = get_redis_key(f"ohlc_sorted:{instrument}:{timeframe}")
-            results = self.redis.zrange(sorted_key, -10, -1)
-            if not results:
-                return False
-
-            for json_data in results:
+            
+            # Compute the expected JSON data and score
+            json_data = json.dumps(bar_data, default=str)
+            timestamp_str = bar_data['timestamp']
+            if isinstance(timestamp_str, str):
                 try:
-                    entry = json.loads(json_data)
-                except Exception:
-                    continue
-
-                entry_ts_raw = entry.get('timestamp') or entry.get('start_at')
-                bar_ts_raw = bar_data.get('timestamp') or bar_data.get('start_at')
-
-                try:
-                    def _to_dt(ts_raw):
-                        if ts_raw is None:
-                            return None
-                        if isinstance(ts_raw, (int, float)):
-                            return datetime.fromtimestamp(float(ts_raw), tz=timezone.utc)
-                        if isinstance(ts_raw, str):
-                            return datetime.fromisoformat(ts_raw.replace('Z', '+00:00'))
-                        return None
-
-                    entry_dt = _to_dt(entry_ts_raw)
-                    bar_dt = _to_dt(bar_ts_raw)
-
-                    # If both parsed, accept within 2 seconds tolerance
-                    if entry_dt and bar_dt:
-                        if abs((entry_dt - bar_dt).total_seconds()) < 2 and entry.get('_format_version') == bar_data.get('_format_version'):
-                            return True
-
-                    # Fallback to string equality if parsing failed
-                    if entry.get('timestamp') == bar_data.get('timestamp') and entry.get('_format_version') == bar_data.get('_format_version'):
-                        return True
-                except Exception:
-                    continue
-
+                    dt = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+                    expected_score = dt.timestamp()
+                except ValueError:
+                    expected_score = datetime.now().timestamp()
+            else:
+                expected_score = timestamp_str
+            
+            # Check if the exact member exists with the correct score
+            stored_score = self.redis.zscore(sorted_key, json_data)
+            if stored_score is not None and abs(stored_score - expected_score) < 0.001:
+                return True
+            
             return False
         except Exception as e:
             logger.warning(f"Verification error for sorted set entry: {e}")
