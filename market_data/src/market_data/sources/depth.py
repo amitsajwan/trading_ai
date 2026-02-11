@@ -24,6 +24,12 @@ try:
 except ImportError:
     CredentialsValidator = None
 
+try:
+    from redis_key_manager import get_redis_key
+except Exception:
+    def get_redis_key(key: str, *args, **kwargs):
+        return key
+
 
 def get_symbol_config():
     """Get instrument configuration from environment variables."""
@@ -206,15 +212,15 @@ class DepthCollector:
                 return
 
             timestamp = datetime.now().isoformat()
-            self.r.set(f"depth:{self.key}:buy", json.dumps(buy_depth))
-            self.r.set(f"depth:{self.key}:sell", json.dumps(sell_depth))
-            self.r.set(f"depth:{self.key}:timestamp", timestamp)
+            self.r.set(get_redis_key(f"depth:{self.key}:buy"), json.dumps(buy_depth))
+            self.r.set(get_redis_key(f"depth:{self.key}:sell"), json.dumps(sell_depth))
+            self.r.set(get_redis_key(f"depth:{self.key}:timestamp"), timestamp)
 
             total_bid_qty = sum(level.get("quantity", 0) for level in buy_depth)
             total_ask_qty = sum(level.get("quantity", 0) for level in sell_depth)
 
-            self.r.set(f"depth:{self.key}:total_bid_qty", total_bid_qty)
-            self.r.set(f"depth:{self.key}:total_ask_qty", total_ask_qty)
+            self.r.set(get_redis_key(f"depth:{self.key}:total_bid_qty"), total_bid_qty)
+            self.r.set(get_redis_key(f"depth:{self.key}:total_ask_qty"), total_ask_qty)
 
             print(f"[depth] {self.full_symbol} - {len(buy_depth)} bids ({total_bid_qty}), {len(sell_depth)} asks ({total_ask_qty})")
 

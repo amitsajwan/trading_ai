@@ -55,17 +55,32 @@ except Exception as e:
     print(f"DEBUG: Config import failed: {e}")
     config = None
 
+# Import EventEngine (optional)
+try:
+    from market_data.event_engine import EventEngine, Event, EVENT_TICK
+    from market_data.enhanced_tick import EnhancedMarketTick
+    EVENT_ENGINE_AVAILABLE = True
+except ImportError:
+    EVENT_ENGINE_AVAILABLE = False
+    if not TYPE_CHECKING:
+        EventEngine = None
+        Event = None
+
 logger = logging.getLogger(__name__)
 
 
 class WebSocketTickCollector:
-    """Real-time tick collector using Zerodha KiteTicker WebSocket."""
+    """Real-time tick collector using Zerodha KiteTicker WebSocket.
+    
+    Optionally supports EventEngine for event-driven architecture.
+    """
 
-    def __init__(self, instruments: Optional[Dict[str, str]] = None):
+    def __init__(self, instruments: Optional[Dict[str, str]] = None, event_engine: Optional[EventEngine] = None):
         """Initialize WebSocket tick collector.
 
         Args:
             instruments: Dict mapping trading symbols to instrument tokens
+            event_engine: Optional EventEngine for publishing tick events (backward compatible)
         """
         if not KITE_AVAILABLE:
             raise RuntimeError("kiteconnect library not available")
@@ -90,6 +105,13 @@ class WebSocketTickCollector:
             "decode_responses": True
         }
         self.redis_client = redis.Redis(**redis_config)
+        
+        # Optional EventEngine support (backward compatible)
+        self.event_engine = event_engine
+        if self.event_engine and EVENT_ENGINE_AVAILABLE:
+            logger.info("EventEngine integration enabled")
+        elif event_engine and not EVENT_ENGINE_AVAILABLE:
+            logger.warning("EventEngine requested but not available")
 
         # Instrument configuration
         self.instruments = instruments or self._get_default_instruments()
@@ -291,6 +313,22 @@ class WebSocketTickCollector:
                 json.dumps(tick_data)
             )
 
+            # Optional: Publish to EventEngine if available
+            if self.event_engine and EVENT_ENGINE_AVAILABLE:
+                try:
+                    # Create EnhancedMarketTick for event-driven strategies
+                    enhanced_tick = EnhancedMarketTick(
+                        instrument=symbol,
+                        last_price=tick_data["last_price"],
+                        volume=tick_data["candle_volume"],
+                        cumulative_volume=tick_data["cumulative_volume"],
+                        timestamp=datetime.fromisoformat(tick_data["timestamp"])
+                    )
+                    event = Event(EVENT_TICK, enhanced_tick)
+                    self.event_engine.put(event)
+                except Exception as e:
+                    logger.debug(f"Error publishing to EventEngine: {e}")
+
             logger.info(f"Published tick for {symbol} to channels: {type_specific_channel}, {generic_channel}")
 
         except Exception as e:
@@ -336,14 +374,15 @@ def main():
 
 
 # Re-export canonical implementation from sources (preferred)
-try:
-    from market_data.sources.websocket import WebSocketTickCollector as _WebSocketTickCollector
-    from market_data.sources.websocket import main as _sources_main
-
-    WebSocketTickCollector = _WebSocketTickCollector
-    main = _sources_main
-except Exception:
-    pass
+# DISABLED: sources/websocket.py lacks event_engine support required for event-driven architecture
+# try:
+#     from market_data.sources.websocket import WebSocketTickCollector as _WebSocketTickCollector
+#     from market_data.sources.websocket import main as _sources_main
+#
+#     WebSocketTickCollector = _WebSocketTickCollector
+#     main = _sources_main
+# except Exception:
+#     pass
 
 
 if __name__ == "__main__":

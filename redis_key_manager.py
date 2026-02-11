@@ -1,194 +1,210 @@
-#!/usr/bin/env python3
+"""Redis key management utilities.
+
+Provides consistent Redis key naming across the system.
+
+Key rule (mode isolation): ALL Redis keys must be prefixed with execution mode:
+
+  live:<key>
+  historical:<key>
+  paper:<key>
+
+This prevents cross-contamination between LIVE and HISTORICAL runs.
 """
-Redis Key Manager - Provides mode-based key isolation for LIVE vs HISTORICAL data.
-
-This module ensures that LIVE and HISTORICAL trading modes never mix data by prefixing
-all Redis keys with the execution mode.
-
-Usage:
-    from redis_key_manager import get_redis_key, get_execution_mode
-    
-    # Automatically uses EXECUTION_MODE env var
-    key = get_redis_key("ohlc_sorted:BANKNIFTY:1min")
-    # Returns: "live:ohlc_sorted:BANKNIFTY:1min" or "historical:ohlc_sorted:BANKNIFTY:1min"
-    
-    # Override mode
-    key = get_redis_key("ohlc_sorted:BANKNIFTY:1min", mode="historical")
-"""
-
 import os
+from datetime import datetime, time as dtime, timedelta, timezone
 from typing import Optional
 
-# Valid execution modes
-VALID_MODES = {"live", "historical"}
-DEFAULT_MODE = "live"
+
+_KNOWN_MODE_PREFIXES = ("live:", "historical:", "paper:")
+
+
+def _normalize_mode(raw: Optional[str]) -> Optional[str]:
+    if not raw:
+        return None
+    val = str(raw).strip().lower()
+    # Common aliases
+    if val in {"prod", "production"}:
+        return "live"
+    if val in {"hist", "replay", "backtest"}:
+        return "historical"
+    if val in {"paper", "paper_trading", "sim", "simulation"}:
+        return "paper"
+    if val in {"live", "historical", "paper"}:
+        return val
+    return None
+
+
+def _market_is_open_ist(now_ist: Optional[datetime] = None) -> bool:
+    """Best-effort NSE cash market hours check in IST.
+
+    Notes:
+    - Ignores holidays.
+    - Uses 09:15 to 15:30 IST.
+    """
+    ist = timezone(timedelta(hours=5, minutes=30))
+    now_ist = now_ist or datetime.now(ist)
+
+    # Mon-Fri
+    if now_ist.weekday() >= 5:
+        return False
+
+    start = dtime(hour=9, minute=15)
+    end = dtime(hour=15, minute=30)
+    return start <= now_ist.timetz().replace(tzinfo=None) <= end
 
 
 def get_execution_mode() -> str:
+    """Get current execution mode from environment.
+
+    Env var precedence (first match wins):
+        1) EXECUTION_MODE
+        2) TRADING_MODE
+        3) ZERODHA_MODE
+        4) MODE
+
+    If none are set, we auto-select:
+        - live when market hours are open (IST)
+        - historical otherwise
+    
+    FAIL-FAST: Always returns a valid mode (live/historical/paper), never None.
     """
-    Get current execution mode from environment variable.
-    
-    Returns:
-        str: "live" or "historical" (lowercase)
-    """
-    mode = os.getenv("EXECUTION_MODE", DEFAULT_MODE).lower()
-    
-    if mode not in VALID_MODES:
-        print(f"⚠️  Invalid EXECUTION_MODE='{mode}', defaulting to '{DEFAULT_MODE}'")
-        mode = DEFAULT_MODE
-    
-    return mode
+
+    for var in ("EXECUTION_MODE", "TRADING_MODE", "ZERODHA_MODE", "MODE"):
+        mode = _normalize_mode(os.getenv(var))
+        if mode:
+            return mode
+
+    # Auto mode - ALWAYS returns a valid mode
+    auto_mode = "live" if _market_is_open_ist() else "historical"
+    return auto_mode
 
 
-def get_redis_key(base_key: str, mode: Optional[str] = None) -> str:
-    """
-    Get mode-prefixed Redis key for data isolation.
+def get_redis_key(key_type: str, instrument: Optional[str] = None, **kwargs) -> str:
+    """Generate standardized Redis keys with MANDATORY mode prefix.
     
     Args:
-        base_key: The base Redis key without mode prefix
-                  Example: "ohlc_sorted:BANKNIFTY:1min"
-        mode: Optional mode override ("live" or "historical")
-              If None, uses EXECUTION_MODE environment variable
-    
-    Returns:
-        str: Mode-prefixed key
-             Example: "live:ohlc_sorted:BANKNIFTY:1min"
-    
-    Examples:
-        >>> os.environ["EXECUTION_MODE"] = "live"
-        >>> get_redis_key("ohlc_sorted:BNF:1min")
-        'live:ohlc_sorted:BNF:1min'
+        key_type: Type of key ('tick', 'ohlc', 'ltp', etc.)
+        instrument: Trading instrument symbol
+        **kwargs: Additional parameters for key construction
         
-        >>> get_redis_key("enhanced_ticks:BNF", mode="historical")
-        'historical:enhanced_ticks:BNF'
-    """
-    if mode is None:
-        mode = get_execution_mode()
-    else:
-        mode = mode.lower()
-        if mode not in VALID_MODES:
-            raise ValueError(f"Invalid mode: {mode}. Must be one of {VALID_MODES}")
-    
-    # Don't double-prefix if already prefixed
-    if base_key.startswith(f"{mode}:"):
-        return base_key
-    
-    return f"{mode}:{base_key}"
-
-
-def get_redis_pattern(base_pattern: str, mode: Optional[str] = None) -> str:
-    """
-    Get mode-prefixed Redis key pattern for searching.
-    
-    Args:
-        base_pattern: Redis key pattern (can include *)
-                      Example: "ohlc_sorted:*:1min"
-        mode: Optional mode override
-    
     Returns:
-        str: Mode-prefixed pattern
-             Example: "live:ohlc_sorted:*:1min"
+        Formatted Redis key with mode prefix (live:|historical:|paper:)
+        
+    FAIL-FAST: Always returns a mode-prefixed key. Never returns unprefixed keys.
+        
+    Examples:
+        >>> get_redis_key('tick', 'BANKNIFTY26FEBFUT')
+        'historical:tick:BANKNIFTY26FEBFUT'  # when market closed
+        >>> get_redis_key('ohlc', 'NIFTY', timeframe='5m')
+        'live:ohlc:NIFTY:5m'  # when market open
     """
-    return get_redis_key(base_pattern, mode=mode)
+    mode = get_execution_mode()
+    
+    # FAIL-FAST: Mode must be valid
+    if mode not in ("live", "historical", "paper"):
+        raise ValueError(f"Invalid execution mode: {mode}. Must be 'live', 'historical', or 'paper'.")
+    
+    # Build key parts
+    parts = [key_type]
+    
+    if instrument:
+        parts.append(instrument)
+    
+    # Add additional parameters
+    for key, value in sorted(kwargs.items()):
+        if value is not None:
+            parts.append(str(value))
+    
+    # Join with colon
+    redis_key = ":".join(parts)
+
+    # If already mode-prefixed, return as-is
+    if redis_key.startswith(_KNOWN_MODE_PREFIXES):
+        return redis_key
+
+    # Mandatory mode prefix - ALWAYS applied
+    return f"{mode}:{redis_key}"
 
 
-def strip_mode_prefix(key: str) -> tuple[str, str]:
+def get_redis_pattern(pattern: str, mode: Optional[str] = None) -> str:
+    """Return a Redis scan pattern with mandatory mode prefix.
+
+    Examples:
+      get_redis_pattern('ohlc_sorted:*', mode='live') -> 'live:ohlc_sorted:*'
+      get_redis_pattern('live:ohlc_sorted:*') -> 'live:ohlc_sorted:*'
     """
-    Strip mode prefix from Redis key.
-    
-    Args:
-        key: Redis key with or without mode prefix
-    
-    Returns:
-        tuple: (mode, base_key)
-               Example: ("live", "ohlc_sorted:BNF:1min")
-               If no prefix: (current_mode, original_key)
-    """
-    for mode in VALID_MODES:
-        prefix = f"{mode}:"
-        if key.startswith(prefix):
-            return mode, key[len(prefix):]
-    
-    # No prefix found, return current mode and original key
-    return get_execution_mode(), key
+    if not pattern:
+        pattern = "*"
+    if pattern.startswith(_KNOWN_MODE_PREFIXES):
+        return pattern
+    effective_mode = _normalize_mode(mode) or get_execution_mode()
+    if effective_mode not in ("live", "historical", "paper"):
+        effective_mode = "live"
+    return f"{effective_mode}:{pattern}"
 
 
 def clear_mode_data(redis_client, mode: str) -> int:
+    """Delete all keys for a given mode prefix.
+
+    Returns number of deleted keys.
     """
-    Clear all Redis keys for a specific mode.
-    
-    Args:
-        redis_client: Redis client instance
-        mode: "live" or "historical"
-    
-    Returns:
-        int: Number of keys deleted
-    """
-    if mode not in VALID_MODES:
-        raise ValueError(f"Invalid mode: {mode}. Must be one of {VALID_MODES}")
-    
-    pattern = f"{mode}:*"
-    keys = redis_client.keys(pattern)
-    
-    if keys:
-        count = redis_client.delete(*keys)
-        print(f"✓ Cleared {count} Redis keys for {mode.upper()} mode")
-        return count
-    else:
-        print(f"✓ No {mode.upper()} mode keys to clear")
-        return 0
+    effective_mode = _normalize_mode(mode) or "live"
+    deleted = 0
+    cursor = 0
+    # Use SCAN to avoid blocking Redis.
+    while True:
+        cursor, keys = redis_client.scan(cursor=cursor, match=f"{effective_mode}:*", count=1000)
+        if keys:
+            deleted += int(redis_client.delete(*keys))
+        if cursor == 0:
+            break
+    return deleted
 
 
-# MongoDB collection name helpers
-def get_mongo_collection(base_name: str, mode: Optional[str] = None) -> str:
-    """
-    Get mode-prefixed MongoDB collection name.
+def get_market_tick_key(instrument: str) -> str:
+    """Get Redis key for market ticks.
     
     Args:
-        base_name: Base collection name (e.g., "signals", "trades")
-        mode: Optional mode override
-    
+        instrument: Trading instrument symbol
+        
     Returns:
-        str: Mode-prefixed collection name
-             Example: "live_signals" or "historical_signals"
+        Redis key for tick data
     """
-    if mode is None:
-        mode = get_execution_mode()
-    else:
-        mode = mode.lower()
-        if mode not in VALID_MODES:
-            raise ValueError(f"Invalid mode: {mode}")
+    return get_redis_key('tick', instrument)
+
+
+def get_ohlc_key(instrument: str, timeframe: str) -> str:
+    """Get Redis key for OHLC data.
     
-    # Don't double-prefix
-    if base_name.startswith(f"{mode}_"):
-        return base_name
+    Args:
+        instrument: Trading instrument symbol
+        timeframe: Timeframe (1m, 5m, 15m, 1h, etc.)
+        
+    Returns:
+        Redis key for OHLC data
+    """
+    return get_redis_key('ohlc', instrument, timeframe=timeframe)
+
+
+def get_ltp_key(instrument: str) -> str:
+    """Get Redis key for Last Traded Price.
     
-    return f"{mode}_{base_name}"
+    Args:
+        instrument: Trading instrument symbol
+        
+    Returns:
+        Redis key for LTP
+    """
+    return get_redis_key('ltp', instrument)
 
 
 if __name__ == "__main__":
-    # Test examples
-    import sys
+    # Test key generation
+    print("Redis Key Examples:")
+    print(f"  Tick: {get_market_tick_key('BANKNIFTY26FEBFUT')}")
+    print(f"  OHLC: {get_ohlc_key('BANKNIFTY26FEBFUT', '5m')}")
+    print(f"  LTP: {get_ltp_key('BANKNIFTY26FEBFUT')}")
     
-    print("Redis Key Manager - Test Examples\n")
-    
-    # Test with LIVE mode
-    os.environ["EXECUTION_MODE"] = "live"
-    print(f"EXECUTION_MODE = {os.getenv('EXECUTION_MODE')}")
-    print(f"get_redis_key('ohlc_sorted:BNF:1min') = {get_redis_key('ohlc_sorted:BNF:1min')}")
-    print(f"get_redis_pattern('ohlc_sorted:*:1min') = {get_redis_pattern('ohlc_sorted:*:1min')}")
-    print(f"get_mongo_collection('signals') = {get_mongo_collection('signals')}")
-    
-    print()
-    
-    # Test with HISTORICAL mode override
-    print("Override with mode='historical':")
-    print(f"get_redis_key('ohlc_sorted:BNF:1min', mode='historical') = {get_redis_key('ohlc_sorted:BNF:1min', mode='historical')}")
-    print(f"get_mongo_collection('trades', mode='historical') = {get_mongo_collection('trades', mode='historical')}")
-    
-    print()
-    
-    # Test strip prefix
-    key_with_prefix = "live:ohlc_sorted:BNF:1min"
-    mode, base = strip_mode_prefix(key_with_prefix)
-    print(f"strip_mode_prefix('{key_with_prefix}') = ('{mode}', '{base}')")
+    os.environ['MODE'] = 'historical'
+    print(f"\nHistorical mode:")
+    print(f"  Tick: {get_market_tick_key('BANKNIFTY26FEBFUT')}")

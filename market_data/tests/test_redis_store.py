@@ -5,6 +5,12 @@ import pytest
 from market_data.contracts import MarketTick, OHLCBar
 from market_data.adapters.redis_store import RedisMarketStore
 
+try:
+    from redis_key_manager import get_redis_key
+except Exception:
+    def get_redis_key(key: str, *args, **kwargs):
+        return key
+
 
 class FakeRedis:
     def __init__(self):
@@ -57,7 +63,7 @@ def test_store_and_get_latest_tick_roundtrip():
     assert latest is not None
     assert latest.instrument == "BANKNIFTY26JANFUT"
     assert latest.last_price == pytest.approx(45050.5)
-    assert redis.kv.get("price:BANKNIFTY26JANFUT:latest") == str(45050.5)
+    assert redis.kv.get(get_redis_key("price:BANKNIFTY26JANFUT:latest")) == str(45050.5)
 
 
 def test_store_ohlc_and_retrieve_sorted():

@@ -62,6 +62,7 @@ class OHLCBar:
     close: float
     volume: Optional[int]
     start_at: datetime
+    end_at: datetime
 
 
 class MarketStore(Protocol):

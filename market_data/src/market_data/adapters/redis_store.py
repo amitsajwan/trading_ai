@@ -20,6 +20,15 @@ from ..timestamp_utils import (
     get_market_time
 )
 
+try:
+    from redis_key_manager import get_redis_key, get_redis_pattern
+except Exception:  # pragma: no cover
+    def get_redis_key(key: str, *args, **kwargs):
+        return key
+
+    def get_redis_pattern(pattern: str, mode: Optional[str] = None):
+        return pattern
+
 logger = logging.getLogger(__name__)
 
 # Lazy import to avoid circular dependencies
@@ -54,6 +63,7 @@ def _serialize_ohlc(bar: OHLCBar) -> dict:
         "close": bar.close,
         "volume": bar.volume,
         "start_at": _iso(bar.start_at),
+        "end_at": _iso(bar.end_at),
     }
 
 
@@ -78,8 +88,37 @@ def _parse_tick(payload: Optional[str]) -> Optional[MarketTick]:
 def _parse_ohlc(payload: str) -> Optional[OHLCBar]:
     try:
         data = json.loads(payload)
-        ts_raw = data.get("start_at") or data.get("timestamp")
-        ts = datetime.fromisoformat(ts_raw) if ts_raw else datetime.now()
+        start_ts_raw = data.get("start_at") or data.get("timestamp")
+        end_ts_raw = data.get("end_at")
+        
+        # Handle both Unix timestamp (int) and ISO format (str)
+        if start_ts_raw:
+            if isinstance(start_ts_raw, (int, float)):
+                # Unix timestamp
+                start_ts = datetime.fromtimestamp(start_ts_raw)
+            else:
+                # ISO format string
+                start_ts = datetime.fromisoformat(start_ts_raw)
+        else:
+            start_ts = datetime.now()
+        
+        if end_ts_raw:
+            if isinstance(end_ts_raw, (int, float)):
+                # Unix timestamp
+                end_ts = datetime.fromtimestamp(end_ts_raw)
+            else:
+                # ISO format string
+                end_ts = datetime.fromisoformat(end_ts_raw)
+        else:
+            # Fallback: assume end_at = start_at + 1 minute for 1m bars
+            end_ts = start_ts
+        
+        volume_raw = data.get("volume")
+        if volume_raw is not None:
+            volume = int(volume_raw)
+        else:
+            volume = None
+
         return OHLCBar(
             instrument=data.get("instrument", ""),
             timeframe=data.get("timeframe", ""),
@@ -87,8 +126,9 @@ def _parse_ohlc(payload: str) -> Optional[OHLCBar]:
             high=float(data.get("high", 0)),
             low=float(data.get("low", 0)),
             close=float(data.get("close", 0)),
-            volume=data.get("volume"),
-            start_at=ts,
+            volume=volume,
+            start_at=start_ts,
+            end_at=end_ts,
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to parse ohlc from redis: %s", exc)
@@ -173,7 +213,7 @@ class RedisMarketStore(MarketStore):
             
         try:
             # Get all instruments that have OHLC data
-            ohlc_keys = self.redis.keys("ohlc:*:*")
+            ohlc_keys = self.redis.keys(get_redis_pattern("ohlc:*:*"))
             instruments = set()
             # Coerce to list safely (Mock may return a Mock or non-iterable)
             try:
@@ -182,8 +222,15 @@ class RedisMarketStore(MarketStore):
                 ohlc_iter = []
             for key in ohlc_iter:
                 parts = key.split(":")
-                if len(parts) >= 2:
-                    instruments.add(parts[1])  # Extract instrument name
+                if not parts:
+                    continue
+                # Handle mode-prefixed keys: live:ohlc:INSTRUMENT:...
+                if parts[0] in ("live", "historical", "paper"):
+                    if len(parts) >= 3:
+                        instruments.add(parts[2])
+                else:
+                    if len(parts) >= 2:
+                        instruments.add(parts[1])  # Extract instrument name
             
             # For each instrument, load recent OHLC data and initialize technical service
             for instrument in instruments:
@@ -220,13 +267,13 @@ class RedisMarketStore(MarketStore):
         ts_key = _iso(tick.timestamp)
         payload_json = json.dumps(payload)
         try:
-            self.redis.setex(f"tick:{tick.instrument}:{ts_key}", self._tick_ttl, payload_json)
+            self.redis.setex(get_redis_key(f"tick:{tick.instrument}:{ts_key}"), self._tick_ttl, payload_json)
             # Also store latest tick blob and price for quick lookup
-            self.redis.setex(f"tick:{tick.instrument}:latest", self._tick_ttl, payload_json)
-            self.redis.setex(f"price:{tick.instrument}:latest", self._price_ttl, str(tick.last_price))
-            self.redis.setex(f"price:{tick.instrument}:latest_ts", self._price_ttl, ts_key)
+            self.redis.setex(get_redis_key(f"tick:{tick.instrument}:latest"), self._tick_ttl, payload_json)
+            self.redis.setex(get_redis_key(f"price:{tick.instrument}:latest"), self._price_ttl, str(tick.last_price))
+            self.redis.setex(get_redis_key(f"price:{tick.instrument}:latest_ts"), self._price_ttl, ts_key)
             if tick.volume is not None:
-                self.redis.setex(f"volume:{tick.instrument}:latest", self._price_ttl, str(tick.volume))
+                self.redis.setex(get_redis_key(f"volume:{tick.instrument}:latest"), self._price_ttl, str(tick.volume))
             
             # Publish tick to Redis pub/sub for real-time subscribers (Socket.IO, signal monitoring, etc.)
             try:
@@ -388,7 +435,8 @@ class RedisMarketStore(MarketStore):
                 "high": bar.high,
                 "low": bar.low,
                 "close": bar.close,
-                "volume": bar.volume or 0
+                "volume": bar.volume or 0,
+                "end_at": bar.end_at.isoformat(),
             }
 
             # Store using standardized format
@@ -399,58 +447,34 @@ class RedisMarketStore(MarketStore):
                 use_sorted_sets=True
             )
 
-            if success:
-                logger.debug(f"Stored OHLC bar using DataStorageManager: {bar.instrument}:{bar.timeframe}")
+            if not success:
+                logger.error(f"FAIL-FAST: Failed to store OHLC bar: {bar.instrument}:{bar.timeframe}")
+                raise RuntimeError(f"Failed to store OHLC bar: {bar.instrument}:{bar.timeframe}")
 
-                # Publish OHLC data to Redis pub/sub for real-time WebSocket updates
-                try:
-                    payload = _serialize_ohlc(bar)
-                    # Add mode-aware payload to ALL messages
-                    mode_payload = create_mode_aware_payload(
-                        mode=self._mode,
-                        run_id=self._run_id,
-                        instrument=bar.instrument,
-                        timeframe=bar.timeframe
-                    )
-                    payload.update(mode_payload)
-                    payload_json = json.dumps(payload)
-                    # Publish to specific instrument/timeframe channel
-                    self.redis.publish(f"market:ohlc:{bar.instrument}:{bar.timeframe}", payload_json)
-                except Exception as pub_exc:
-                    logger.debug(f"Failed to publish OHLC to pub/sub: {pub_exc}")
-            else:
-                logger.warning(f"Failed to store OHLC bar using DataStorageManager, falling back to legacy: {bar.instrument}:{bar.timeframe}")
-                self._store_ohlc_legacy(bar)
+            logger.debug(f"Stored OHLC bar: {bar.instrument}:{bar.timeframe}")
+
+            # Publish OHLC data to Redis pub/sub for real-time WebSocket updates
+            try:
+                payload = _serialize_ohlc(bar)
+                # Add mode-aware payload to ALL messages
+                mode_payload = create_mode_aware_payload(
+                    mode=self._mode,
+                    run_id=self._run_id,
+                    instrument=bar.instrument,
+                    timeframe=bar.timeframe
+                )
+                payload.update(mode_payload)
+                payload_json = json.dumps(payload)
+                # Publish to specific instrument/timeframe channel
+                self.redis.publish(f"market:ohlc:{bar.instrument}:{bar.timeframe}", payload_json)
+            except Exception as pub_exc:
+                logger.debug(f"Failed to publish OHLC to pub/sub: {pub_exc}")
 
         except Exception as exc:  # noqa: BLE001
-            logger.error("Error storing ohlc: %s", exc, exc_info=True)
-            # Fallback to legacy storage
-            self._store_ohlc_legacy(bar)
+            logger.error("FAIL-FAST: Error storing ohlc: %s", exc, exc_info=True)
+            raise
 
-    def _store_ohlc_legacy(self, bar: OHLCBar) -> None:
-        """Legacy OHLC storage method for fallback."""
-        payload = _serialize_ohlc(bar)
-        key = f"ohlc:{bar.instrument}:{bar.timeframe}:{payload.get('start_at')}"
-        try:
-            self.redis.setex(key, self._ohlc_ttl, json.dumps(payload))
-            sorted_key = f"ohlc_sorted:{bar.instrument}:{bar.timeframe}"
-            score = bar.start_at.timestamp()
-            self.redis.zadd(sorted_key, {json.dumps(payload): float(score)})
 
-            # Skip cleanup for historical data (older than 1 hour) to preserve historical OHLC data
-            # Only clean up recent/live data that may have expired TTL
-            try:
-                # Handle timezone-aware vs naive datetime comparison
-                now = datetime.now(bar.start_at.tzinfo) if bar.start_at.tzinfo else datetime.now()
-                data_age_hours = (now - bar.start_at).total_seconds() / 3600
-                if data_age_hours < 1.0:  # Only cleanup data less than 1 hour old
-                    cutoff = float((datetime.now() - timedelta(seconds=self._ohlc_ttl)).timestamp())
-                    self.redis.zremrangebyscore(sorted_key, 0, cutoff)
-            except (TypeError, AttributeError):
-                # If timezone handling fails, skip cleanup for safety
-                pass
-        except Exception as exc:
-            logger.error("Error in legacy OHLC storage: %s", exc)
 
     def get_ohlc(self, instrument: str, timeframe: str, limit: int = 100) -> Iterable[OHLCBar]:
         if not self._available:
@@ -475,35 +499,15 @@ class RedisMarketStore(MarketStore):
                     logger.warning(f"Failed to parse OHLC bar: {parse_exc}")
                     continue
 
-            if bars:
-                return bars
-            else:
-                logger.warning("DataStorageManager returned no OHLC bars, falling back to legacy")
-                return self._get_ohlc_legacy(instrument, timeframe, limit)
-
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("Error reading ohlc via DataStorageManager, falling back to legacy: %s", exc)
-            return self._get_ohlc_legacy(instrument, timeframe, limit)
-
-    def _get_ohlc_legacy(self, instrument: str, timeframe: str, limit: int = 100) -> Iterable[OHLCBar]:
-        """Legacy OHLC retrieval method for fallback."""
-        # Normalize timeframe: "minute" -> "1min", "5minute" -> "5min", etc.
-        timeframe_normalized = timeframe.lower()
-        if timeframe_normalized == "minute":
-            timeframe_normalized = "1min"
-        elif timeframe_normalized.endswith("minute"):
-            minutes = timeframe_normalized.replace("minute", "").strip()
-            timeframe_normalized = f"{minutes}min"
-        sorted_key = f"ohlc_sorted:{instrument}:{timeframe_normalized}"
-        try:
-            results = self.redis.zrange(sorted_key, -limit, -1) if limit > 0 else self.redis.zrange(sorted_key, 0, -1)
-            bars = []
-            for payload in results:
-                bar = _parse_ohlc(payload)
-                if bar:
-                    bars.append(bar)
+            if not bars:
+                logger.warning(f"No OHLC bars found for {instrument}:{timeframe}")
+                return []
+            
             return bars
+
         except Exception as exc:  # noqa: BLE001
-            logger.warning("Error reading ohlc (legacy): %s", exc)
-            return []
+            logger.error(f"FAIL-FAST: Error reading ohlc: {exc}", exc_info=True)
+            raise
+
+
 

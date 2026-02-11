@@ -139,6 +139,9 @@ class CandleBuilder:
         """Close a candle and emit OHLCBar."""
         candle = self._active_candles[instrument].pop(candle_key)
         
+        # Calculate end_at as start_time + timeframe
+        end_at = candle.start_time + timedelta(seconds=self.timeframe_seconds)
+        
         ohlc_bar = OHLCBar(
             instrument=candle.instrument,
             timeframe=self.timeframe,
@@ -147,7 +150,8 @@ class CandleBuilder:
             low=candle.low,
             close=candle.close,
             volume=candle.volume,
-            start_at=candle.start_time
+            start_at=candle.start_time,
+            end_at=end_at
         )
         
         # Call callback if provided

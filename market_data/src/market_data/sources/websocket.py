@@ -45,6 +45,12 @@ except ImportError:
 
 from market_data.timestamp_utils import get_instrument_channel, create_canonical_timestamp_payload, normalize_timestamp, IST
 
+try:
+    from redis_key_manager import get_redis_key
+except Exception:
+    def get_redis_key(key: str, *args, **kwargs):
+        return key
+
 # Import config
 try:
     from config import get_config
@@ -318,7 +324,7 @@ class WebSocketTickCollector:
             self.redis_client.publish(raw_channel, json.dumps(tick_data))
 
             self.redis_client.setex(
-                f"websocket:tick:{symbol}:latest",
+                get_redis_key(f"websocket:tick:{symbol}:latest"),
                 300,
                 json.dumps(tick_data)
             )

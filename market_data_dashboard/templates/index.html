@@ -6,6 +6,7 @@
     <title>Market Data Dashboard</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@stomp/stompjs@7.0.0/bundles/stomp.umd.min.js"></script>
 </head>
 <body class="bg-gray-100 min-h-screen">
     <div class="container mx-auto px-4 py-8">
@@ -253,97 +254,148 @@
     <script>
         let bankniftyChart, indicatorsChart;
         let statusData = {};
-        let websocket = null;
-        let reconnectInterval = null;
+        let websocket = null; // legacy fallback
+        let reconnectInterval = null; // legacy fallback
+        let stompClient = null;
+        let stompSubscriptions = [];
         let currentInstrument = null; // Will be set dynamically from API
         let currentTimeframe = '1min'; // Default timeframe
         
         // Available timeframes
         const TIMEFRAMES = ['1min', '5min', '15min', '1h', '4h', '1d'];
 
-        // WebSocket connection for real-time updates
+        function setWsStatus(text, colorClass, iconClass) {
+            document.getElementById('ws-status').textContent = text;
+            document.getElementById('ws-status').className = colorClass;
+            document.getElementById('ws-status-icon').className = iconClass;
+        }
+
+        function clearStompSubscriptions() {
+            try {
+                stompSubscriptions.forEach(s => s.unsubscribe());
+            } catch (e) {
+                // ignore
+            }
+            stompSubscriptions = [];
+        }
+
+        function subscribeStompTopics() {
+            if (!stompClient || !stompClient.connected || !currentInstrument) return;
+            clearStompSubscriptions();
+
+            const sub = (dest) => stompClient.subscribe(dest, (message) => {
+                try {
+                    const payload = JSON.parse(message.body);
+                    if (payload && payload.type === 'message') {
+                        handleRedisMessage(payload);
+                    }
+                } catch (e) {
+                    console.error('Failed to parse STOMP message:', e);
+                }
+            });
+
+            stompSubscriptions.push(sub('/topic/auth/status'));
+            stompSubscriptions.push(sub(`/topic/market/ohlc/${currentInstrument}`));
+            stompSubscriptions.push(sub(`/topic/indicators/${currentInstrument}`));
+            stompSubscriptions.push(sub(`/topic/market/tick/${currentInstrument}`));
+        }
+
+        function connectLegacyWebSocket(wsUrl) {
+            if (websocket && websocket.readyState === WebSocket.OPEN) return;
+
+            websocket = new WebSocket(wsUrl);
+
+            websocket.onopen = function() {
+                console.log('Legacy WebSocket connected');
+                setWsStatus('Connected (legacy)', 'text-green-600', 'w-3 h-3 rounded-full mr-2 bg-green-500');
+
+                if (reconnectInterval) {
+                    clearInterval(reconnectInterval);
+                    reconnectInterval = null;
+                }
+
+                if (currentInstrument) {
+                    websocket.send(JSON.stringify({
+                        action: 'subscribe',
+                        channels: [
+                            'auth:status',
+                            `market:ohlc:${currentInstrument}`,
+                            `indicators:${currentInstrument}`,
+                            `market:tick:${currentInstrument}`
+                        ],
+                        requestId: 'dashboard-subscription'
+                    }));
+                }
+            };
+
+            websocket.onmessage = function(event) {
+                try {
+                    const data = JSON.parse(event.data);
+                    if (data.type === 'message') {
+                        handleRedisMessage(data);
+                    }
+                } catch (e) {
+                    console.error('Error parsing legacy WebSocket message:', e);
+                }
+            };
+
+            websocket.onclose = function() {
+                console.log('Legacy WebSocket disconnected');
+                setWsStatus('Disconnected', 'text-red-600', 'w-3 h-3 rounded-full mr-2 bg-red-500');
+                if (!reconnectInterval) {
+                    reconnectInterval = setInterval(() => connectLegacyWebSocket(wsUrl), 5000);
+                }
+            };
+
+            websocket.onerror = function(error) {
+                console.error('Legacy WebSocket error:', error);
+                setWsStatus('Error', 'text-red-600', 'w-3 h-3 rounded-full mr-2 bg-red-500');
+            };
+        }
+
+        // WebSocket connection for real-time updates (STOMP preferred)
         function connectWebSocket() {
-            if (websocket && websocket.readyState === WebSocket.OPEN) {
-                return; // Already connected
+            const wsUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`;
+
+            // Prefer STOMP if available
+            if (window.StompJs && window.StompJs.Client) {
+                if (stompClient && stompClient.active) return;
+
+                setWsStatus('Connecting...', 'text-blue-600', 'w-3 h-3 rounded-full mr-2 bg-blue-500');
+
+                stompClient = new StompJs.Client({
+                    brokerURL: wsUrl,
+                    reconnectDelay: 5000,
+                    heartbeatIncoming: 0,
+                    heartbeatOutgoing: 0,
+                    debug: function(str) {
+                        // Keep it quiet-ish; comment in if you need wire logs
+                        // console.log(str);
+                    }
+                });
+
+                stompClient.onConnect = function() {
+                    console.log('STOMP connected');
+                    setWsStatus('Connected', 'text-green-600', 'w-3 h-3 rounded-full mr-2 bg-green-500');
+                    subscribeStompTopics();
+                };
+
+                stompClient.onWebSocketClose = function() {
+                    setWsStatus('Disconnected', 'text-red-600', 'w-3 h-3 rounded-full mr-2 bg-red-500');
+                    clearStompSubscriptions();
+                };
+
+                stompClient.onStompError = function(frame) {
+                    console.error('STOMP error:', frame.headers['message'], frame.body);
+                    setWsStatus('Error', 'text-red-600', 'w-3 h-3 rounded-full mr-2 bg-red-500');
+                };
+
+                stompClient.activate();
+                return;
             }
 
-            try {
-                websocket = new WebSocket('ws://localhost:8889/ws');
-                
-                websocket.onopen = function(event) {
-                    console.log('WebSocket connected');
-                    document.getElementById('ws-status').textContent = 'Connected';
-                    document.getElementById('ws-status').className = 'text-green-600';
-                    document.getElementById('ws-status-icon').className = 'w-3 h-3 rounded-full mr-2 bg-green-500';
-                    
-                    // Clear any reconnect interval
-                    if (reconnectInterval) {
-                        clearInterval(reconnectInterval);
-                        reconnectInterval = null;
-                    }
-                    
-                    // Subscribe to market data channels (if instrument is available)
-                    if (currentInstrument) {
-                        websocket.send(JSON.stringify({
-                            action: 'subscribe',
-                            channels: [
-                                'auth:status',
-                                `market:ohlc:${currentInstrument}`,
-                                `indicators:${currentInstrument}`,
-                                `market:tick:${currentInstrument}`,
-                                `market:depth:${currentInstrument}`
-                            ],
-                            requestId: 'dashboard-subscription'
-                        }));
-                    }
-                };
-                
-                websocket.onmessage = function(event) {
-                    try {
-                        const data = JSON.parse(event.data);
-                        console.log('WebSocket message:', data);
-                        
-                        // Handle different message types
-                        if (data.type === 'connected') {
-                            console.log('WebSocket connection confirmed');
-                        } else if (data.type === 'subscribed') {
-                            console.log('Subscribed to channels:', data.channels);
-                        } else if (data.type === 'message') {
-                            // Handle Redis pub/sub message
-                            handleRedisMessage(data);
-                        } else if (data.type === 'error') {
-                            console.error('WebSocket error:', data.message);
-                        }
-                    } catch (e) {
-                        console.error('Error parsing WebSocket message:', e);
-                    }
-                };
-                
-                websocket.onclose = function(event) {
-                    console.log('WebSocket disconnected');
-                    document.getElementById('ws-status').textContent = 'Disconnected';
-                    document.getElementById('ws-status').className = 'text-red-600';
-                    document.getElementById('ws-status-icon').className = 'w-3 h-3 rounded-full mr-2 bg-red-500';
-                    
-                    // Attempt to reconnect
-                    if (!reconnectInterval) {
-                        reconnectInterval = setInterval(connectWebSocket, 5000);
-                    }
-                };
-                
-                websocket.onerror = function(error) {
-                    console.error('WebSocket error:', error);
-                    document.getElementById('ws-status').textContent = 'Error';
-                    document.getElementById('ws-status').className = 'text-red-600';
-                    document.getElementById('ws-status-icon').className = 'w-3 h-3 rounded-full mr-2 bg-red-500';
-                };
-                
-            } catch (e) {
-                console.error('Failed to connect WebSocket:', e);
-                document.getElementById('ws-status').textContent = 'Failed to connect';
-                document.getElementById('ws-status').className = 'text-red-600';
-                document.getElementById('ws-status-icon').className = 'w-3 h-3 rounded-full mr-2 bg-red-500';
-            }
+            // Fallback to legacy JSON protocol
+            connectLegacyWebSocket(wsUrl);
         }
 
         async function fetchStatus() {
@@ -366,6 +418,23 @@
                         }
                         if (priceChartTitle) {
                             priceChartTitle.textContent = `${currentInstrument} Price Chart`;
+                        }
+
+                        // (Re)subscribe to realtime streams now that instrument is known
+                        if (stompClient && stompClient.connected) {
+                            subscribeStompTopics();
+                        }
+                        if (websocket && websocket.readyState === WebSocket.OPEN) {
+                            websocket.send(JSON.stringify({
+                                action: 'subscribe',
+                                channels: [
+                                    'auth:status',
+                                    `market:ohlc:${currentInstrument}`,
+                                    `indicators:${currentInstrument}`,
+                                    `market:tick:${currentInstrument}`
+                                ],
+                                requestId: 'dashboard-subscription'
+                            }));
                         }
                     }
                 }

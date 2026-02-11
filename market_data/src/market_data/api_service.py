@@ -69,6 +69,7 @@ class HealthResponse(BaseModel):
     status: str
     module: str
     timestamp: str
+    mode: str = ""
     dependencies: Dict[str, str]
 
 
@@ -488,8 +489,8 @@ async def health_check():
             from market_data.adapters.historical_tick_replayer import IST
             
             instrument = INSTRUMENT_KEY
-            price_key = f"price:{instrument}:latest"
-            timestamp_key = f"price:{instrument}:latest_ts"
+            price_key = get_redis_key(f"price:{instrument}:latest")
+            timestamp_key = get_redis_key(f"price:{instrument}:latest_ts")
             
             price = redis_client.get(price_key)
             timestamp = redis_client.get(timestamp_key)
@@ -580,10 +581,15 @@ async def health_check():
         # Stale data is not ideal but still usable - keep as healthy but note in dependencies
         status = "healthy"  # Data exists, just not fresh - still functional
     
+    # Get execution mode
+    from redis_key_manager import get_execution_mode
+    mode = get_execution_mode()
+    
     return HealthResponse(
         status=status,
         module="market_data",
         timestamp=datetime.now(IST).isoformat(),
+        mode=mode,
         dependencies=dependencies
     )
 
@@ -750,9 +756,9 @@ async def get_latest_tick(instrument: str):
         volume = None
         
         for key_var in key_variations:
-            price_key = f"price:{key_var}:last_price"
-            timestamp_key = f"price:{key_var}:latest_ts"
-            volume_key = f"price:{key_var}:volume"
+            price_key = get_redis_key(f"price:{key_var}:last_price")
+            timestamp_key = get_redis_key(f"price:{key_var}:latest_ts")
+            volume_key = get_redis_key(f"price:{key_var}:volume")
             
             if not price:
                 price = redis_client.get(price_key)
@@ -797,11 +803,11 @@ async def get_latest_tick(instrument: str):
 def _normalize_timeframe(timeframe: str) -> str:
     tf = timeframe.lower()
     if tf == "minute":
-        return "1min"
+        return "1m"
     if tf.endswith("minute"):
         minutes = tf.replace("minute", "").strip()
         if minutes:
-            return f"{minutes}min"
+            return f"{minutes}m"
     return tf
 
 
@@ -830,6 +836,20 @@ async def _get_ohlc_impl(instrument: str, timeframe: str, limit: int, order: str
                 try:
                     import json
                     bar_data = json.loads(payload)
+                    
+                    # Handle timestamp conversion
+                    ts_raw = bar_data.get("start_at") or bar_data.get("timestamp")
+                    if isinstance(ts_raw, (int, float)):
+                        # Unix timestamp - convert to ISO format
+                        start_at_iso = datetime.fromtimestamp(ts_raw).isoformat() + 'Z'
+                    else:
+                        # Already ISO format or string
+                        try:
+                            dt = datetime.fromisoformat(ts_raw)
+                            start_at_iso = dt.isoformat() + 'Z'
+                        except:
+                            start_at_iso = datetime.now().isoformat() + 'Z'
+                    
                     response.append(
                         OHLCResponse(
                             instrument=bar_data.get("instrument", instrument_upper),
@@ -839,7 +859,7 @@ async def _get_ohlc_impl(instrument: str, timeframe: str, limit: int, order: str
                             low=float(bar_data.get("low", 0)),
                             close=float(bar_data.get("close", 0)),
                             volume=bar_data.get("volume"),
-                            start_at=(bar_data.get("start_at") or bar_data.get("timestamp"))
+                            start_at=start_at_iso
                         )
                     )
                 except Exception:
@@ -865,7 +885,7 @@ async def _get_ohlc_impl(instrument: str, timeframe: str, limit: int, order: str
                 low=bar.low,
                 close=bar.close,
                 volume=bar.volume,
-                start_at=bar.start_at.isoformat()
+                start_at=bar.start_at.isoformat() + 'Z'
             )
             for bar in bars
         ]
@@ -1360,10 +1380,10 @@ async def get_price_data(instrument: str):
         quote_data = None
 
         for key_var in key_variations:
-            price_key = f"price:{key_var}:latest"
-            timestamp_key = f"price:{key_var}:latest_ts"
-            volume_key = f"volume:{key_var}:latest"
-            quote_key = f"price:{key_var}:quote"
+            price_key = get_redis_key(f"price:{key_var}:latest")
+            timestamp_key = get_redis_key(f"price:{key_var}:latest_ts")
+            volume_key = get_redis_key(f"volume:{key_var}:latest")
+            quote_key = get_redis_key(f"price:{key_var}:quote")
 
             if not price:
                 price = redis_client.get(price_key)
@@ -1514,7 +1534,7 @@ async def get_market_depth(instrument: str):
         timestamp = None
         
         # First, try to get depth from websocket tick data (NEW)
-        tick_key = f"websocket:tick:{instrument_clean}:latest"
+        tick_key = get_redis_key(f"websocket:tick:{instrument_clean}:latest")
         tick_data = redis_client.get(tick_key)
         
         if tick_data:
@@ -1536,9 +1556,9 @@ async def get_market_depth(instrument: str):
             
             # Find the data
             for key_var in key_variations:
-                buy_key = f"depth:{key_var}:buy"
-                sell_key = f"depth:{key_var}:sell"
-                ts_key = f"depth:{key_var}:timestamp"
+                buy_key = get_redis_key(f"depth:{key_var}:buy")
+                sell_key = get_redis_key(f"depth:{key_var}:sell")
+                ts_key = get_redis_key(f"depth:{key_var}:timestamp")
                 
                 buy_data = redis_client.get(buy_key)
                 sell_data = redis_client.get(sell_key)

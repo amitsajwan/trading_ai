@@ -6,7 +6,7 @@ This is the same code used for both live and historical data.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, Optional, List, Callable
 from collections import defaultdict
 
@@ -109,6 +109,9 @@ class CandleBuilder:
     def _close_candle(self, instrument: str, candle_key: str) -> OHLCBar:
         candle = self._active_candles[instrument].pop(candle_key)
 
+        # Calculate end_at as start_time + timeframe
+        end_at = candle.start_time + timedelta(seconds=self.timeframe_seconds)
+
         ohlc_bar = OHLCBar(
             instrument=candle.instrument,
             timeframe=self.timeframe,
@@ -117,7 +120,8 @@ class CandleBuilder:
             low=candle.low,
             close=candle.close,
             volume=candle.volume,
-            start_at=candle.start_time
+            start_at=candle.start_time,
+            end_at=end_at
         )
 
         if self.on_candle_close:

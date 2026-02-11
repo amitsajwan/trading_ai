@@ -32,7 +32,13 @@ def build_store(redis_client=None) -> MarketStore:
     """
     if redis_client is not None:
         return RedisMarketStore(redis_client)
-    return InMemoryMarketStore()
+    
+    # Use environment variables for Redis connection
+    import redis
+    redis_host = os.getenv('REDIS_HOST', 'localhost')
+    redis_port = int(os.getenv('REDIS_PORT', '6379'))
+    r = redis.Redis(host=redis_host, port=redis_port, decode_responses=True)
+    return RedisMarketStore(r)
 
 
 def build_historical_replay(store: MarketStore, data_source: str = "synthetic", start_date: Optional[datetime] = None, kite=None, speed: Optional[float] = None, instrument_symbol: Optional[str] = None) -> MarketIngestion:

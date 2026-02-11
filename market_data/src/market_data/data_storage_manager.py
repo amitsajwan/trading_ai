@@ -18,7 +18,27 @@ from typing import Dict, Any, List, Optional, Tuple
 from datetime import datetime, timezone
 import redis
 import os
+import sys
 import time
+
+# Add root directory to path for redis_key_manager
+root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+if root_dir not in sys.path:
+    sys.path.insert(0, root_dir)
+
+try:
+    from redis_key_manager import get_redis_key, get_redis_pattern
+    _HAS_KEY_MANAGER = True
+except ImportError as e:
+    logger.warning(f"Failed to import redis_key_manager: {e}")
+    _HAS_KEY_MANAGER = False
+    # Fallback if redis_key_manager not available
+    def get_redis_key(key: str) -> str:
+        logger.warning(f"Using fallback get_redis_key (no mode prefix): {key}")
+        return key
+
+    def get_redis_pattern(pattern: str, mode: Optional[str] = None) -> str:
+        return pattern
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +129,7 @@ class DataStorageManager:
     def _verify_sorted_set_entry(self, instrument: str, timeframe: str, bar_data: Dict[str, Any]) -> bool:
         """Verify that a recently stored bar exists in the sorted set by checking recent entries."""
         try:
-            sorted_key = f"ohlc_sorted:{instrument}:{timeframe}"
+            sorted_key = get_redis_key(f"ohlc_sorted:{instrument}:{timeframe}")
             results = self.redis.zrange(sorted_key, -10, -1)
             if not results:
                 return False
@@ -131,7 +151,7 @@ class DataStorageManager:
     def _store_in_sorted_set(self, instrument: str, timeframe: str, bar_data: Dict[str, Any]) -> bool:
         """Store OHLC bar in Redis sorted set for efficient range queries."""
         try:
-            sorted_key = f"ohlc_sorted:{instrument}:{timeframe}"
+            sorted_key = get_redis_key(f"ohlc_sorted:{instrument}:{timeframe}")
 
             # Use timestamp as score for sorting
             timestamp_str = bar_data['timestamp']
@@ -177,7 +197,7 @@ class DataStorageManager:
                 key_timestamp = str(int(timestamp_str))
 
             key_suffix = '_legacy' if legacy else ''
-            redis_key = f"ohlc:{instrument}:{timeframe}:{key_timestamp}{key_suffix}"
+            redis_key = get_redis_key(f"ohlc:{instrument}:{timeframe}:{key_timestamp}{key_suffix}")
 
             # Store JSON data
             json_data = json.dumps(bar_data, default=str)
@@ -208,24 +228,20 @@ class DataStorageManager:
 
         normalized_timeframe = self._normalize_timeframe(timeframe)
 
-        # Try preferred method first
-        if prefer_sorted_sets:
-            bars = self._get_from_sorted_set(instrument, normalized_timeframe, limit)
-            if bars:
-                return bars
-
-        # Fallback to individual keys
-        bars = self._get_from_individual_keys(instrument, normalized_timeframe, limit)
-        if bars:
-            return bars
-
-        logger.warning(f"No OHLC data found for {instrument}:{normalized_timeframe}")
-        return []
+        # Only use sorted sets - fail-fast, no fallbacks
+        bars = self._get_from_sorted_set(instrument, normalized_timeframe, limit)
+        
+        if not bars:
+            logger.warning(f"No OHLC data found for {instrument}:{normalized_timeframe}")
+            return []
+        
+        return bars
 
     def _get_from_sorted_set(self, instrument: str, timeframe: str, limit: int) -> List[Dict[str, Any]]:
         """Retrieve OHLC bars from Redis sorted set."""
         try:
-            sorted_key = f"ohlc_sorted:{instrument}:{timeframe}"
+            # Use get_redis_key to handle mode prefixes (live:, historical:, paper:)
+            sorted_key = get_redis_key(f"ohlc_sorted:{instrument}:{timeframe}")
 
             # Get latest N entries (highest scores)
             results = self.redis.zrange(sorted_key, -limit, -1)
@@ -242,60 +258,15 @@ class DataStorageManager:
                     continue
 
             # Sort by timestamp (should already be sorted, but ensure)
-            bars.sort(key=lambda x: x.get('timestamp', ''))
+            # Support both 'timestamp' and 'start_at' fields
+            bars.sort(key=lambda x: x.get('timestamp') or x.get('start_at') or 0)
             return bars
 
         except Exception as e:
             logger.error(f"Failed to get from sorted set: {e}")
             return []
 
-    def _get_from_individual_keys(self, instrument: str, timeframe: str, limit: int) -> List[Dict[str, Any]]:
-        """Retrieve OHLC bars from individual Redis keys (legacy format)."""
-        try:
-            pattern = f"ohlc:{instrument}:{timeframe}:*"
-            keys = self.redis.keys(pattern) or []
-
-            # Try to coerce to a list safely
-            try:
-                keys_list = list(keys)
-            except Exception:
-                keys_list = []
-
-            if not keys_list:
-                return []
-
-            entries = []  # (timestamp_epoch, bar_dict)
-            for key in keys_list:
-                try:
-                    json_data = self.redis.get(key)
-                    if not json_data:
-                        continue
-                    bar = json.loads(json_data)
-                    ts = bar.get('timestamp') or bar.get('start_at') or ''
-                    ts_epoch = 0
-                    if ts:
-                        try:
-                            dt = datetime.fromisoformat(ts.replace('Z', '+00:00'))
-                            ts_epoch = dt.timestamp()
-                        except Exception:
-                            ts_epoch = 0
-                    entries.append((ts_epoch, bar))
-                except Exception as e:
-                    logger.warning(f"Failed to parse OHLC data from key {key}: {e}")
-                    continue
-
-            # Sort by timestamp descending (latest first) and take latest N entries
-            entries.sort(key=lambda x: x[0], reverse=True)
-            top_entries = entries[:limit]
-
-            # Return bars sorted oldest-first for consistent API
-            top_entries.sort(key=lambda x: x[0])
-            bars = [entry[1] for entry in top_entries]
-            return bars
-
-        except Exception as e:
-            logger.error(f"Failed to get from individual keys: {e}")
-            return []
+    # REMOVED: Legacy individual keys method - use sorted sets only
 
     def migrate_ohlc_data(self, instrument: str, timeframe: str) -> Tuple[int, int]:
         """Migrate OHLC data from individual keys to sorted sets.
@@ -306,7 +277,7 @@ class DataStorageManager:
         logger.info(f"Starting OHLC data migration for {instrument}:{timeframe}")
 
         # Get all individual keys
-        pattern = f"ohlc:{instrument}:{timeframe}:*"
+        pattern = get_redis_key(f"ohlc:{instrument}:{timeframe}:*")
         keys = self.redis.keys(pattern)
 
         migrated = 0
@@ -351,12 +322,12 @@ class DataStorageManager:
 
         try:
             # Check sorted set
-            sorted_key = f"ohlc_sorted:{instrument}:{timeframe}"
+            sorted_key = get_redis_key(f"ohlc_sorted:{instrument}:{timeframe}")
             sorted_count = self.redis.zcount(sorted_key, '-inf', '+inf')
             result['sorted_set_count'] = sorted_count
 
             # Check individual keys
-            pattern = f"ohlc:{instrument}:{timeframe}:*"
+            pattern = get_redis_key(f"ohlc:{instrument}:{timeframe}:*")
             individual_keys = self.redis.keys(pattern)
             result['individual_keys_count'] = len(individual_keys)
 
@@ -378,7 +349,7 @@ class DataStorageManager:
             return "1min"
         elif timeframe.endswith("minute"):
             minutes = timeframe.replace("minute", "").strip()
-            return f"{minutes}min"
+            return f"{minutes}m"
         return timeframe
 
     def cleanup_old_data(self, days_to_keep: int = 30) -> int:
@@ -388,7 +359,7 @@ class DataStorageManager:
         cleaned = 0
         try:
             # Clean up old sorted sets
-            sorted_keys = self.redis.keys("ohlc_sorted:*")
+            sorted_keys = self.redis.keys(get_redis_pattern("ohlc_sorted:*"))
             for key in sorted_keys:
                 # Remove entries older than cutoff
                 removed = self.redis.zremrangebyscore(key, '-inf', cutoff_timestamp)

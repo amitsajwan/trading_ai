@@ -1,9 +1,19 @@
 import os
+import sys
 import time
 import pytest
 import redis
 
+# Add parent directory to path for imports
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+
 from config import get_config
+
+try:
+    from redis_key_manager import get_redis_key
+except Exception:
+    def get_redis_key(key: str, *args, **kwargs):
+        return key
 
 
 def redis_available(cfg):
@@ -41,9 +51,9 @@ def test_collectors_write_keys_with_synthetic_fallback(monkeypatch):
     ltp_collector.collect_once()
 
     price_key = cfg.redis_price_key
-    last_price = r.get(f"{price_key}:last_price")
-    latest_ts = r.get(f"{price_key}:latest_ts")
-    quote = r.get(f"{price_key}:quote")
+    last_price = r.get(get_redis_key(f"{price_key}:last_price"))
+    latest_ts = r.get(get_redis_key(f"{price_key}:latest_ts"))
+    quote = r.get(get_redis_key(f"{price_key}:quote"))
 
     assert last_price is not None
     assert latest_ts is not None
@@ -56,9 +66,9 @@ def test_collectors_write_keys_with_synthetic_fallback(monkeypatch):
 
     # Use the collector's computed key (collector may use different default symbol than config)
     depth_key = f"depth:{depth_collector.key}"
-    buy = r.get(f"{depth_key}:buy")
-    sell = r.get(f"{depth_key}:sell")
-    ts = r.get(f"{depth_key}:timestamp")
+    buy = r.get(get_redis_key(f"{depth_key}:buy"))
+    sell = r.get(get_redis_key(f"{depth_key}:sell"))
+    ts = r.get(get_redis_key(f"{depth_key}:timestamp"))
 
     assert buy is not None
     assert sell is not None
@@ -66,13 +76,13 @@ def test_collectors_write_keys_with_synthetic_fallback(monkeypatch):
 
     # Clean up keys (best effort)
     try:
-        r.delete(f"{price_key}:last_price")
-        r.delete(f"{price_key}:latest_ts")
-        r.delete(f"{price_key}:quote")
-        r.delete(f"{depth_key}:buy")
-        r.delete(f"{depth_key}:sell")
-        r.delete(f"{depth_key}:timestamp")
-        r.delete(f"{depth_key}:total_bid_qty")
-        r.delete(f"{depth_key}:total_ask_qty")
+        r.delete(get_redis_key(f"{price_key}:last_price"))
+        r.delete(get_redis_key(f"{price_key}:latest_ts"))
+        r.delete(get_redis_key(f"{price_key}:quote"))
+        r.delete(get_redis_key(f"{depth_key}:buy"))
+        r.delete(get_redis_key(f"{depth_key}:sell"))
+        r.delete(get_redis_key(f"{depth_key}:timestamp"))
+        r.delete(get_redis_key(f"{depth_key}:total_bid_qty"))
+        r.delete(get_redis_key(f"{depth_key}:total_ask_qty"))
     except Exception:
         pass
