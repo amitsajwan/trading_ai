@@ -146,6 +146,10 @@ class UnifiedHistoricalReplayer(MarketIngestion):
             points = self._load_points_from_file()
             return "points", points
 
+        if self.data_source == "zerodha":
+            points = self._load_zerodha_points()
+            return "points", points
+
         ticks = self._load_ticks()
         return "ticks", ticks
 
@@ -373,6 +377,32 @@ class UnifiedHistoricalReplayer(MarketIngestion):
             return []
 
     def _load_from_zerodha(self) -> List[MarketTick]:
+        """Backward-compatible tick loader.
+
+        Prefer _load_zerodha_points() for candle-paced replay so bars are
+        written progressively rather than all at once.
+        """
+        points = self._load_zerodha_points()
+        ticks: List[MarketTick] = []
+        for point in points:
+            ts = point.get("timestamp")
+            if isinstance(ts, str):
+                ts = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+            if not isinstance(ts, datetime):
+                continue
+            ticks.append(
+                MarketTick(
+                    instrument=point.get("instrument") or self.instrument_symbol,
+                    timestamp=ts,
+                    last_price=float(point.get("close", 0.0)),
+                    volume=int(point.get("volume", 0) or 0),
+                )
+            )
+
+        ticks.sort(key=lambda t: t.timestamp)
+        return ticks
+
+    def _load_zerodha_points(self) -> List[Dict[str, Any]]:
         if not self.kite:
             logger.error("Kite client not provided for Zerodha historical data")
             return []
@@ -428,7 +458,7 @@ class UnifiedHistoricalReplayer(MarketIngestion):
                 logger.info("Futures volume is zero, attempting to fetch from spot index...")
                 spot_volumes = self._fetch_spot_volume(self.from_date, self.to_date, self.interval)
 
-            ticks: List[MarketTick] = []
+            points: List[Dict[str, Any]] = []
             for candle in historical_data:
                 timestamp = candle.get("date")
                 if isinstance(timestamp, str):
@@ -454,50 +484,21 @@ class UnifiedHistoricalReplayer(MarketIngestion):
                     if timestamp_key in spot_volumes:
                         volume = spot_volumes[timestamp_key]
 
-                normalized_instrument = self._resolve_instrument_key()
-
-                end_at = timestamp + timedelta(minutes=1)
-                ohlc_bar = OHLCBar(
-                    instrument=normalized_instrument,
-                    timeframe="1min",
-                    open=open_price,
-                    high=high_price,
-                    low=low_price,
-                    close=close_price,
-                    volume=volume,
-                    start_at=timestamp,
-                    end_at=end_at,
-                )
-                self.store.store_ohlc(ohlc_bar)
-
-                if self.on_candle_callback:
-                    try:
-                        self.on_candle_callback(
-                            {
-                                "timestamp": timestamp,
-                                "open": open_price,
-                                "high": high_price,
-                                "low": low_price,
-                                "close": close_price,
-                                "volume": volume,
-                                "instrument": normalized_instrument,
-                            }
-                        )
-                    except Exception as e:
-                        logger.error(f"Error in candle callback: {e}")
-
-                ticks.append(
-                    MarketTick(
-                        instrument=normalized_instrument,
-                        timestamp=timestamp,
-                        last_price=close_price,
-                        volume=volume,
-                    )
+                points.append(
+                    {
+                        "timestamp": timestamp,
+                        "open": open_price,
+                        "high": high_price,
+                        "low": low_price,
+                        "close": close_price,
+                        "volume": volume,
+                        "instrument": self._resolve_instrument_key(),
+                    }
                 )
 
-            ticks.sort(key=lambda t: t.timestamp)
-            logger.info(f"Converted {len(historical_data)} candles to {len(ticks)} ticks")
-            return ticks
+            points.sort(key=lambda p: p["timestamp"])
+            logger.info(f"Loaded {len(points)} Zerodha candles for paced replay")
+            return points
 
         except Exception as e:
             logger.error(f"Error loading historical data from Zerodha: {e}", exc_info=True)
