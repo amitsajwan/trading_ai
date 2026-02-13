@@ -50,6 +50,13 @@ except Exception:
     create_mock_ticker = None
 
 try:
+    from market_data.adapters.redis_store import RedisMarketStore
+    from market_data.contracts import MarketTick
+except Exception:
+    RedisMarketStore = None
+    MarketTick = None
+
+try:
     from market_data.sources.historical_kite_websocket import create_historical_ticker
 except Exception:
     create_historical_ticker = None
@@ -118,6 +125,14 @@ class WebSocketTickCollector:
         }
         self.redis_client = redis.Redis(**redis_config)
         
+        # Initialize Redis store for automatic OHLC building
+        if RedisMarketStore:
+            self.store = RedisMarketStore(self.redis_client, mode="live")
+            logger.info("Redis store initialized for automatic OHLC building")
+        else:
+            self.store = None
+            logger.warning("Redis store not available - OHLC building disabled")
+        
         # Optional EventEngine support (backward compatible)
         self.event_engine = event_engine
         if self.event_engine and EVENT_ENGINE_AVAILABLE:
@@ -179,9 +194,10 @@ class WebSocketTickCollector:
             except Exception as e:
                 logger.error(f"Error fetching instruments: {e}")
         
-        # Fallback to hardcoded (current valid BankNifty futures token)
-        logger.warning("Using fallback BankNifty futures token for live data")
-        return {"15148802": "BANKNIFTY26FEBFUT"}  # Current valid token for Feb expiry
+        # Fallback to hardcoded (use config symbol with dummy token for mock)
+        symbol = config.instrument_symbol if config else "BANKNIFTY26FEBFUT"
+        logger.warning(f"Using fallback token for {symbol} (mock mode)")
+        return {"15148802": symbol}
 
     def start(self):
         """Start the WebSocket tick collector."""
@@ -200,8 +216,6 @@ class WebSocketTickCollector:
                 raise RuntimeError("Mock websocket source not available")
             tick_interval = float(os.getenv("MOCK_TICK_INTERVAL", "1.0"))
             self.ticker = create_mock_ticker(
-                api_key=self.api_key,
-                access_token=self.access_token,
                 tick_interval=tick_interval,
             )
         elif self.ws_source == "historical":
@@ -314,6 +328,21 @@ class WebSocketTickCollector:
                 original_timestamp=kite_timestamp if kite_timestamp else None
             )
         }
+
+        # Store tick in Redis store for automatic OHLC building
+        if self.store and MarketTick:
+            market_tick = MarketTick(
+                instrument=symbol,
+                timestamp=market_timestamp,
+                last_price=float(last_price),
+                volume=candle_volume,
+                open_interest=tick.get("oi") or tick.get("open_interest"),
+                oi_day_high=tick.get("oi_day_high"),
+                oi_day_low=tick.get("oi_day_low"),
+                original_timestamp=kite_datetime if kite_timestamp else None
+            )
+            self.store.store_tick(market_tick)
+            logger.debug(f"Stored tick in Redis store: {symbol} @ {last_price}")
 
         # Publish to Redis pub/sub channels
         self._publish_tick(tick_data)

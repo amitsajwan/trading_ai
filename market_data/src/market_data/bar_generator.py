@@ -141,6 +141,7 @@ class BarGenerator:
                 low=tick.last_price,
                 close=tick.last_price,
                 volume=0,
+                open_interest=tick.open_interest,
                 start_at=self._floor_to_minute(tick.timestamp),
                 end_at=tick.timestamp
             )
@@ -151,6 +152,8 @@ class BarGenerator:
             self.bar.low = min(self.bar.low, tick.last_price)
             self.bar.close = tick.last_price
             self.bar.end_at = tick.timestamp
+            if tick.open_interest is not None:
+                self.bar.open_interest = tick.open_interest
             logger.info(f"BarGenerator: Updated existing bar, close={self.bar.close}")
         
         # Update volume (handle cumulative volume from exchange)
@@ -158,6 +161,10 @@ class BarGenerator:
             volume_change = tick.volume - self.last_tick.volume
             if volume_change > 0:
                 self.bar.volume += volume_change
+
+        # Always keep latest open interest on the bar
+        if self.bar and tick.open_interest is not None:
+            self.bar.open_interest = tick.open_interest
         
         self.last_tick = tick
     
@@ -194,6 +201,7 @@ class BarGenerator:
                 low=bar.low,
                 close=bar.close,
                 volume=bar.volume,
+                open_interest=bar.open_interest,
                 start_at=dt,
                 end_at=bar.end_at
             )
@@ -204,6 +212,8 @@ class BarGenerator:
             self.window_bar.close = bar.close
             self.window_bar.volume += bar.volume
             self.window_bar.end_at = bar.end_at
+            if bar.open_interest is not None:
+                self.window_bar.open_interest = bar.open_interest
         
         # Check if window completed
         if not (bar.start_at.minute + 1) % self.window:
@@ -228,6 +238,7 @@ class BarGenerator:
                 low=bar.low,
                 close=bar.close,
                 volume=bar.volume,
+                open_interest=bar.open_interest,
                 start_at=dt,
                 end_at=bar.end_at
             )
@@ -242,6 +253,8 @@ class BarGenerator:
             self.hour_bar.close = bar.close
             self.hour_bar.volume += bar.volume
             self.hour_bar.end_at = bar.end_at
+            if bar.open_interest is not None:
+                self.hour_bar.open_interest = bar.open_interest
             
             finished_bar = self.hour_bar
             self.hour_bar = None
@@ -259,6 +272,7 @@ class BarGenerator:
                 low=bar.low,
                 close=bar.close,
                 volume=bar.volume,
+                open_interest=bar.open_interest,
                 start_at=dt,
                 end_at=bar.end_at
             )

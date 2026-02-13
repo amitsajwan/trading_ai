@@ -162,9 +162,11 @@ class UnifiedHistoricalReplayer(MarketIngestion):
 
         logger.info(f"Loaded {len(ticks)} ticks, starting replay...")
 
-        # If running synthetic replay, pre-populate OHLC bars in the store so
-        # in-memory stores (which don't build candles automatically) have data
-        if self.data_source == "synthetic":
+        # If running synthetic replay AND we're doing an instant-load run (speed<=0),
+        # pre-populate OHLC bars in the store so consumers see charts immediately.
+        # For paced/streaming runs (speed>0), avoid pre-populating so OHLC builds
+        # and pub/sub messages arrive over time.
+        if self.data_source == "synthetic" and not (self.speed and self.speed > 0):
             try:
                 synthetic_bars = self._ticks_to_bars(ticks)
                 for bar in synthetic_bars:
@@ -186,8 +188,11 @@ class UnifiedHistoricalReplayer(MarketIngestion):
             self.rebase_offset = target - first_ts
             logger.info(f"Rebase enabled: offset={self.rebase_offset}")
 
-        # Load all ticks instantly (speed is only for test/dev pacing)
-        logger.info(f"Loading {len(ticks)} ticks instantly (speed={self.speed})...")
+        paced = bool(self.speed and self.speed > 0)
+        if paced:
+            logger.info(f"Streaming {len(ticks)} ticks (speed={self.speed} ticks/sec)...")
+        else:
+            logger.info(f"Loading {len(ticks)} ticks instantly (speed={self.speed})...")
 
         for tick in ticks:
             if not self.running:
@@ -219,6 +224,13 @@ class UnifiedHistoricalReplayer(MarketIngestion):
                     f"Loaded {self.ticks_replayed}/{self.ticks_loaded} ticks "
                     f"({self.ticks_replayed*100//self.ticks_loaded}%)"
                 )
+
+            # Pace streaming mode
+            if paced:
+                try:
+                    await asyncio.sleep(1.0 / float(self.speed))
+                except Exception:
+                    await asyncio.sleep(0)
 
         if ticks:
             logger.info(
@@ -252,9 +264,13 @@ class UnifiedHistoricalReplayer(MarketIngestion):
         if self.data_source == "synthetic":
             logger.info("Generating synthetic ticks for 'synthetic' data_source")
             start_time = self.rebase_to or datetime.now(IST)
+            try:
+                duration_minutes = int(os.getenv("SYNTHETIC_DURATION_MINUTES", "390"))
+            except Exception:
+                duration_minutes = 390
             ticks = self._generate_synthetic_ticks(
                 start_time=start_time,
-                duration_minutes=60,
+                duration_minutes=duration_minutes,
                 base_price=45000.0,
                 instrument=self.instrument_symbol,
             )
@@ -396,6 +412,7 @@ class UnifiedHistoricalReplayer(MarketIngestion):
                     timestamp=ts,
                     last_price=float(point.get("close", 0.0)),
                     volume=int(point.get("volume", 0) or 0),
+                    open_interest=point.get("oi") or point.get("open_interest"),
                 )
             )
 
@@ -422,7 +439,7 @@ class UnifiedHistoricalReplayer(MarketIngestion):
                 f"({self.from_date} to {self.to_date}, interval={self.interval})"
             )
 
-            use_continuous = False
+            use_continuous = self.instrument_symbol.upper().endswith('FUT')
 
             try:
                 historical_data = self.kite.historical_data(
@@ -445,6 +462,11 @@ class UnifiedHistoricalReplayer(MarketIngestion):
                     )
                 else:
                     raise
+
+            logger.info(f"Kite API returned {len(historical_data) if historical_data else 0} candles")
+            if historical_data:
+                sample = historical_data[0]
+                logger.info(f"Sample candle: volume={sample.get('volume', 'N/A')}, date={sample.get('date', 'N/A')}")
 
             if not historical_data:
                 logger.warning("No historical data returned from Zerodha")
@@ -478,6 +500,7 @@ class UnifiedHistoricalReplayer(MarketIngestion):
                 low_price = float(candle.get("low", 0))
                 close_price = float(candle.get("close", 0))
                 volume = int(candle.get("volume", 0))
+                open_interest = candle.get("oi") if candle.get("oi") is not None else candle.get("open_interest")
 
                 if volume == 0 and spot_volumes:
                     timestamp_key = timestamp.replace(second=0, microsecond=0).isoformat()
@@ -492,6 +515,7 @@ class UnifiedHistoricalReplayer(MarketIngestion):
                         "low": low_price,
                         "close": close_price,
                         "volume": volume,
+                        "oi": open_interest,
                         "instrument": self._resolve_instrument_key(),
                     }
                 )
@@ -526,6 +550,36 @@ class UnifiedHistoricalReplayer(MarketIngestion):
                 if "NIFTYBANK" not in symbol_variations:
                     symbol_variations.append("NIFTYBANK")
 
+            # For futures contracts, search NFO first for exact trading symbol or current active
+            if symbol_upper.endswith('FUT'):
+                instruments = self.kite.instruments("NFO")
+                # First try exact match
+                for inst in instruments:
+                    tradingsymbol = inst.get("tradingsymbol", "").upper()
+                    if tradingsymbol == symbol_upper:
+                        token = inst.get("instrument_token")
+                        if token:
+                            logger.info(
+                                f"Found instrument token {token} for {instrument_symbol} "
+                                f"(matched: {inst.get('tradingsymbol')} in NFO)"
+                            )
+                            return token
+                # If not found, find the current active FUT for the base symbol
+                base_symbol = symbol_upper.replace('FUT', '').replace('26', '').replace('24', '')  # Remove year and FUT
+                fut_instruments = [inst for inst in instruments if inst.get("instrument_type") == "FUT" and inst.get("name", "").upper() == base_symbol]
+                if fut_instruments:
+                    # Sort by expiry date descending to get the latest
+                    fut_instruments.sort(key=lambda x: x.get("expiry", ""), reverse=True)
+                    inst = fut_instruments[0]
+                    token = inst.get("instrument_token")
+                    if token:
+                        logger.info(
+                            f"Found current active instrument token {token} for {instrument_symbol} "
+                            f"(matched: {inst.get('tradingsymbol')} in NFO)"
+                        )
+                        return token
+
+            # Search NSE for indices
             instruments = self.kite.instruments("NSE")
             for inst in instruments:
                 tradingsymbol = inst.get("tradingsymbol", "").upper()
@@ -537,24 +591,25 @@ class UnifiedHistoricalReplayer(MarketIngestion):
                         if token:
                             logger.info(
                                 f"Found instrument token {token} for {instrument_symbol} "
-                                f"(matched: {inst.get('tradingsymbol')})"
+                                f"(matched: {inst.get('tradingsymbol')} in NSE)"
                             )
                             return token
 
+            # Search NFO for other instruments
             instruments = self.kite.instruments("NFO")
             for inst in instruments:
                 name = inst.get("name", "").upper()
+                tradingsymbol = inst.get("tradingsymbol", "").upper()
                 for var in symbol_variations:
                     var_upper = var.upper()
-                    if name == var_upper:
-                        if inst.get("instrument_type") == "FUT":
-                            token = inst.get("instrument_token")
-                            if token:
-                                logger.info(
-                                    f"Found instrument token {token} for {instrument_symbol} "
-                                    f"(matched: {inst.get('name')})"
-                                )
-                                return token
+                    if name == var_upper or tradingsymbol == var_upper:
+                        token = inst.get("instrument_token")
+                        if token:
+                            logger.info(
+                                f"Found instrument token {token} for {instrument_symbol} "
+                                f"(matched: {inst.get('tradingsymbol')} in NFO)"
+                            )
+                            return token
 
             logger.warning(
                 f"Instrument token not found for {instrument_symbol} (tried variations: {symbol_variations})"
@@ -702,6 +757,7 @@ class UnifiedHistoricalReplayer(MarketIngestion):
                     low=point["low"],
                     close=point["close"],
                     volume=point.get("volume", 0),
+                    open_interest=point.get("oi") or point.get("open_interest"),
                     start_at=timestamp,
                     end_at=timestamp + timedelta(minutes=1),
                 )
@@ -717,6 +773,7 @@ class UnifiedHistoricalReplayer(MarketIngestion):
                                 "low": point["low"],
                                 "close": point["close"],
                                 "volume": point.get("volume", 0),
+                                "oi": point.get("oi") or point.get("open_interest"),
                                 "instrument": instrument,
                             }
                         )
@@ -733,6 +790,7 @@ class UnifiedHistoricalReplayer(MarketIngestion):
                         timestamp=tick_ts,
                         last_price=tick_data["price"],
                         volume=tick_data.get("volume"),
+                        open_interest=tick_data.get("oi") or tick_data.get("open_interest"),
                     )
                     self.store.store_tick(tick)
             elif "close" in point:
@@ -741,6 +799,7 @@ class UnifiedHistoricalReplayer(MarketIngestion):
                     timestamp=timestamp,
                     last_price=point["close"],
                     volume=point.get("volume"),
+                    open_interest=point.get("oi") or point.get("open_interest"),
                 )
                 self.store.store_tick(tick)
 

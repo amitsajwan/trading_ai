@@ -92,6 +92,9 @@ class MarketDataDependencyValidator:
 
     def _check_required_modules(self):
         """Check that all required modules can be imported."""
+        historical_source = (os.getenv("HISTORICAL_SOURCE") or "").strip().lower()
+        require_kiteconnect = historical_source == "zerodha"
+
         required_modules = [
             ('fastapi', 'FastAPI web framework'),
             ('uvicorn', 'ASGI server'),
@@ -100,6 +103,7 @@ class MarketDataDependencyValidator:
         ]
 
         optional_modules = [
+            # kiteconnect becomes REQUIRED when HISTORICAL_SOURCE=zerodha
             ('kiteconnect', 'Zerodha API client'),
             ('pandas', 'Data analysis'),
             ('numpy', 'Numerical computing'),
@@ -130,12 +134,20 @@ class MarketDataDependencyValidator:
                     f"{description} available"
                 )
             except ImportError:
-                self._add_check(
-                    f"Module: {module}",
-                    DependencyStatus.WARNING,
-                    f"Optional {description} not available",
-                    critical=False
-                )
+                if module == 'kiteconnect' and require_kiteconnect:
+                    self._add_check(
+                        f"Module: {module}",
+                        DependencyStatus.ERROR,
+                        f"Required {description} not available (HISTORICAL_SOURCE=zerodha)",
+                        critical=True
+                    )
+                else:
+                    self._add_check(
+                        f"Module: {module}",
+                        DependencyStatus.WARNING,
+                        f"Optional {description} not available",
+                        critical=False
+                    )
 
     def _check_redis_connection(self):
         """Check Redis connection and basic functionality."""

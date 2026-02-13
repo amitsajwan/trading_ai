@@ -36,6 +36,11 @@ def main():
     parser.add_argument('--diagnostics', action='store_true', help='Run diagnostics and exit')
     args = parser.parse_args()
 
+    # If we're about to run a Zerodha historical replay, propagate the intent into
+    # env so dependency validation can be strict (fail fast).
+    if args.mode == 'historical' and args.historical_source:
+        os.environ['HISTORICAL_SOURCE'] = args.historical_source
+
     # Run diagnostics if requested
     if args.diagnostics:
         print('[INFO] Running market_data diagnostics...')
@@ -107,9 +112,9 @@ def main():
                 # Pass Zerodha credentials to collectors
                 collector_env = build_collector_env(os.environ.copy())
 
-                websocket_cmd = [PYTHON, 'market_data/collectors/websocket_tick_collector.py']
-                ltp_cmd = [PYTHON, 'market_data/collectors/ltp_collector.py']
-                depth_cmd = [PYTHON, 'market_data/collectors/depth_collector.py']
+                websocket_cmd = [PYTHON, 'market_data/src/market_data/collectors/websocket_tick_collector.py']
+                ltp_cmd = [PYTHON, 'market_data/src/market_data/collectors/ltp_collector.py']
+                depth_cmd = [PYTHON, 'market_data/src/market_data/collectors/depth_collector.py']
                 websocket_proc = start_process('WebSocket Tick Collector', websocket_cmd, env=collector_env)
                 ltp_proc = start_process('LTP Processor', ltp_cmd, env=collector_env)
                 depth_proc = start_process('Depth Collector', depth_cmd, env=collector_env)
@@ -131,6 +136,27 @@ def main():
                 env['HISTORICAL_FROM'] = args.historical_from
             if args.historical_ticks:
                 env['HISTORICAL_TICKS'] = '1'
+
+            requested_source = (env.get('HISTORICAL_SOURCE') or '').strip().lower()
+            if requested_source == 'zerodha':
+                # Fail fast: we want real Zerodha data only.
+                try:
+                    import kiteconnect  # noqa: F401
+                except Exception as e:
+                    print('[ERROR] Zerodha historical replay requested but kiteconnect is not installed')
+                    print('   💡 Install into the active venv: pip install kiteconnect')
+                    print(f'   [INFO] Import error: {e}')
+                    raise SystemExit(1)
+
+                ok, msg = check_zerodha_credentials(prompt_login=True)  # Enable automatic auth for Zerodha historical
+                if not ok:
+                    print('[ERROR] Zerodha historical replay requested but credentials/token are missing or invalid')
+                    print('   💡 Fix options:')
+                    print('      - Set KITE_API_KEY and KITE_ACCESS_TOKEN in environment')
+                    print('      - Or run: python -m market_data.tools.kite_auth (interactive login)')
+                    if msg:
+                        print(f'[INFO] Details: {msg}')
+                    raise SystemExit(1)
 
             # Use market_data module to run historical replayer
             hist_cmd = [PYTHON, '-m', 'market_data.runner_historical']
@@ -154,11 +180,17 @@ def main():
                     if wait_for_http('http://127.0.0.1:8004/api/v1/market/tick/BANKNIFTY', timeout=60):
                         print(_sanitize_for_console('   [OK] Historical data available via Market Data API'))
                     else:
+                        if requested_source == 'zerodha':
+                            print('[ERROR] Zerodha historical replay did not produce data within timeout (fail-fast)')
+                            raise SystemExit(1)
                         print('[WARN] Historical data not found within timeout')
             except Exception:
                 # If Redis/requests not available, fallback to HTTP check
                 ok = wait_for_http('http://127.0.0.1:8004/api/v1/market/tick/BANKNIFTY', timeout=60)
                 if not ok:
+                    if requested_source == 'zerodha':
+                        print('[ERROR] Zerodha historical replay did not produce data within timeout (fail-fast)')
+                        raise SystemExit(1)
                     print('[WARN] Historical data not found at Market Data API within timeout')
                 else:
                     print('   ✅ Historical data available via Market Data API')

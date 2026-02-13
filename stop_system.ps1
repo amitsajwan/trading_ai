@@ -31,6 +31,30 @@ $stoppedAny = $false
 if (Stop-TrackedProcess 'dashboard') { $stoppedAny = $true }
 if (Stop-TrackedProcess 'market_data') { $stoppedAny = $true }
 
+# On Windows, force-killing the supervisor may leave child Python processes alive.
+# Clean up any orphaned market_data processes for this workspace.
+try {
+    $rootNorm = $root.Replace('\\', '\\')
+    $orphans = Get-CimInstance Win32_Process | Where-Object {
+        $_.Name -eq 'python.exe' -and $_.CommandLine -and (
+            $_.CommandLine -like "*$rootNorm*" -or $_.CommandLine -like "*market_data*"
+        ) -and (
+            $_.CommandLine -like '*-m market_data.api_service*' -or
+            $_.CommandLine -like '*-m market_data.runner_historical*' -or
+            $_.CommandLine -like '*-m market_data.sources.websocket*' -or
+            $_.CommandLine -like '*start_dashboard.py*'
+        )
+    }
+
+    foreach ($p in $orphans) {
+        try {
+            Stop-Process -Id ([int]$p.ProcessId) -Force -ErrorAction Stop
+            Write-Host "[stop_system] Stopped orphan (pid=$($p.ProcessId))" -ForegroundColor Yellow
+            $stoppedAny = $true
+        } catch {}
+    }
+} catch {}
+
 if ($stoppedAny) {
     Write-Host "[stop_system] ✅ Done" -ForegroundColor Green
 } else {

@@ -98,6 +98,12 @@ class TechnicalIndicators:
     volume_sma_20: Optional[float] = None
     volume_rsi_14: Optional[float] = None
     cmf_20: Optional[float] = None  # Chaikin Money Flow
+    oi: Optional[float] = None
+    oi_change: Optional[float] = None
+    oi_pct_change: Optional[float] = None
+    oi_sma_5: Optional[float] = None
+    oi_ema_10: Optional[float] = None
+    oi_momentum_5: Optional[float] = None
 
     # === OSCILLATORS ===
     cci_20: Optional[float] = None  # Commodity Channel Index
@@ -199,7 +205,7 @@ class TechnicalIndicatorsService:
             
         # Initialize DataFrame if needed
         if instrument not in self._ohlc_data:
-            self._ohlc_data[instrument] = pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            self._ohlc_data[instrument] = pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'oi'])
 
         # Add all bars to DataFrame
         for bar in ohlc_bars[-self.window_size:]:  # Keep only recent bars
@@ -209,7 +215,8 @@ class TechnicalIndicatorsService:
                 'high': bar['high'],
                 'low': bar['low'],
                 'close': bar['close'],
-                'volume': bar.get('volume', 0)
+                'volume': bar.get('volume', 0),
+                'oi': bar.get('oi')
             }
             self._ohlc_data[instrument].loc[len(self._ohlc_data[instrument])] = new_row
 
@@ -225,38 +232,33 @@ class TechnicalIndicatorsService:
                     # Store using standardized Redis keys
                     for key, value in indicators_dict.items():
                         if value is not None and key in ALL_INDICATORS:
-                            redis_key = get_indicator_redis_key(instrument, key)
+                            redis_key = get_indicator_redis_key(instrument, key, indicators.timeframe)
                             self.redis_client.setex(redis_key, 300, str(value))
 
-                    # Publish to WebSocket with standardized field names
+                    # Publish full indicator set (including OI metrics) to Redis pub/sub for WS bridge
                     try:
                         import json
-                        pub = {
-                            "instrument": instrument,
-                            "timestamp": indicators.timestamp,
-                            "current_price": indicators.current_price,
-                            RSI_14: indicators.rsi_14,
-                            MACD_VALUE: indicators.macd_value,
-                            MACD_SIGNAL: indicators.macd_signal,
-                            ADX_14: indicators.adx_14,
-                            ATR_14: indicators.atr_14,
-                            ATR_20: indicators.atr_20,
-                            TREND_DIRECTION: indicators.trend_direction,
-                            SIGNAL_STRENGTH: indicators.signal_strength
-                        }
-                        # Remove None values from publish message
+                        pub = self._json_safe_dict(indicators_dict)
                         pub = {k: v for k, v in pub.items() if v is not None}
-                        
+
                         # Add canonical timestamps
                         timestamp_payload = create_canonical_timestamp_payload(
                             market_timestamp=get_market_time(),
                             indicator_timestamp=get_market_time()
                         )
                         pub.update(timestamp_payload)
-                        
-                        # Publish to type-specific channel only (e.g., indicators:BANKNIFTY:INDEX)
+
+                        # Add mode/run metadata
+                        mode_payload = create_mode_aware_payload(
+                            mode=self._mode,
+                            run_id=self._run_id,
+                            instrument=instrument,
+                            timeframe=indicators.timeframe,
+                        )
+                        pub.update(mode_payload)
+
                         type_specific_channel = get_instrument_channel(instrument, "indicators")
-                        self.redis_client.publish(type_specific_channel, json.dumps(self._json_safe_dict(pub)))
+                        self.redis_client.publish(type_specific_channel, json.dumps(pub))
                     except Exception as pub_err:
                         logger.debug(f"Failed to publish indicators to Redis: {pub_err}")
                 except Exception as e:
@@ -309,7 +311,7 @@ class TechnicalIndicatorsService:
                 # Store using standardized Redis keys
                 for key, value in indicators_dict.items():
                     if value is not None and key in ALL_INDICATORS:
-                        redis_key = get_indicator_redis_key(instrument, key)
+                        redis_key = get_indicator_redis_key(instrument, key, indicators.timeframe)
                         self.redis_client.setex(redis_key, 300, str(value))
 
                 # Publish standardized complete payload (now on every tick for real-time UI)
@@ -404,7 +406,7 @@ class TechnicalIndicatorsService:
         
         # Initialize DataFrame if needed
         if instrument not in self._ohlc_data:
-            self._ohlc_data[instrument] = pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            self._ohlc_data[instrument] = pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'oi'])
 
         # Add new candle to DataFrame
         new_row = {
@@ -413,7 +415,8 @@ class TechnicalIndicatorsService:
             'high': candle['high'],
             'low': candle['low'],
             'close': candle['close'],
-            'volume': candle.get('volume', 0)
+            'volume': candle.get('volume', 0),
+            'oi': candle.get('oi')
         }
 
         # Append to DataFrame and maintain window size
@@ -438,7 +441,7 @@ class TechnicalIndicatorsService:
                 # Store using standardized Redis keys
                 for key, value in indicators_dict.items():
                     if value is not None and key in ALL_INDICATORS:
-                        redis_key = get_indicator_redis_key(instrument, key)
+                        redis_key = get_indicator_redis_key(instrument, key, indicators.timeframe)
                         self.redis_client.setex(redis_key, 300, str(value))
 
                 # Publish standardized complete payload (only on candle close)
@@ -562,14 +565,14 @@ class TechnicalIndicatorsService:
 
                 for indicator_name in core_indicators:
                     if indicator_name in safe_indicators and safe_indicators[indicator_name] is not None:
-                        redis_key = get_indicator_redis_key(instrument, indicator_name)
+                        redis_key = get_indicator_redis_key(instrument, indicator_name, "1min")
                         try:
                             self.redis_client.set(redis_key, str(safe_indicators[indicator_name]))
                         except Exception as store_error:
                             logger.warning(f"Failed to store indicator {indicator_name}: {store_error}")
 
                 # Store timestamp for freshness validation
-                timestamp_key = get_indicator_redis_key(instrument, 'timestamp')
+                timestamp_key = get_indicator_redis_key(instrument, 'timestamp', "1min")
                 try:
                     self.redis_client.set(timestamp_key, safe_indicators.get('indicator_timestamp', datetime.now().isoformat()))
                 except Exception as store_error:
@@ -593,17 +596,22 @@ class TechnicalIndicatorsService:
             logger.error(f"Failed to calculate indicators for {instrument}: {e}")
             return None
 
-    def get_indicators_dict(self, instrument: str) -> Dict[str, Any]:
+    def get_indicators_dict(self, instrument: str, timeframe: str = "1min") -> Dict[str, Any]:
         """Get latest indicators as dictionary.
 
         Args:
             instrument: Instrument symbol
+            timeframe: Timeframe string (default: "1min")
 
         Returns:
             Dictionary of indicators or empty dict
         """
         # First try to get from memory
-        indicators = self._latest_indicators.get(instrument)
+        if timeframe == "1min":
+            indicators = self._latest_indicators.get(instrument)
+        else:
+            indicators = self.get_indicators_mtf(instrument, timeframe)
+        
         if indicators:
             # Convert dataclass to dict, filtering out None values
             result = {}
@@ -616,8 +624,8 @@ class TechnicalIndicatorsService:
         if self.redis_client:
             try:
                 result = {}
-                # Get all indicator keys for this instrument
-                pattern = get_indicator_redis_key(instrument, "*")
+                # Get all indicator keys for this instrument and timeframe
+                pattern = get_all_indicators_redis_pattern(instrument, timeframe)
                 keys = self.redis_client.keys(pattern)
                 if keys:
                     for key in keys:
@@ -625,8 +633,8 @@ class TechnicalIndicatorsService:
                         if value_str:
                             # Extract indicator name from key
                             key_parts = key.split(":")
-                            if len(key_parts) >= 3:
-                                indicator_name = ":".join(key_parts[2:])  # Handle keys like indicators:INSTRUMENT:rsi_14
+                            if len(key_parts) >= 4:  # indicators:INSTRUMENT:TIMEFRAME:indicator
+                                indicator_name = ":".join(key_parts[3:])  # Handle keys like indicators:INSTRUMENT:1min:rsi_14
                                 try:
                                     # Try to parse as number first
                                     result[indicator_name] = float(value_str)
@@ -635,14 +643,14 @@ class TechnicalIndicatorsService:
                                     result[indicator_name] = value_str
                     if result:
                         # Add timestamp if available
-                        timestamp_key = get_indicator_redis_key(instrument, "timestamp")
+                        timestamp_key = get_indicator_redis_key(instrument, "timestamp", timeframe)
                         timestamp_str = self.redis_client.get(timestamp_key)
                         if timestamp_str:
                             result["timestamp"] = timestamp_str
                         result["instrument"] = instrument
                         return result
             except Exception as e:
-                logger.warning(f"Failed to reconstruct indicators from Redis for {instrument}: {e}")
+                logger.warning(f"Failed to reconstruct indicators from Redis for {instrument}:{timeframe}: {e}")
 
         return {}
     
@@ -763,6 +771,45 @@ class TechnicalIndicatorsService:
 
             if len(df) >= 20:
                 indicators.cmf_20 = self._safe_float(ta.cmf(df["high"], df["low"], df["close"], df["volume"], length=20))
+
+            # === OPEN INTEREST INDICATORS ===
+            if "oi" in df.columns:
+                oi_series = df["oi"].ffill()
+                latest_oi = oi_series.iloc[-1] if len(oi_series) else None
+                if latest_oi is not None and not pd.isna(latest_oi):
+                    indicators.oi = float(latest_oi)
+
+                if len(oi_series) >= 2:
+                    prev_oi = oi_series.iloc[-2]
+                    if prev_oi is not None and not pd.isna(prev_oi):
+                        change = latest_oi - prev_oi if latest_oi is not None else None
+                        if change is not None:
+                            indicators.oi_change = float(change)
+                            indicators.oi_pct_change = float((change / prev_oi) * 100) if prev_oi else None
+
+                # Use pure-Python fallbacks for OI indicators to avoid numba typing errors
+                # (pandas_ta's numba-accelerated SMA/EMA can fail on object dtypes).
+                if len(oi_series) >= 5:
+                    try:
+                        indicators.oi_sma_5 = float(pd.Series(oi_series).astype(float).tail(5).mean())
+                    except Exception:
+                        indicators.oi_sma_5 = None
+
+                    try:
+                        prev = pd.Series(oi_series).astype(float)
+                        if len(prev) >= 6:
+                            indicators.oi_momentum_5 = float(prev.iloc[-1] - prev.iloc[-6])
+                        else:
+                            indicators.oi_momentum_5 = float(prev.iloc[-1] - prev.iloc[0]) if len(prev) else None
+                    except Exception:
+                        indicators.oi_momentum_5 = None
+
+                if len(oi_series) >= 10:
+                    try:
+                        series = pd.Series(oi_series).astype(float)
+                        indicators.oi_ema_10 = float(series.ewm(span=10, adjust=False).mean().iloc[-1])
+                    except Exception:
+                        indicators.oi_ema_10 = None
 
             # === OSCILLATORS ===
             if len(df) >= 20:
@@ -1014,7 +1061,7 @@ class TechnicalIndicatorsService:
         # Initialize DataFrame if needed
         if key not in self._ohlc_data_mtf:
             self._ohlc_data_mtf[key] = pd.DataFrame(
-                columns=['timestamp', 'open', 'high', 'low', 'close', 'volume']
+                columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'oi']
             )
         
         # Add new candle to DataFrame
@@ -1025,7 +1072,8 @@ class TechnicalIndicatorsService:
             'high': candle['high'],
             'low': candle['low'],
             'close': candle['close'],
-            'volume': candle.get('volume', 0)
+            'volume': candle.get('volume', 0),
+            'oi': candle.get('oi')
         }
         
         # Append to DataFrame and maintain window size
@@ -1202,6 +1250,43 @@ class TechnicalIndicatorsService:
                     current_volume = df["volume"].iloc[-1]
                     indicators.volume_ratio = current_volume / indicators.volume_sma_20
 
+            # === OPEN INTEREST INDICATORS ===
+            if "oi" in df.columns:
+                oi_series = df["oi"].ffill()
+                latest_oi = oi_series.iloc[-1] if len(oi_series) else None
+                if latest_oi is not None and not pd.isna(latest_oi):
+                    indicators.oi = float(latest_oi)
+
+                if len(oi_series) >= 2:
+                    prev_oi = oi_series.iloc[-2]
+                    if prev_oi is not None and not pd.isna(prev_oi):
+                        change = latest_oi - prev_oi if latest_oi is not None else None
+                        if change is not None:
+                            indicators.oi_change = float(change)
+                            indicators.oi_pct_change = float((change / prev_oi) * 100) if prev_oi else None
+
+                if len(oi_series) >= 5:
+                    try:
+                        indicators.oi_sma_5 = float(pd.Series(oi_series).astype(float).tail(5).mean())
+                    except Exception:
+                        indicators.oi_sma_5 = None
+
+                    try:
+                        prev = pd.Series(oi_series).astype(float)
+                        if len(prev) >= 6:
+                            indicators.oi_momentum_5 = float(prev.iloc[-1] - prev.iloc[-6])
+                        else:
+                            indicators.oi_momentum_5 = float(prev.iloc[-1] - prev.iloc[0]) if len(prev) else None
+                    except Exception:
+                        indicators.oi_momentum_5 = None
+
+                if len(oi_series) >= 10:
+                    try:
+                        series = pd.Series(oi_series).astype(float)
+                        indicators.oi_ema_10 = float(series.ewm(span=10, adjust=False).mean().iloc[-1])
+                    except Exception:
+                        indicators.oi_ema_10 = None
+
             # === ADDITIONAL OSCILLATORS ===
             if len(df) >= 20:
                 indicators.cci_20 = self._safe_float(ta.cci(df["high"], df["low"], df["close"], length=20))
@@ -1214,6 +1299,23 @@ class TechnicalIndicatorsService:
 
             if len(df) >= 10:
                 indicators.momentum_10 = self._safe_float(ta.mom(df["close"], length=10))
+
+            # === SUPPORT/RESISTANCE ===
+            if len(df) >= 1:
+                # Use previous day's OHLC for pivot points (simplified)
+                prev_day = df.iloc[-2] if len(df) >= 2 else df.iloc[-1]
+                pivot_base = (prev_day["high"] + prev_day["low"] + prev_day["close"]) / 3
+                indicators.pivot_point = pivot_base
+                indicators.pivot_r1 = 2 * pivot_base - prev_day["low"]
+                indicators.pivot_r2 = pivot_base + (prev_day["high"] - prev_day["low"])
+                indicators.pivot_s1 = 2 * pivot_base - prev_day["high"]
+                indicators.pivot_s2 = pivot_base - (prev_day["high"] - prev_day["low"])
+
+            # === PRICE ACTION ===
+            if len(df) >= 20:
+                indicators.high_20 = float(df["high"].tail(20).max())
+                indicators.low_20 = float(df["low"].tail(20).min())
+                indicators.range_20 = indicators.high_20 - indicators.low_20
 
             # === TREND DIRECTION & STRENGTH ===
             trend_score = 0
@@ -1311,7 +1413,8 @@ class TechnicalIndicatorsService:
                 'high': bar.high,
                 'low': bar.low,
                 'close': bar.close,
-                'volume': bar.volume or 0
+                'volume': bar.volume or 0,
+                'oi': bar.open_interest
             })
         
         df = pd.DataFrame(data)
@@ -1324,6 +1427,18 @@ class TechnicalIndicatorsService:
         # Calculate indicators
         indicators = self._calculate_all_indicators_mtf(instrument, timeframe)
         self._indicators_mtf[key] = indicators
+        
+        # Store in Redis if available
+        if self.redis_client and indicators:
+            try:
+                indicators_dict = asdict(indicators)
+                # Store using standardized Redis keys with timeframe
+                for key_name, value in indicators_dict.items():
+                    if value is not None and key_name in ALL_INDICATORS:
+                        redis_key = get_indicator_redis_key(instrument, key_name, timeframe)
+                        self.redis_client.setex(redis_key, 300, str(value))
+            except Exception as e:
+                logger.warning(f"Failed to store MTF indicators for {instrument}:{timeframe}: {e}")
         
         return indicators
 

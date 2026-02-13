@@ -1,0 +1,19 @@
+# market_data runtime dependencies
+#
+# Install into your active venv:
+#   python -m pip install -r market_data/requirements.txt
+#
+# Core API/runtime
+fastapi>=0.104,<1
+uvicorn>=0.24,<1
+redis>=5,<6
+pydantic>=2,<3
+python-dotenv>=1,<2
+
+# Analytics / indicators
+pandas>=2,<3
+numpy>=1.26,<3
+pandas-ta>=0.3.14b
+
+# Zerodha real data client
+kiteconnect>=4,<5

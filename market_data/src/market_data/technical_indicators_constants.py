@@ -50,6 +50,14 @@ VOLUME_SMA_20 = "volume_sma_20"
 VOLUME_RSI_14 = "volume_rsi_14"
 CMF_20 = "cmf_20"  # Chaikin Money Flow
 
+# === OPEN INTEREST INDICATORS ===
+OI = "oi"
+OI_CHANGE = "oi_change"
+OI_PCT_CHANGE = "oi_pct_change"
+OI_SMA_5 = "oi_sma_5"
+OI_EMA_10 = "oi_ema_10"
+OI_MOMENTUM_5 = "oi_momentum_5"
+
 # === OSCILLATORS ===
 CCI_20 = "cci_20"
 MFI_14 = "mfi_14"
@@ -103,6 +111,8 @@ ALL_INDICATORS = [
     ADX_14, DI_PLUS, DI_MINUS,
     # Volume
     OBV, VOLUME_SMA_20, VOLUME_RSI_14, CMF_20,
+    # Open Interest
+    OI, OI_CHANGE, OI_PCT_CHANGE, OI_SMA_5, OI_EMA_10, OI_MOMENTUM_5,
     # Oscillators
     CCI_20, MFI_14, ROC_12, MOMENTUM_10,
     # Support/Resistance
@@ -118,10 +128,10 @@ ALL_INDICATORS = [
 ]
 
 # === REDIS KEY PATTERNS ===
-def get_indicator_redis_key(instrument: str, indicator: str) -> str:
+def get_indicator_redis_key(instrument: str, indicator: str, timeframe: str = "1min") -> str:
     """Get Redis key for a specific indicator."""
-    return f"indicators:{instrument.upper()}:{indicator}"
+    return f"indicators:{instrument.upper()}:{timeframe}:{indicator}"
 
-def get_all_indicators_redis_pattern(instrument: str) -> str:
+def get_all_indicators_redis_pattern(instrument: str, timeframe: str = "1min") -> str:
     """Get Redis key pattern for all indicators of an instrument."""
-    return f"indicators:{instrument.upper()}:*"
+    return f"indicators:{instrument.upper()}:{timeframe}:*"

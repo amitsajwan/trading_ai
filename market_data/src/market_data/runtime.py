@@ -182,66 +182,110 @@ def _parse_start_date(start_date: Optional[str]) -> Optional[datetime]:
     if not start_date:
         return None
     try:
-        return datetime.strptime(start_date, "%Y-%m-%d")
+        # Interpret YYYY-MM-DD as the trading session start (09:15) by default.
+        # This avoids synthetic replays starting at midnight.
+        d = datetime.strptime(start_date, "%Y-%m-%d")
+        return d.replace(hour=9, minute=15, second=0, microsecond=0)
     except Exception:
         return None
 
 
 def _resolve_kite_instance_for_historical() -> Optional["KiteConnect"]:
+    """Resolve a KiteConnect instance for real Zerodha historical replay.
+
+    Fail-fast policy: when the user asked for real Zerodha data, we should not
+    silently fall back to synthetic/mock data.
+
+    Returns:
+        KiteConnect instance
+
+    Raises:
+        RuntimeError if kiteconnect isn't installed or credentials are missing/invalid.
+    """
     try:
         from kiteconnect import KiteConnect
+    except Exception as e:
+        raise RuntimeError(
+            "kiteconnect package is required for Zerodha historical replay. "
+            "Install it in the active venv (pip install kiteconnect). "
+            f"Import error: {e}"
+        )
 
-        try:
-            from market_data.tools.auth_startup import AuthStartup
+    # Optional auth precheck (helps produce actionable messages).
+    try:
+        from market_data.tools.auth_startup import AuthStartup
 
-            auth = AuthStartup()
-            success, message = auth.startup_check()
-            if not success:
-                print(f"   [WARNING] Auth check failed: {message}")
-        except ImportError:
-            pass
+        auth = AuthStartup()
+        success, message = auth.startup_check()
+        if not success:
+            print(f"   [WARNING] Auth check failed: {message}")
+    except Exception:
+        pass
 
+    try:
         from market_data.tools.kite_auth_service import KiteAuthService
 
         auth_service = KiteAuthService()
         creds = auth_service.load_credentials()
+    except Exception as e:
+        creds = None
+        print(f"   [WARNING] Could not load credentials via KiteAuthService: {e}")
 
-        if not creds:
-            project_root = Path(__file__).resolve().parents[3]
-            cred_path = project_root / "credentials.json"
-            if cred_path.exists():
-                with open(cred_path, "r", encoding="utf-8-sig") as f:
-                    creds = json.load(f)
+    if not creds:
+        project_root = Path(__file__).resolve().parents[3]
+        cred_path = project_root / "credentials.json"
+        if cred_path.exists():
+            with open(cred_path, "r", encoding="utf-8-sig") as f:
+                creds = json.load(f)
 
-        api_key = (creds or {}).get("api_key") or os.getenv("KITE_API_KEY")
-        access_token = (
-            (creds or {}).get("access_token")
-            or (creds or {}).get("data", {}).get("access_token")
-            or os.getenv("KITE_ACCESS_TOKEN")
+    api_key = (creds or {}).get("api_key") or os.getenv("KITE_API_KEY")
+    access_token = (
+        (creds or {}).get("access_token")
+        or (creds or {}).get("data", {}).get("access_token")
+        or os.getenv("KITE_ACCESS_TOKEN")
+    )
+
+    if not api_key or not access_token:
+        raise RuntimeError(
+            "Missing Zerodha credentials for historical replay. "
+            "Provide credentials.json or set KITE_API_KEY and KITE_ACCESS_TOKEN. "
+            "You can generate credentials using: python -m market_data.tools.kite_auth"
         )
 
-        if not api_key or not access_token:
-            print("   [WARNING] Missing API key or access token for Zerodha historical data")
-            return None
-
+    try:
         kite_instance = KiteConnect(api_key=api_key)
         kite_instance.set_access_token(access_token)
         print("   [OK] KiteConnect instance created for historical data")
         return kite_instance
-    except ImportError:
-        print("   [WARNING] KiteConnect not available - cannot fetch Zerodha historical data")
-        return None
     except Exception as e:
-        print(f"   [WARNING] Failed to create KiteConnect instance: {e}")
-        return None
+        raise RuntimeError(f"Failed to create KiteConnect instance: {e}")
 
 
 async def monitor_for_ticks(redis_client, timeout: int = 60, interval: int = 1) -> bool:
-    """Poll Redis for tick keys and set a readiness key when data appears."""
+    """Poll Redis for tick keys (mode-aware) and set a readiness key when data appears."""
+
+    # Prefer mode-prefixed patterns (e.g., historical:tick:*:latest) to match
+    # the RedisMarketStore key format. Fall back to unprefixed keys for legacy
+    # callers or mocked stores.
+    prefixed_pattern = None
+    try:
+        from redis_key_manager import get_redis_pattern
+
+        prefixed_pattern = get_redis_pattern("tick:*:latest")
+    except Exception:
+        prefixed_pattern = None
+
+    raw_pattern = "tick:*:latest"
     deadline = asyncio.get_event_loop().time() + timeout
+
     while asyncio.get_event_loop().time() < deadline:
         try:
-            keys = redis_client.keys("tick:*:latest")
+            keys = []
+            if prefixed_pattern:
+                keys = redis_client.keys(prefixed_pattern) or []
+            if not keys:
+                keys = redis_client.keys(raw_pattern) or []
+
             if keys:
                 redis_client.set("system:historical:data_ready", "1")
                 return True
@@ -272,23 +316,21 @@ async def run_historical_replay(config: HistoricalReplayConfig) -> None:
 
     kite_instance = None
     if config.source == "zerodha":
+        # Fail-fast: do not fall back to synthetic.
         kite_instance = _resolve_kite_instance_for_historical()
-        if not kite_instance:
-            print("   [ERROR] Cannot use Zerodha source without KiteConnect instance")
-            print("   [INFO] Provide credentials or use CSV/synthetic source instead")
-            return
 
     print(
         f"Starting historical replay (source={config.source}, speed={config.speed}, from={config.start_date}, ticks={config.ticks})"
     )
 
+    instrument_symbol = os.getenv("INSTRUMENT_SYMBOL", "BANKNIFTY26JANFUT")
     replay = build_historical_replay(
         store=store,
         data_source=config.source,
         start_date=start_date_obj,
         kite=kite_instance,
         speed=config.speed,
-        instrument_symbol=os.getenv("INSTRUMENT_SYMBOL", "BANKNIFTY26JANFUT"),
+        instrument_symbol=instrument_symbol,
     )
 
     if not replay:
@@ -303,14 +345,40 @@ async def run_historical_replay(config: HistoricalReplayConfig) -> None:
     except Exception:
         pass
 
-    monitor_task = asyncio.create_task(monitor_for_ticks(redis_client))
+    # Fail-fast if no data shows up.
+    # For real Zerodha, we expect ticks/ohlc to appear in Redis promptly.
+    ready_timeout = int(os.getenv("HISTORICAL_READY_TIMEOUT", "60"))
+    monitor_task = asyncio.create_task(monitor_for_ticks(redis_client, timeout=ready_timeout, interval=1))
 
     try:
+        # Wait for readiness or premature replay stop.
         while True:
             if monitor_task.done():
-                await asyncio.sleep(1)
-            else:
-                await asyncio.sleep(1)
+                ok = bool(monitor_task.result())
+                if not ok:
+                    raise RuntimeError(
+                        f"Historical replay did not produce any ticks in Redis within {ready_timeout}s. "
+                        "For Zerodha, this usually means invalid credentials/token, market holiday, or wrong instrument."
+                    )
+                break
+
+            # If the replayer stops before producing data, exit non-zero.
+            try:
+                if hasattr(replay, "running") and not getattr(replay, "running"):
+                    raise RuntimeError("Historical replay stopped before producing any data")
+            except Exception:
+                pass
+
+            await asyncio.sleep(0.5)
+
+        # Keep process alive while replay runs; if it dies, treat as an error for real sources.
+        while True:
+            try:
+                if hasattr(replay, "running") and not getattr(replay, "running"):
+                    raise RuntimeError("Historical replay stopped unexpectedly")
+            except Exception:
+                pass
+            await asyncio.sleep(1)
     finally:
         try:
             replay.stop()

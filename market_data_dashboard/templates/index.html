@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Market Data Dashboard</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@stomp/stompjs@7.0.0/bundles/stomp.umd.min.js"></script>
 </head>
@@ -88,6 +88,13 @@
         <!-- Timeframe Selector -->
         <div class="bg-white rounded-lg shadow p-6 mb-8">
             <h3 class="text-lg font-semibold mb-4">Timeframe Selection</h3>
+            <div class="flex flex-wrap items-center gap-3 mb-4">
+                <label for="instrument-select" class="text-sm font-medium text-gray-700">Active Instrument</label>
+                <select id="instrument-select" class="border border-gray-300 rounded px-3 py-2 text-sm" onchange="onInstrumentChange(this.value)">
+                    <option value="">Loading...</option>
+                </select>
+                <span id="instrument-note" class="text-xs text-gray-500"></span>
+            </div>
             <div class="flex flex-wrap gap-2">
                 <button onclick="setTimeframe('1min')" id="tf-1min" class="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600">1M</button>
                 <button onclick="setTimeframe('5min')" id="tf-5min" class="px-4 py-2 bg-gray-400 text-white rounded hover:bg-gray-500">5M</button>
@@ -101,7 +108,7 @@
         <!-- Current Indicators Values -->
         <div class="bg-white rounded-lg shadow p-6 mb-8">
             <h3 class="text-lg font-semibold mb-4" id="indicators-title">Technical Indicators</h3>
-            <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div class="grid grid-cols-1 md:grid-cols-5 gap-4">
                 <!-- Trend Indicators -->
                 <div class="border-l-4 border-purple-500 pl-4">
                     <h4 class="text-xs font-semibold text-gray-600 uppercase mb-2">Trend</h4>
@@ -143,6 +150,17 @@
                         <div><span class="font-bold" id="resistance">--</span> R1</div>
                         <div><span class="font-bold" id="support">--</span> S1</div>
                         <div><span class="font-bold" id="range-val">--</span> Range</div>
+                    </div>
+                </div>
+
+                <!-- Open Interest -->
+                <div class="border-l-4 border-indigo-500 pl-4">
+                    <h4 class="text-xs font-semibold text-gray-600 uppercase mb-2">Open Interest</h4>
+                    <div class="space-y-1 text-sm">
+                        <div><span class="font-bold" id="oi-val">--</span> OI</div>
+                        <div><span class="font-bold" id="oi-change">--</span> Δ OI</div>
+                        <div><span class="font-bold" id="oi-pct">--</span> Δ OI %</div>
+                        <div><span class="font-bold" id="oi-sma5">--</span> OI SMA(5)</div>
                     </div>
                 </div>
             </div>
@@ -260,6 +278,8 @@
         let stompSubscriptions = [];
         let currentInstrument = null; // Will be set dynamically from API
         let currentTimeframe = '1min'; // Default timeframe
+        let currentSystemMode = 'unknown';
+        let manualInstrumentSelection = false;
         
         // Available timeframes
         const TIMEFRAMES = ['1min', '5min', '15min', '1h', '4h', '1d'];
@@ -272,8 +292,22 @@
             if (aggressivePollingHandle) return;
             console.warn('Switching to polling mode', reason);
             setWsStatus('Polling fallback', 'text-yellow-700', 'w-3 h-3 rounded-full mr-2 bg-yellow-500');
-            refreshData();
-            aggressivePollingHandle = setInterval(refreshData, 5000);
+            // Stop STOMP reconnect loop when we intentionally switch to polling.
+            try {
+                if (stompClient && stompClient.active) {
+                    stompClient.deactivate();
+                }
+            } catch (e) {
+                // ignore
+            }
+
+            refreshData(true);
+            aggressivePollingHandle = setInterval(() => {
+                // Keep polling lightweight; avoid frequent slow options/depth calls.
+                fetchStatus();
+                scheduleRealtimeRefresh(120);
+                updateModeIndicator();
+            }, 5000);
         }
 
         function stopAggressivePolling() {
@@ -339,6 +373,14 @@
         }
 
         let realtimeRefreshTimer = null;
+        let statusRefreshTimer = null;
+
+        // Chart update coalescing/abort controls.
+        let chartsUpdateInProgress = false;
+        let chartsUpdateQueued = false;
+        let chartsAbortController = null;
+        let lastChartsUpdateAt = 0;
+
         function scheduleRealtimeRefresh(delayMs = 1000) {
             if (realtimeRefreshTimer) return;
             realtimeRefreshTimer = setTimeout(async () => {
@@ -347,10 +389,138 @@
             }, delayMs);
         }
 
+        function scheduleStatusRefresh(delayMs = 1200) {
+            if (statusRefreshTimer) return;
+            statusRefreshTimer = setTimeout(async () => {
+                statusRefreshTimer = null;
+                await fetchStatus();
+            }, delayMs);
+        }
+
         function setWsStatus(text, colorClass, iconClass) {
             document.getElementById('ws-status').textContent = text;
             document.getElementById('ws-status').className = colorClass;
             document.getElementById('ws-status-icon').className = iconClass;
+        }
+
+        function applyCurrentInstrumentUI() {
+            if (!currentInstrument) return;
+            const indicatorsTitle = document.getElementById('indicators-title');
+            const priceChartTitle = document.getElementById('price-chart-title');
+            const instrumentNote = document.getElementById('instrument-note');
+
+            if (indicatorsTitle) {
+                indicatorsTitle.textContent = `Current Technical Indicators (${currentInstrument})`;
+            }
+            if (priceChartTitle) {
+                priceChartTitle.textContent = `${currentInstrument} Price Chart`;
+            }
+            if (instrumentNote) {
+                instrumentNote.textContent = `Showing charts/indicators for ${currentInstrument}`;
+            }
+        }
+
+        function populateInstrumentSelector(instruments = []) {
+            const select = document.getElementById('instrument-select');
+            if (!select) return;
+
+            const sorted = [...new Set(instruments)].sort();
+            if (!sorted.length) {
+                select.innerHTML = '<option value="">No instruments</option>';
+                return;
+            }
+
+            const current = currentInstrument && sorted.includes(currentInstrument)
+                ? currentInstrument
+                : sorted[0];
+
+            if (!currentInstrument) {
+                currentInstrument = current;
+            }
+
+            select.innerHTML = sorted
+                .map((inst) => `<option value="${inst}" ${inst === currentInstrument ? 'selected' : ''}>${inst}</option>`)
+                .join('');
+        }
+
+        function onInstrumentChange(instrument) {
+            if (!instrument || instrument === currentInstrument) return;
+            manualInstrumentSelection = true;
+            currentInstrument = instrument;
+            applyCurrentInstrumentUI();
+
+            // Re-subscribe realtime streams to selected instrument
+            if (stompClient && stompClient.connected) {
+                subscribeStompTopics();
+            }
+            if (websocket && websocket.readyState === WebSocket.OPEN) {
+                websocket.send(JSON.stringify({
+                    action: 'subscribe',
+                    channels: [
+                        'auth:status',
+                        `market:ohlc:${currentInstrument}`,
+                        `indicators:${currentInstrument}`
+                    ],
+                    requestId: 'dashboard-subscription'
+                }));
+            }
+
+            scheduleRealtimeRefresh(50);
+            fetchMarketDepth();
+            fetchOptionsChain();
+        }
+
+        function formatMaybeNumber(value, decimals = 2, suffix = '') {
+            if (value === null || value === undefined || value === '' || Number.isNaN(Number(value))) {
+                return '--';
+            }
+            return `${Number(value).toFixed(decimals)}${suffix}`;
+        }
+
+        function formatSigned(value, decimals = 2, suffix = '') {
+            if (value === null || value === undefined || value === '' || Number.isNaN(Number(value))) {
+                return '--';
+            }
+            const n = Number(value);
+            const sign = n > 0 ? '+' : '';
+            return `${sign}${n.toFixed(decimals)}${suffix}`;
+        }
+
+        function updateIndicatorCards(latestIndicator) {
+            if (!latestIndicator || typeof latestIndicator !== 'object') return;
+
+            // Trend
+            document.getElementById('rsi-status').textContent = latestIndicator.rsi_status || formatMaybeNumber(latestIndicator.rsi_14, 1);
+            document.getElementById('macd-status').textContent = formatMaybeNumber(latestIndicator.macd_value, 2);
+            document.getElementById('trend-dir').textContent = latestIndicator.trend_direction || '--';
+            document.getElementById('adx-status').textContent = formatMaybeNumber(latestIndicator.adx_14, 1);
+
+            // Momentum
+            document.getElementById('momentum-val').textContent = formatMaybeNumber(latestIndicator.momentum_10, 2);
+            document.getElementById('roc-val').textContent = formatMaybeNumber(latestIndicator.roc_12, 2);
+            document.getElementById('mfi-val').textContent = formatMaybeNumber(latestIndicator.mfi_14, 1);
+            document.getElementById('stoch-k').textContent = formatMaybeNumber(latestIndicator.stoch_k, 1);
+
+            // Volatility
+            document.getElementById('atr-val').textContent = formatMaybeNumber(latestIndicator.atr_14, 2);
+            document.getElementById('bolling-val').textContent =
+                (latestIndicator.bollinger_percent_b === null || latestIndicator.bollinger_percent_b === undefined)
+                    ? '--'
+                    : formatMaybeNumber(Number(latestIndicator.bollinger_percent_b) * 100, 1, '%');
+            document.getElementById('volatility-lvl').textContent = latestIndicator.volatility_level || '--';
+            document.getElementById('cci-val').textContent = formatMaybeNumber(latestIndicator.cci_20, 0);
+
+            // Levels
+            document.getElementById('pivot-p').textContent = formatMaybeNumber(latestIndicator.pivot_point, 2);
+            document.getElementById('resistance').textContent = formatMaybeNumber(latestIndicator.pivot_r1, 2);
+            document.getElementById('support').textContent = formatMaybeNumber(latestIndicator.pivot_s1, 2);
+            document.getElementById('range-val').textContent = formatMaybeNumber(latestIndicator.range_20, 2);
+
+            // Open Interest
+            document.getElementById('oi-val').textContent = formatMaybeNumber(latestIndicator.oi, 0);
+            document.getElementById('oi-change').textContent = formatSigned(latestIndicator.oi_change, 0);
+            document.getElementById('oi-pct').textContent = formatSigned(latestIndicator.oi_pct_change, 2, '%');
+            document.getElementById('oi-sma5').textContent = formatMaybeNumber(latestIndicator.oi_sma_5, 0);
         }
 
         function clearStompSubscriptions() {
@@ -380,7 +550,6 @@
             stompSubscriptions.push(sub('/topic/auth/status'));
             stompSubscriptions.push(sub(`/topic/market/ohlc/${currentInstrument}`));
             stompSubscriptions.push(sub(`/topic/indicators/${currentInstrument}`));
-            stompSubscriptions.push(sub(`/topic/market/tick/${currentInstrument}`));
         }
 
         function connectLegacyWebSocket(wsUrl) {
@@ -406,8 +575,7 @@
                         channels: [
                             'auth:status',
                             `market:ohlc:${currentInstrument}`,
-                            `indicators:${currentInstrument}`,
-                            `market:tick:${currentInstrument}`
+                            `indicators:${currentInstrument}`
                         ],
                         requestId: 'dashboard-subscription'
                     }));
@@ -501,40 +669,45 @@
             try {
                 const response = await fetch('/api/market-data/status');
                 statusData = await response.json();
-                
-                // Set current instrument from first available instrument if not set
-                if (!currentInstrument && statusData.instruments) {
+
+                // Pick/adjust current instrument based on what's actually available.
+                // This matters on FreshStart where Redis may be briefly empty, causing the UI
+                // to select a default instrument that later has no data.
+                if (statusData.instruments) {
                     const instruments = Object.keys(statusData.instruments);
                     if (instruments.length > 0) {
-                        currentInstrument = instruments[0];
-                        console.log('Current instrument set to:', currentInstrument);
-                        
-                        // Update page titles
-                        const indicatorsTitle = document.getElementById('indicators-title');
-                        const priceChartTitle = document.getElementById('price-chart-title');
-                        if (indicatorsTitle) {
-                            indicatorsTitle.textContent = `Current Technical Indicators (${currentInstrument})`;
-                        }
-                        if (priceChartTitle) {
-                            priceChartTitle.textContent = `${currentInstrument} Price Chart`;
+                        const currentInfo = currentInstrument ? statusData.instruments[currentInstrument] : null;
+
+                        // Prefer an instrument that is marked available (has data).
+                        const bestAvailable = instruments.find(k => (statusData.instruments[k]?.status === 'available'));
+
+                        // Auto-switch only when user hasn't manually chosen instrument.
+                        const shouldSwitch = (!manualInstrumentSelection && ((!currentInstrument) || (!currentInfo) || (currentInfo.status !== 'available' && bestAvailable)))
+                            || (manualInstrumentSelection && currentInstrument && !statusData.instruments[currentInstrument]);
+                        if (shouldSwitch) {
+                            currentInstrument = bestAvailable || instruments[0];
+                            console.log('Current instrument set to:', currentInstrument);
+                            applyCurrentInstrumentUI();
+
+                            // (Re)subscribe to realtime streams now that instrument is known
+                            if (stompClient && stompClient.connected) {
+                                subscribeStompTopics();
+                            }
+                            if (websocket && websocket.readyState === WebSocket.OPEN) {
+                                websocket.send(JSON.stringify({
+                                    action: 'subscribe',
+                                    channels: [
+                                        'auth:status',
+                                        `market:ohlc:${currentInstrument}`,
+                                        `indicators:${currentInstrument}`
+                                    ],
+                                    requestId: 'dashboard-subscription'
+                                }));
+                            }
                         }
 
-                        // (Re)subscribe to realtime streams now that instrument is known
-                        if (stompClient && stompClient.connected) {
-                            subscribeStompTopics();
-                        }
-                        if (websocket && websocket.readyState === WebSocket.OPEN) {
-                            websocket.send(JSON.stringify({
-                                action: 'subscribe',
-                                channels: [
-                                    'auth:status',
-                                    `market:ohlc:${currentInstrument}`,
-                                    `indicators:${currentInstrument}`,
-                                    `market:tick:${currentInstrument}`
-                                ],
-                                requestId: 'dashboard-subscription'
-                            }));
-                        }
+                        populateInstrumentSelector(instruments);
+                        applyCurrentInstrumentUI();
                     }
                 }
                 
@@ -566,6 +739,7 @@
             overallStatusEl.textContent = validation.overall_status.toUpperCase();
             overallStatusEl.className = `text-2xl font-bold ${
                 validation.overall_status === 'healthy' ? 'text-green-600' :
+                validation.overall_status === 'degraded' ? 'text-orange-600' :
                 validation.overall_status === 'warning' ? 'text-yellow-600' :
                 validation.overall_status === 'critical' ? 'text-red-600' : 'text-gray-600'
             }`;
@@ -575,8 +749,11 @@
             // Update instruments grid
             updateInstrumentsGrid();
 
-            // Update charts
-            updateCharts();
+            // Update charts (throttled) — avoid triggering heavy fetches repeatedly
+            // from status polling + websocket updates.
+            if (Date.now() - lastChartsUpdateAt > 2500) {
+                scheduleRealtimeRefresh(100);
+            }
         }
 
         function updateInstrumentsGrid() {
@@ -585,18 +762,38 @@
 
             for (const [instrument, info] of Object.entries(statusData.instruments || {})) {
                 const card = document.createElement('div');
-                card.className = 'border rounded-lg p-4';
+                const normalizedStatus = String(info.status || 'unknown').toLowerCase();
 
-                const statusColor = info.status === 'available' ? 'text-green-600' : 'text-red-600';
-                const statusIcon = info.status === 'available' ? '🟢' : '🔴';
+                let statusColor = 'text-red-600';
+                let statusIcon = '🔴';
+                let statusBadgeClass = 'bg-red-50 border border-red-200';
+
+                if (normalizedStatus === 'available') {
+                    statusColor = 'text-green-700';
+                    statusIcon = '🟢';
+                    statusBadgeClass = 'bg-green-50 border border-green-200';
+                } else if (normalizedStatus === 'mode_mismatch') {
+                    statusColor = 'text-yellow-800';
+                    statusIcon = '🟡';
+                    statusBadgeClass = 'bg-yellow-50 border border-yellow-200';
+                }
+
+                card.className = `border rounded-lg p-4 ${statusBadgeClass}`;
+
+                const latestPriceNum = Number(info.latest_price);
+                const latestPriceText = Number.isFinite(latestPriceNum)
+                    ? latestPriceNum.toFixed(2)
+                    : (info.latest_price ?? '--');
+                const statusLabel = String(info.status || 'unknown').replaceAll('_', ' ');
 
                 card.innerHTML = `
                     <div class="font-semibold">${instrument}</div>
-                    <div class="text-sm ${statusColor}">${statusIcon} ${info.status}</div>
+                    <div class="text-sm font-medium ${statusColor}">${statusIcon} ${statusLabel}</div>
                     ${info.data_points ? `<div class="text-sm text-gray-600">${info.data_points} data points</div>` : ''}
-                    ${info.latest_price ? `<div class="text-sm font-mono">${info.latest_price.toFixed(2)}</div>` : ''}
+                    ${info.latest_price !== undefined && info.latest_price !== null ? `<div class="text-sm font-mono">${latestPriceText}</div>` : ''}
                     ${info.first_timestamp ? `<div class="text-xs text-gray-500">Start: ${formatDateTime(info.first_timestamp)}</div>` : ''}
                     ${info.latest_timestamp ? `<div class="text-xs text-gray-500">Latest: ${formatDateTime(info.latest_timestamp)}</div>` : ''}
+                    ${info.mode_mismatch ? `<div class="text-xs text-yellow-800 mt-1">Using <strong>${info.data_mode || 'unknown'}</strong> data while system expects <strong>${info.expected_mode || 'unknown'}</strong></div>` : ''}
                 `;
 
                 grid.appendChild(card);
@@ -608,104 +805,170 @@
                 console.log('No instrument selected yet');
                 return;
             }
+
+            // Coalesce concurrent calls; if a newer update is requested while a fetch is
+            // running, abort the in-flight request and run again.
+            if (chartsUpdateInProgress) {
+                chartsUpdateQueued = true;
+                try {
+                    if (chartsAbortController) chartsAbortController.abort();
+                } catch (e) {
+                    // ignore
+                }
+                return;
+            }
+
+            chartsUpdateInProgress = true;
+            chartsUpdateQueued = false;
+            chartsAbortController = new AbortController();
+            const signal = chartsAbortController.signal;
+            let chartsDidUpdate = false;
+
+            const limitByTf = {
+                '1min': 1500,
+                '5min': 500,
+                '15min': 200,
+                '1h': 150,
+                '4h': 150,
+                '1d': 150
+            };
+            const reqLimit = limitByTf[currentTimeframe] || 200;
+            const indicatorsBarsNeeded = 120; // buffer for RSI(14) and MACD(26/12/9)
+            const combinedLimit = Math.max(reqLimit, indicatorsBarsNeeded);
             
-            // Update price chart with current timeframe
             try {
-                const limitByTf = {
-                    '1min': 1500,
-                    '5min': 500,
-                    '15min': 200,
-                    '1h': 150,
-                    '4h': 150,
-                    '1d': 150
-                };
-                const reqLimit = limitByTf[currentTimeframe] || 200;
-                const priceResp = await fetch(`/api/market-data/ohlc/${currentInstrument}?timeframe=${currentTimeframe}&limit=${reqLimit}&order=asc`);
-                if (!priceResp.ok) {
-                    console.warn('OHLC fetch failed', currentInstrument, currentTimeframe, priceResp.status);
+                // Fetch OHLC once and reuse for both charts.
+                const ohlcResp = await fetch(
+                    `/api/market-data/ohlc/${currentInstrument}?timeframe=${currentTimeframe}&limit=${combinedLimit}&order=asc`,
+                    { signal }
+                );
+                if (!ohlcResp.ok) {
+                    console.warn('OHLC fetch failed', currentInstrument, currentTimeframe, ohlcResp.status);
                     return;
                 }
 
-                const bankniftyData = await priceResp.json();
-                if (!Array.isArray(bankniftyData) || bankniftyData.length === 0) {
+                const ohlcDataAll = await ohlcResp.json();
+                if (!Array.isArray(ohlcDataAll) || ohlcDataAll.length === 0) {
                     console.warn('No OHLC data to plot for', currentInstrument, currentTimeframe);
                     return;
                 }
 
-                const labels = bankniftyData.map(d => formatTime(d.start_at || d.timestamp));
-                const prices = bankniftyData.map(d => d.close);
-                const volumes = bankniftyData.map(d => d.volume / 1000000); // Convert to millions for better scaling
+                const priceData = ohlcDataAll.slice(-reqLimit);
+                const labels = priceData.map(d => formatTime(d.start_at || d.timestamp));
+                const prices = priceData.map(d => d.close);
+                const rawVolumes = priceData.map(d => Number(d.volume ?? 0));
+                const hasRealVolume = rawVolumes.some(v => Number.isFinite(v) && v > 0);
+                const volumes = hasRealVolume
+                    ? rawVolumes.map(v => v / 1000000) // Convert to millions
+                    : priceData.map((d, idx) => {
+                        const high = Number(d.high ?? d.close ?? 0);
+                        const low = Number(d.low ?? d.close ?? 0);
+                        const close = Number(d.close ?? 0);
+                        const prevClose = idx > 0 ? Number(priceData[idx - 1].close ?? close) : close;
+                        // Proxy activity score for instruments where exchange volume is unavailable/zero.
+                        return Math.abs(high - low) + Math.abs(close - prevClose);
+                    });
+                const volumeLabel = hasRealVolume ? 'Volume (M)' : 'Activity (proxy)';
+                const volumeAxisTitle = hasRealVolume ? 'Volume (M)' : 'Activity score';
+                const oiSeries = priceData.map(d => (d.oi === null || d.oi === undefined) ? null : Number(d.oi));
 
-                if (bankniftyChart) {
-                    bankniftyChart.destroy();
-                }
-
-                bankniftyChart = new Chart(document.getElementById('banknifty-chart'), {
-                    type: 'line',
-                    data: {
-                        labels: labels,
-                        datasets: [{
-                            label: `${currentInstrument} (${currentTimeframe})`,
-                            data: prices,
-                            borderColor: 'rgb(59, 130, 246)',
-                            backgroundColor: 'rgba(59, 130, 246, 0.1)',
-                            yAxisID: 'y',
-                            tension: 0.1
-                        }, {
-                            label: 'Volume (M)',
-                            data: volumes,
-                            borderColor: 'rgb(245, 101, 101)',
-                            backgroundColor: 'rgba(245, 101, 101, 0.1)',
-                            yAxisID: 'y1',
-                            type: 'bar',
-                            tension: 0.1
-                        }]
-                    },
-                    options: {
-                        responsive: true,
-                        scales: {
-                            y: {
-                                type: 'linear',
-                                display: true,
-                                position: 'left',
-                                title: {
+                // Price chart (update in place to avoid heavy destroy/recreate loops)
+                if (!bankniftyChart) {
+                    bankniftyChart = new Chart(document.getElementById('banknifty-chart'), {
+                        type: 'line',
+                        data: {
+                            labels: labels,
+                            datasets: [{
+                                label: `${currentInstrument} (${currentTimeframe})`,
+                                data: prices,
+                                borderColor: 'rgb(59, 130, 246)',
+                                backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                                yAxisID: 'y',
+                                tension: 0.1
+                            }, {
+                                label: volumeLabel,
+                                data: volumes,
+                                borderColor: 'rgb(245, 101, 101)',
+                                backgroundColor: 'rgba(245, 101, 101, 0.1)',
+                                yAxisID: 'y1',
+                                type: 'bar',
+                                tension: 0.1
+                            }, {
+                                label: 'OI',
+                                data: oiSeries,
+                                borderColor: 'rgb(99, 102, 241)',
+                                backgroundColor: 'rgba(99, 102, 241, 0.08)',
+                                yAxisID: 'y2',
+                                tension: 0.1,
+                                spanGaps: true,
+                                pointRadius: 0
+                            }]
+                        },
+                        options: {
+                            responsive: true,
+                            scales: {
+                                y: {
+                                    type: 'linear',
                                     display: true,
-                                    text: 'Price'
+                                    position: 'left',
+                                    title: {
+                                        display: true,
+                                        text: 'Price'
+                                    },
+                                    beginAtZero: false
                                 },
-                                beginAtZero: false
-                            },
-                            y1: {
-                                type: 'linear',
-                                display: true,
-                                position: 'right',
-                                title: {
+                                y1: {
+                                    type: 'linear',
                                     display: true,
-                                    text: 'Volume (M)'
+                                    position: 'right',
+                                    title: {
+                                        display: true,
+                                        text: volumeAxisTitle
+                                    },
+                                    grid: {
+                                        drawOnChartArea: false,
+                                    }
                                 },
-                                grid: {
-                                    drawOnChartArea: false,
+                                y2: {
+                                    type: 'linear',
+                                    display: false,
+                                    position: 'right',
+                                    title: {
+                                        display: true,
+                                        text: 'OI'
+                                    },
+                                    grid: {
+                                        drawOnChartArea: false,
+                                    }
                                 }
                             }
                         }
+                    });
+                } else {
+                    bankniftyChart.data.labels = labels;
+                    bankniftyChart.data.datasets[0].label = `${currentInstrument} (${currentTimeframe})`;
+                    bankniftyChart.data.datasets[0].data = prices;
+                    if (bankniftyChart.data.datasets[1]) {
+                        bankniftyChart.data.datasets[1].label = volumeLabel;
+                        bankniftyChart.data.datasets[1].data = volumes;
                     }
-                });
-            } catch (error) {
-                console.error('Failed to update price chart:', error);
-            }
+                    if (bankniftyChart.data.datasets[2]) {
+                        bankniftyChart.data.datasets[2].data = oiSeries;
+                    }
+                    if (bankniftyChart.options?.scales?.y1?.title) {
+                        bankniftyChart.options.scales.y1.title.text = volumeAxisTitle;
+                    }
+                    bankniftyChart.update('none');
+                }
 
-            // Update Technical Indicators chart - calculate from historical OHLC data
-            try {
-                // Fetch OHLC data for indicator calculation
-                const ohlcLimit = 100; // Need enough data for RSI(14) and MACD calculations
-                const ohlcResp = await fetch(`/api/market-data/ohlc/${currentInstrument}?timeframe=${currentTimeframe}&limit=${ohlcLimit}&order=asc`);
-                
-                if (ohlcResp.ok) {
-                    const ohlcData = await ohlcResp.json();
-                    
-                    if (!Array.isArray(ohlcData) || ohlcData.length < 20) {
-                        console.warn('Insufficient OHLC data for indicators:', ohlcData.length);
-                        return;
-                    }
+                chartsDidUpdate = true;
+
+                // Indicators chart - calculate from OHLC data
+                const ohlcData = ohlcDataAll.slice(-indicatorsBarsNeeded);
+                if (!Array.isArray(ohlcData) || ohlcData.length < 4) {
+                    console.warn('Insufficient OHLC data for indicators:', ohlcData?.length);
+                    return;
+                }
                     
                     // Calculate RSI for each bar (using 14-period)
                     function calculateRSI(closes, period = 14) {
@@ -791,132 +1054,134 @@
                     
                     // Extract close prices
                     const closes = ohlcData.map(d => d.close);
-                    const labels = ohlcData.map(d => (parseTimestamp(d.start_at || d.timestamp)?.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'}) || 'Invalid Date'));
+                    const indicatorLabels = ohlcData.map(d => (parseTimestamp(d.start_at || d.timestamp)?.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit'}) || 'Invalid Date'));
                     
                     // Calculate indicators
-                    const rsiValues = calculateRSI(closes, 14);
-                    const { macd: macdValues, signal: macdSignalValues } = calculateMACD(closes);
+                    const rsiPeriod = closes.length >= 15 ? 14 : Math.max(3, closes.length - 1);
+                    const rsiValues = calculateRSI(closes, rsiPeriod);
+                    const canComputeMacd = closes.length >= 26;
+                    const macdResult = canComputeMacd ? calculateMACD(closes) : { macd: Array(closes.length).fill(null), signal: Array(closes.length).fill(null) };
+                    const macdValues = macdResult.macd;
+                    const macdSignalValues = macdResult.signal;
                     
                     // Use last 50 bars for chart (or all if less)
                     const chartPoints = Math.min(50, ohlcData.length);
                     const startIdx = ohlcData.length - chartPoints;
                     
-                    const chartLabels = labels.slice(startIdx);
+                    const chartLabels = indicatorLabels.slice(startIdx);
                     const chartRSI = rsiValues.slice(startIdx);
                     const chartMACD = macdValues.slice(startIdx);
                     const chartSignal = macdSignalValues.slice(startIdx);
                     
-                    console.log('Calculated indicators - RSI points:', chartRSI.filter(v => v !== null).length, 
-                               'MACD points:', chartMACD.filter(v => v !== null).length);
-                    
-                    if (indicatorsChart) {
-                        indicatorsChart.destroy();
-                    }
+                    const macdPoints = chartMACD.filter(v => v !== null).length;
+                    console.log('Calculated indicators - RSI points:', chartRSI.filter(v => v !== null).length,
+                               'MACD points:', macdPoints);
 
-                    indicatorsChart = new Chart(document.getElementById('indicators-chart'), {
-                        type: 'line',
-                        data: {
-                            labels: chartLabels,
-                            datasets: [{
-                                label: 'RSI',
-                                data: chartRSI,
-                                borderColor: 'rgb(245, 101, 101)',
-                                backgroundColor: 'rgba(245, 101, 101, 0.1)',
-                                yAxisID: 'y',
-                                tension: 0.1,
-                                spanGaps: true
-                            }, {
-                                label: 'MACD',
-                                data: chartMACD,
-                                borderColor: 'rgb(16, 185, 129)',
-                                backgroundColor: 'rgba(16, 185, 129, 0.1)',
-                                yAxisID: 'y1',
-                                tension: 0.1,
-                                spanGaps: true
-                            }, {
-                                label: 'MACD Signal',
-                                data: chartSignal,
-                                borderColor: 'rgb(59, 130, 246)',
-                                backgroundColor: 'rgba(59, 130, 246, 0.1)',
-                                yAxisID: 'y1',
-                                tension: 0.1,
-                                spanGaps: true
-                            }]
-                        },
-                        options: {
-                            responsive: true,
-                            interaction: {
-                                intersect: false,
-                                mode: 'index'
+                    if (!indicatorsChart) {
+                        indicatorsChart = new Chart(document.getElementById('indicators-chart'), {
+                            type: 'line',
+                            data: {
+                                labels: chartLabels,
+                                datasets: [{
+                                    label: `RSI (${rsiPeriod})`,
+                                    data: chartRSI,
+                                    borderColor: 'rgb(245, 101, 101)',
+                                    backgroundColor: 'rgba(245, 101, 101, 0.1)',
+                                    yAxisID: 'y',
+                                    tension: 0.1,
+                                    spanGaps: true
+                                }, {
+                                    label: canComputeMacd ? 'MACD' : 'MACD (warming up)',
+                                    data: chartMACD,
+                                    borderColor: 'rgb(16, 185, 129)',
+                                    backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                                    yAxisID: 'y1',
+                                    tension: 0.1,
+                                    spanGaps: true
+                                }, {
+                                    label: canComputeMacd ? 'MACD Signal' : 'MACD Signal (warming up)',
+                                    data: chartSignal,
+                                    borderColor: 'rgb(59, 130, 246)',
+                                    backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                                    yAxisID: 'y1',
+                                    tension: 0.1,
+                                    spanGaps: true
+                                }]
                             },
-                            scales: {
-                                y: {
-                                    type: 'linear',
-                                    display: true,
-                                    position: 'left',
-                                    title: {
-                                        display: true,
-                                        text: 'RSI'
-                                    },
-                                    min: 0,
-                                    max: 100
+                            options: {
+                                responsive: true,
+                                interaction: {
+                                    intersect: false,
+                                    mode: 'index'
                                 },
-                                y1: {
-                                    type: 'linear',
-                                    display: true,
-                                    position: 'right',
-                                    title: {
+                                scales: {
+                                    y: {
+                                        type: 'linear',
                                         display: true,
-                                        text: 'MACD'
+                                        position: 'left',
+                                        title: {
+                                            display: true,
+                                            text: 'RSI'
+                                        },
+                                        min: 0,
+                                        max: 100
                                     },
-                                    grid: {
-                                        drawOnChartArea: false,
+                                    y1: {
+                                        type: 'linear',
+                                        display: macdPoints > 0,
+                                        position: 'right',
+                                        title: {
+                                            display: true,
+                                            text: 'MACD'
+                                        },
+                                        grid: {
+                                            drawOnChartArea: false,
+                                        }
                                     }
                                 }
                             }
+                        });
+                    } else {
+                        indicatorsChart.data.labels = chartLabels;
+                        indicatorsChart.data.datasets[0].label = `RSI (${rsiPeriod})`;
+                        indicatorsChart.data.datasets[0].data = chartRSI;
+                        indicatorsChart.data.datasets[1].label = canComputeMacd ? 'MACD' : 'MACD (warming up)';
+                        indicatorsChart.data.datasets[1].data = chartMACD;
+                        indicatorsChart.data.datasets[2].label = canComputeMacd ? 'MACD Signal' : 'MACD Signal (warming up)';
+                        indicatorsChart.data.datasets[2].data = chartSignal;
+                        if (indicatorsChart.options?.scales?.y1) {
+                            indicatorsChart.options.scales.y1.display = macdPoints > 0;
                         }
-                    });
+                        indicatorsChart.update('none');
+                    }
                     
                     // Fetch latest indicator values for the text display
-                    const indicatorsResponse = await fetch(`/api/market-data/indicators/${currentInstrument}`);
+                    const indicatorsResponse = await fetch(`/api/market-data/indicators/${currentInstrument}?timeframe=${currentTimeframe}`, { signal });
                     if (indicatorsResponse.ok) {
                         const indicatorsData = await indicatorsResponse.json();
                         if (indicatorsData.indicators) {
-                            const latestIndicator = indicatorsData.indicators;
-                            
-                            // Update indicator values display
-                            document.getElementById('rsi-status').textContent = latestIndicator.rsi_status || 'N/A';
-                            document.getElementById('macd-status').textContent = (latestIndicator.macd_value || 0).toFixed(2);
-                            document.getElementById('trend-dir').textContent = latestIndicator.trend_direction || 'N/A';
-                            document.getElementById('adx-status').textContent = (latestIndicator.adx_14 || 0).toFixed(1);
-                            
-                            // Momentum
-                            document.getElementById('momentum-val').textContent = (latestIndicator.momentum_10 || 0).toFixed(2);
-                            document.getElementById('roc-val').textContent = (latestIndicator.roc_12 || 0).toFixed(2);
-                            document.getElementById('mfi-val').textContent = (latestIndicator.mfi_14 || 0).toFixed(1);
-                            document.getElementById('stoch-k').textContent = (latestIndicator.stoch_k || 0).toFixed(1);
-                            
-                            // Volatility
-                            document.getElementById('atr-val').textContent = (latestIndicator.atr_14 || 0).toFixed(2);
-                            document.getElementById('bolling-val').textContent = ((latestIndicator.bollinger_percent_b || 0) * 100).toFixed(1) + '%';
-                            document.getElementById('volatility-lvl').textContent = latestIndicator.volatility_level || 'N/A';
-                            document.getElementById('cci-val').textContent = (latestIndicator.cci_20 || 0).toFixed(0);
-                            
-                            // Levels
-                            document.getElementById('pivot-p').textContent = (latestIndicator.pivot_point || 0).toFixed(2);
-                            document.getElementById('resistance').textContent = (latestIndicator.pivot_r1 || 0).toFixed(2);
-                            document.getElementById('support').textContent = (latestIndicator.pivot_s1 || 0).toFixed(2);
-                            document.getElementById('range-val').textContent = (latestIndicator.range_20 || 0).toFixed(2);
+                            updateIndicatorCards(indicatorsData.indicators);
                         }
                     }
-                } else {
-                    console.error('Failed to fetch OHLC for indicators:', ohlcResp.status);
-                }
             } catch (error) {
-                console.error('Failed to update indicators chart:', error);
-                document.getElementById('rsi-status').textContent = 'Error';
-                document.getElementById('macd-status').textContent = 'Error';
-                document.getElementById('trend-dir').textContent = 'Error';
+                // Aborts are expected when new updates arrive quickly.
+                if (error && (error.name === 'AbortError' || String(error).includes('AbortError'))) {
+                    return;
+                }
+                console.error('Failed to update charts:', error);
+                // Keep last known card values (from WS or prior fetch) instead of overriding with errors.
+            } finally {
+                chartsUpdateInProgress = false;
+                chartsAbortController = null;
+
+                if (chartsDidUpdate) {
+                    lastChartsUpdateAt = Date.now();
+                }
+
+                if (chartsUpdateQueued) {
+                    chartsUpdateQueued = false;
+                    scheduleRealtimeRefresh(100);
+                }
             }
         }
 
@@ -930,7 +1195,7 @@
             document.getElementById(`tf-${tf}`).className = 'px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600';
             
             // Refresh charts
-            updateCharts();
+            scheduleRealtimeRefresh(50);
             console.log('Timeframe changed to:', tf);
         }
 
@@ -938,29 +1203,32 @@
             // Handle incoming Redis pub/sub messages
             const channel = data.channel;
             const message = data.data;
-            
-            console.log('Received Redis message on channel:', channel, message);
-            
+
             if (channel === 'auth:status') {
                 // Authentication status update
                 handleAuthStatus(message);
             } else if (channel.startsWith('market:ohlc:')) {
                 // OHLC data update - refresh charts
-                console.log('OHLC data update received');
-                scheduleRealtimeRefresh(600);
-                fetchStatus();
+                scheduleRealtimeRefresh(250);
+                scheduleStatusRefresh(1500);
             } else if (channel.startsWith('indicators:')) {
                 // Indicators update - refresh indicators chart
-                console.log('Indicators update received');
-                updateIndicatorsChart();
-            } else if (channel.startsWith('market:tick:')) {
-                // Tick data update - throttle chart refresh to avoid request storms
-                console.log('Tick data update received');
+                try {
+                    const indicatorPayload = (message && typeof message === 'object' && message.indicators)
+                        ? message.indicators
+                        : message;
+                    if (indicatorPayload && typeof indicatorPayload === 'object') {
+                        updateIndicatorCards(indicatorPayload);
+                    }
+                } catch (e) {
+                    console.warn('Failed to apply WS indicator payload', e);
+                }
+                // Indicators may publish frequently; coalesce with normal chart refresh.
                 scheduleRealtimeRefresh(400);
+            } else if (channel.startsWith('market:tick:')) {
+                // Tick stream is intentionally ignored at UI level to keep WS stable.
             } else if (channel.startsWith('market:depth:')) {
-                // Market depth update
-                console.log('Market depth update received');
-                // Could update order book display if implemented
+                // Reserved for optional live depth push updates.
             }
         }
 
@@ -1003,10 +1271,12 @@
             }
         }
 
-        function refreshData() {
+        function refreshData(includeSlow = true) {
             fetchStatus();
-            fetchMarketDepth();
-            fetchOptionsChain();
+            if (includeSlow) {
+                fetchMarketDepth();
+                fetchOptionsChain();
+            }
             updateModeIndicator(); // Update mode badge
         }
 
@@ -1022,6 +1292,7 @@
                 const data = await response.json();
                 const badge = document.getElementById('mode-badge');
                 const effectiveTime = document.getElementById('effective-time');
+                currentSystemMode = String(data.mode || 'unknown').toLowerCase();
                 
                 // Determine if we're in live mode
                 const isLive = data.mode === 'live' && !data.virtual_time_enabled;
@@ -1154,10 +1425,29 @@
             }
             
             // Show status message
-            if (optionsData.status === 'no_data' || optionsData.message) {
+            const modeHint = String(optionsData.mode_hint || currentSystemMode || 'unknown').toLowerCase();
+            if (optionsData.status === 'stale') {
                 optionsStatusEl.innerHTML = `
                     <div class="bg-yellow-50 border border-yellow-200 rounded p-3 text-yellow-800">
-                        ℹ️ ${optionsData.message || 'Options chain data not available. This is normal for historical mode.'}
+                        ⚠️ Showing last known options chain snapshot.${optionsData.warning ? ` (${optionsData.warning})` : ''}
+                    </div>
+                `;
+            } else if (optionsData.status === 'no_data' || optionsData.message) {
+                let message = optionsData.message;
+                if (!message) {
+                    message = modeHint === 'historical'
+                        ? 'Options chain data not available. This is normal for historical mode.'
+                        : `Options chain data is currently unavailable in ${modeHint.toUpperCase()} mode for this instrument.`;
+                }
+
+                // Guard against stale hardcoded historical message when the system is not historical.
+                if (modeHint !== 'historical' && /historical mode/i.test(message)) {
+                    message = `Options chain data is currently unavailable in ${modeHint.toUpperCase()} mode for this instrument.`;
+                }
+
+                optionsStatusEl.innerHTML = `
+                    <div class="bg-yellow-50 border border-yellow-200 rounded p-3 text-yellow-800">
+                        ℹ️ ${message}
                     </div>
                 `;
             } else if (optionsData.status === 'error') {
@@ -1181,8 +1471,21 @@
             // Update options chain table
             if (optionsData.strikes && optionsData.strikes.length > 0) {
                 optionsBodyEl.innerHTML = optionsData.strikes.map(strike => {
-                    const ce = strike.CE || {};
-                    const pe = strike.PE || {};
+                    // Support both nested format (CE/PE) and flattened format (ce_ltp/ce_oi/...)
+                    const ce = strike.CE || {
+                        last_price: strike.ce_ltp,
+                        oi: strike.ce_oi,
+                        volume: strike.ce_volume,
+                        iv: strike.ce_iv,
+                        delta: strike.ce_delta
+                    };
+                    const pe = strike.PE || {
+                        last_price: strike.pe_ltp,
+                        oi: strike.pe_oi,
+                        volume: strike.pe_volume,
+                        iv: strike.pe_iv,
+                        delta: strike.pe_delta
+                    };
                     
                     return `
                         <tr class="text-xs border-b hover:bg-gray-50">
@@ -1223,10 +1526,10 @@
             updateModeIndicator(); // Initial mode update
             
             // Refresh every 30 seconds as fallback
-            setInterval(refreshData, 30000);
+            setInterval(() => refreshData(true), 30000);
             
-            // Update mode indicator every 5 seconds
-            setInterval(updateModeIndicator, 5000);
+            // Keep mode polling lighter to reduce API pressure.
+            setInterval(updateModeIndicator, 15000);
         });
     </script>
 </body>

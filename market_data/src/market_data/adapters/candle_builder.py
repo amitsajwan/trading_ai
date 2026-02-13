@@ -150,6 +150,7 @@ class CandleBuilder:
             low=candle.low,
             close=candle.close,
             volume=candle.volume,
+            open_interest=candle.open_interest,
             start_at=candle.start_time,
             end_at=end_at
         )
@@ -201,6 +202,7 @@ class CandleData:
         self.close: Optional[float] = None
         self.volume: int = 0
         self.tick_count: int = 0
+        self.open_interest: Optional[int] = None
     
     def update(self, tick: MarketTick):
         """Update candle with new tick."""
@@ -224,6 +226,10 @@ class CandleData:
         # Accumulate volume
         if tick.volume:
             self.volume += tick.volume
+
+        # Carry the latest open interest into the candle (close value semantics)
+        if tick.open_interest is not None:
+            self.open_interest = tick.open_interest
         
         self.tick_count += 1
 

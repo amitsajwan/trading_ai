@@ -112,10 +112,15 @@ dmypy.json
 # Logs
 logs/
 *.log
+*.err
+*.pid
+.run/
 
 # Temporary files
 temp_*
 *.tmp
+credentials.json.backup
+credentials*.backup
 
 # OS
 .DS_Store

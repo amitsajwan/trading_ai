@@ -17,6 +17,7 @@ import os
 import sys
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any
+from dataclasses import asdict
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -27,7 +28,7 @@ from dotenv import load_dotenv
 
 # Load environment variables (optional - may be set via Docker environment)
 try:
-    load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", "..", "..", "local.env"))
+    load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", ".env"))
 except Exception:
     # File may not exist in Docker environment - environment variables set directly
     pass
@@ -48,7 +49,16 @@ INSTRUMENT_KEY = config.instrument_key
 IST = timezone(timedelta(hours=5, minutes=30))
 
 from .api import build_store
-from .adapters.zerodha_options_chain import ZerodhaOptionsChainAdapter
+try:
+    from .adapters.zerodha_options_chain import ZerodhaOptionsChainAdapter
+except (ImportError, KeyboardInterrupt) as e:
+    if isinstance(e, KeyboardInterrupt):
+        raise
+    print(f"WARNING: Zerodha options chain adapter not available: {e}")
+    ZerodhaOptionsChainAdapter = None
+except Exception as e:
+    print(f"WARNING: Zerodha options chain adapter not available: {e}")
+    ZerodhaOptionsChainAdapter = None
 from .contracts import MarketTick, OHLCBar, OptionsData, MarketStore
 try:
     from .technical_indicators_service import TechnicalIndicatorsService
@@ -61,6 +71,178 @@ except ImportError:
 # Socket.IO removed - real-time updates now handled by Redis WebSocket Gateway
 # See redis_ws_gateway module for direct Redis pub/sub to WebSocket forwarding
 WEBSOCKET_AVAILABLE = False
+
+
+def resample_ohlc_bars(bars: List[Any], target_timeframe: str) -> List[Any]:
+    """Resample OHLC bars from 1min to target timeframe.
+    
+    Args:
+        bars: List of OHLCBar objects (assumed to be 1min)
+        target_timeframe: Target timeframe (e.g., '5min', '15min', '1h')
+    
+    Returns:
+        List of resampled OHLCBar objects
+    """
+    if not bars:
+        return []
+    
+    import pandas as pd
+    from .contracts import OHLCBar
+    
+    # Convert to DataFrame
+    data = []
+    for bar in bars:
+        data.append({
+            'timestamp': bar.start_at,
+            'open': bar.open,
+            'high': bar.high,
+            'low': bar.low,
+            'close': bar.close,
+            'volume': bar.volume or 0,
+            'open_interest': bar.open_interest or 0
+        })
+    
+    df = pd.DataFrame(data)
+    df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce', utc=True)
+    df = df.dropna(subset=['timestamp']).sort_values('timestamp').set_index('timestamp')
+    
+    # Parse target timeframe
+    if target_timeframe.endswith('min'):
+        # Pandas 2.2+ prefers explicit "min" over legacy "T"
+        freq = f"{target_timeframe[:-3]}min"
+    elif target_timeframe.endswith('h'):
+        freq = f"{target_timeframe[:-1]}h"
+    elif target_timeframe == '1d' or target_timeframe.endswith('d'):
+        freq = target_timeframe
+    else:
+        # Default to 5min
+        freq = '5T'
+    
+    # Resample
+    resampled = df.resample(freq).agg({
+        'open': 'first',
+        'high': 'max',
+        'low': 'min',
+        'close': 'last',
+        'volume': 'sum',
+        'open_interest': 'last'
+    }).dropna()
+    
+    # Convert back to OHLCBar objects
+    resampled_bars = []
+    for timestamp, row in resampled.iterrows():
+        resampled_bars.append(OHLCBar(
+            instrument=bars[0].instrument,
+            timeframe=target_timeframe,
+            open=row['open'],
+            high=row['high'],
+            low=row['low'],
+            close=row['close'],
+            volume=int(row['volume']),
+            start_at=timestamp.to_pydatetime(),
+            end_at=(timestamp + pd.Timedelta(freq)).to_pydatetime(),
+            open_interest=int(row['open_interest']) if pd.notna(row['open_interest']) else None
+        ))
+    
+    return resampled_bars
+
+
+def _timeframe_aliases_for_ohlc(timeframe: str) -> List[str]:
+    """Return best-effort aliases for OHLC timeframe keys."""
+    tf = (timeframe or "").strip().lower()
+    if not tf:
+        return ["1min"]
+
+    aliases: List[str] = [tf]
+    if tf == "minute":
+        aliases.append("1min")
+    if tf == "1m":
+        aliases.append("1min")
+
+    if tf.endswith("min"):
+        digits = tf[:-3]
+        if digits.isdigit():
+            aliases.append(f"{digits}m")
+    elif tf.endswith("m") and tf[:-1].isdigit():
+        aliases.append(f"{tf[:-1]}min")
+
+    # Preserve order while removing duplicates
+    return list(dict.fromkeys(aliases))
+
+
+def _read_ohlc_from_redis_any_mode(instrument: str, timeframe: str, limit: int = 200) -> List[OHLCBar]:
+    """Read OHLC rows from Redis sorted sets across live/historical/paper prefixes."""
+    instrument_upper = instrument.upper()
+    tfs = _timeframe_aliases_for_ohlc(timeframe)
+    prefixes = ["live", "historical", "paper", ""]
+
+    try:
+        redis_client = get_redis_client()
+    except Exception:
+        return []
+
+    rows: List[str] = []
+    used_key: Optional[str] = None
+
+    for tf in tfs:
+        for prefix in prefixes:
+            sorted_key = f"{prefix + ':' if prefix else ''}ohlc_sorted:{instrument_upper}:{tf}"
+            try:
+                if redis_client.zcard(sorted_key) <= 0:
+                    continue
+                rows = redis_client.zrange(sorted_key, -max(limit, 1), -1) if limit > 0 else redis_client.zrange(sorted_key, 0, -1)
+                if rows:
+                    used_key = sorted_key
+                    break
+            except Exception:
+                continue
+        if rows:
+            break
+
+    if not rows:
+        return []
+
+    parsed: List[OHLCBar] = []
+    for payload in rows:
+        try:
+            import json
+            item = json.loads(payload)
+            ts_raw = item.get("start_at") or item.get("timestamp")
+            if ts_raw is None:
+                continue
+
+            if isinstance(ts_raw, (int, float)):
+                start_at = datetime.fromtimestamp(ts_raw, tz=timezone.utc)
+            else:
+                start_at = datetime.fromisoformat(str(ts_raw).replace("Z", "+00:00"))
+
+            end_raw = item.get("end_at")
+            if isinstance(end_raw, (int, float)):
+                end_at = datetime.fromtimestamp(end_raw, tz=timezone.utc)
+            elif end_raw:
+                end_at = datetime.fromisoformat(str(end_raw).replace("Z", "+00:00"))
+            else:
+                end_at = start_at
+
+            parsed.append(OHLCBar(
+                instrument=item.get("instrument") or instrument_upper,
+                timeframe=item.get("timeframe") or timeframe,
+                open=float(item.get("open", 0.0)),
+                high=float(item.get("high", 0.0)),
+                low=float(item.get("low", 0.0)),
+                close=float(item.get("close", 0.0)),
+                volume=int(item.get("volume", 0) or 0),
+                open_interest=item.get("oi") if item.get("oi") is not None else item.get("open_interest"),
+                start_at=start_at,
+                end_at=end_at,
+            ))
+        except Exception:
+            continue
+
+    parsed.sort(key=lambda b: b.start_at)
+    if parsed:
+        logger.info(f"Loaded {len(parsed)} OHLC bars from Redis key {used_key}")
+    return parsed
 
 
 # Pydantic models for API requests/responses
@@ -79,6 +261,9 @@ class MarketTickResponse(BaseModel):
     timestamp: str
     last_price: float
     volume: Optional[int] = None
+    oi: Optional[int] = None
+    oi_day_high: Optional[int] = None
+    oi_day_low: Optional[int] = None
 
 
 class OHLCResponse(BaseModel):
@@ -90,6 +275,7 @@ class OHLCResponse(BaseModel):
     low: float
     close: float
     volume: Optional[int]
+    oi: Optional[int] = None
     start_at: str
 
 
@@ -243,7 +429,8 @@ async def lifespan(app: FastAPI):
                                             "high": bar.get('high'),
                                             "low": bar.get('low'),
                                             "close": bar.get('close'),
-                                            "volume": bar.get('volume', 0)
+                                            "volume": bar.get('volume', 0),
+                                            "oi": bar.get('oi') or bar.get('open_interest')
                                         })
                                     except Exception as parse_err:
                                         print(f"Market Data API: Error parsing OHLC data from {key}: {parse_err}")
@@ -265,7 +452,8 @@ async def lifespan(app: FastAPI):
                                                 "high": bar.get('high'),
                                                 "low": bar.get('low'),
                                                 "close": bar.get('close'),
-                                                "volume": bar.get('volume', 0)
+                                                "volume": bar.get('volume', 0),
+                                                "oi": bar.get('oi') or bar.get('open_interest')
                                             })
                                         except Exception as parse_err:
                                             print(f"Market Data API: Error parsing OHLC data from sorted set entry: {parse_err}")
@@ -341,7 +529,7 @@ app.add_middleware(
 _store: Optional[MarketStore] = None
 _options_client: Optional[OptionsData] = None
 _redis_client: Optional[redis.Redis] = None
-_technical_service: Optional[TechnicalIndicatorsService] = None
+_technical_service: Optional[Any] = None
 
 
 @app.get("/")
@@ -792,7 +980,10 @@ async def get_latest_tick(instrument: str):
             instrument=tick.instrument,
             timestamp=tick.timestamp.isoformat(),
             last_price=tick.last_price,
-            volume=tick.volume
+            volume=tick.volume,
+            oi=tick.open_interest,
+            oi_day_high=tick.oi_day_high,
+            oi_day_low=tick.oi_day_low
         )
     except HTTPException:
         raise
@@ -859,6 +1050,7 @@ async def _get_ohlc_impl(instrument: str, timeframe: str, limit: int, order: str
                             low=float(bar_data.get("low", 0)),
                             close=float(bar_data.get("close", 0)),
                             volume=bar_data.get("volume"),
+                            oi=bar_data.get("oi") or bar_data.get("open_interest"),
                             start_at=start_at_iso
                         )
                     )
@@ -885,6 +1077,7 @@ async def _get_ohlc_impl(instrument: str, timeframe: str, limit: int, order: str
                 low=bar.low,
                 close=bar.close,
                 volume=bar.volume,
+                oi=bar.open_interest,
                 start_at=bar.start_at.isoformat() + 'Z'
             )
             for bar in bars
@@ -920,6 +1113,89 @@ async def get_ohlc_alias(
 ):
     """Alias for OHLC endpoint (shorter path)."""
     return await _get_ohlc_impl(instrument, timeframe, limit, order.lower())
+
+
+def _discover_market_instruments(redis_client, max_instruments: int = 100) -> List[str]:
+    """Best-effort discovery of instrument symbols from Redis keys."""
+    instruments = set()
+    patterns = [
+        "*:ohlc_sorted:*:*",
+        "ohlc_sorted:*:*",
+        "*:tick:*:latest",
+        "tick:*:latest",
+        "*:price:*:latest",
+        "price:*:latest",
+    ]
+
+    for pattern in patterns:
+        cursor = 0
+        while True:
+            try:
+                cursor, keys = redis_client.scan(cursor=cursor, match=pattern, count=500)
+            except Exception:
+                break
+
+            for key in keys or []:
+                try:
+                    parts = str(key).split(":")
+                    instrument = None
+
+                    # live:ohlc_sorted:INSTRUMENT:TF / historical:... / paper:...
+                    if len(parts) >= 4 and parts[1] == "ohlc_sorted":
+                        instrument = parts[2]
+                    # ohlc_sorted:INSTRUMENT:TF
+                    elif len(parts) >= 3 and parts[0] == "ohlc_sorted":
+                        instrument = parts[1]
+                    # live:tick:INSTRUMENT:latest / historical:...
+                    elif len(parts) >= 4 and parts[1] == "tick" and parts[-1] == "latest":
+                        instrument = parts[2]
+                    # tick:INSTRUMENT:latest
+                    elif len(parts) >= 3 and parts[0] == "tick" and parts[-1] == "latest":
+                        instrument = parts[1]
+                    # live:price:INSTRUMENT:latest / historical:...
+                    elif len(parts) >= 4 and parts[1] == "price" and parts[-1] == "latest":
+                        instrument = parts[2]
+                    # price:INSTRUMENT:latest
+                    elif len(parts) >= 3 and parts[0] == "price" and parts[-1] == "latest":
+                        instrument = parts[1]
+
+                    if instrument:
+                        instruments.add(str(instrument).upper())
+                        if len(instruments) >= max_instruments:
+                            return sorted(instruments)
+                except Exception:
+                    continue
+
+            if cursor == 0:
+                break
+
+    return sorted(instruments)
+
+
+@app.get("/api/v1/market/instruments")
+async def get_market_instruments():
+    """Return available market instruments discovered from Redis + config defaults."""
+    instruments = set()
+    if INSTRUMENT_SYMBOL:
+        instruments.add(str(INSTRUMENT_SYMBOL).upper())
+    if INSTRUMENT_KEY:
+        instruments.add(str(INSTRUMENT_KEY).upper())
+
+    try:
+        redis_client = get_redis_client()
+        discovered = _discover_market_instruments(redis_client, max_instruments=100)
+        for inst in discovered:
+            instruments.add(inst)
+    except Exception:
+        # Keep endpoint resilient; return defaults even if Redis is unavailable.
+        pass
+
+    out = sorted(i for i in instruments if i)
+    return {
+        "instruments": out,
+        "count": len(out),
+        "timestamp": datetime.now(IST).isoformat(),
+    }
 
 
 @app.get("/api/v1/market/overview")
@@ -1057,7 +1333,18 @@ async def get_options_chain(instrument: str):
                     )
                 )
             
-            await options_client.initialize()
+            needs_initialize = True
+            try:
+                cached_options_df = getattr(options_client, "_options_df", None)
+                cached_instruments_df = getattr(options_client, "_instruments_df", None)
+                if cached_options_df is not None and len(cached_options_df) > 0 and cached_instruments_df is not None and len(cached_instruments_df) > 0:
+                    needs_initialize = False
+            except Exception:
+                needs_initialize = True
+
+            if needs_initialize:
+                await options_client.initialize()
+
             chain = await options_client.fetch_options_chain(instrument=instrument)
 
         # Ensure expiry is a string
@@ -1219,9 +1506,14 @@ async def get_technical_indicators(
 ):
     """Get technical indicators for an instrument."""
     try:
+        # Normalize timeframe
+        tf = timeframe
+        if tf == 'minute':
+            tf = '1min'
+        
         # Try to get from Redis cache first
         redis_client = get_redis_client()
-        key_prefix = f"indicators:{instrument.upper()}:"
+        key_prefix = f"indicators:{instrument.upper()}:{tf}:"
         indicators_dict = {}
 
         logger.info(f"🔍 Looking for indicators with prefix: {key_prefix}")
@@ -1255,7 +1547,20 @@ async def get_technical_indicators(
                     tf = '1min'
 
                 ohlc_bars = list(store.get_ohlc(instrument.upper(), tf, limit=200))
+                if not ohlc_bars:
+                    # Fallback: read directly across live/historical/paper prefixes
+                    ohlc_bars = _read_ohlc_from_redis_any_mode(instrument.upper(), tf, limit=200)
                 logger.warning(f"Store returned {len(ohlc_bars)} OHLC bars for {instrument.upper()}:{tf}")
+                
+                # If no data for the requested timeframe and it's not 1min, try to get 1min data and resample
+                if not ohlc_bars and tf != '1min':
+                    logger.info(f"No {tf} data found, trying to resample from 1min data")
+                    min1_bars = list(store.get_ohlc(instrument.upper(), '1min', limit=1000))  # Get more 1min bars
+                    if not min1_bars:
+                        min1_bars = _read_ohlc_from_redis_any_mode(instrument.upper(), '1min', limit=1000)
+                    if min1_bars:
+                        ohlc_bars = resample_ohlc_bars(min1_bars, tf)
+                        logger.info(f"Resampled {len(min1_bars)} 1min bars to {len(ohlc_bars)} {tf} bars")
                 if not ohlc_bars:
                     # Debug: check direct Redis sorted set as a fallback for investigation
                     try:

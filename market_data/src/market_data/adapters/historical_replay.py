@@ -216,6 +216,7 @@ class HistoricalDataReplay(MarketIngestion):
                     low=point["low"],
                     close=point["close"],
                     volume=point.get("volume", 0),
+                    open_interest=point.get("oi") or point.get("open_interest"),
                     start_at=timestamp,
                     end_at=timestamp + timedelta(minutes=1)
                 )
@@ -228,7 +229,8 @@ class HistoricalDataReplay(MarketIngestion):
                         instrument=instrument,
                         timestamp=datetime.fromisoformat(tick_data["timestamp"]),
                         last_price=tick_data["price"],
-                        volume=tick_data["volume"]
+                        volume=tick_data["volume"],
+                        open_interest=tick_data.get("oi") or tick_data.get("open_interest"),
                     )
                     self.store.store_tick(tick)
             # Fallback: store single tick using close price
@@ -237,7 +239,8 @@ class HistoricalDataReplay(MarketIngestion):
                     instrument=instrument,
                     timestamp=timestamp,
                     last_price=point["close"],
-                    volume=point.get("volume")
+                    volume=point.get("volume"),
+                    open_interest=point.get("oi") or point.get("open_interest"),
                 )
                 self.store.store_tick(tick)
 

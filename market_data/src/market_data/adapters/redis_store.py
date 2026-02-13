@@ -49,6 +49,9 @@ def _serialize_tick(tick: MarketTick) -> dict:
         "timestamp": _iso(tick.timestamp),
         "last_price": tick.last_price,
         "volume": tick.volume,
+        "oi": tick.open_interest,
+        "oi_day_high": tick.oi_day_high,
+        "oi_day_low": tick.oi_day_low,
         "original_timestamp": _iso(tick.original_timestamp) if tick.original_timestamp else None,
     }
 
@@ -62,6 +65,7 @@ def _serialize_ohlc(bar: OHLCBar) -> dict:
         "low": bar.low,
         "close": bar.close,
         "volume": bar.volume,
+        "oi": bar.open_interest,
         "start_at": _iso(bar.start_at),
         "end_at": _iso(bar.end_at),
     }
@@ -79,6 +83,9 @@ def _parse_tick(payload: Optional[str]) -> Optional[MarketTick]:
             timestamp=ts,
             last_price=float(data.get("last_price", 0)),
             volume=data.get("volume"),
+            open_interest=data.get("oi"),
+            oi_day_high=data.get("oi_day_high"),
+            oi_day_low=data.get("oi_day_low"),
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("Failed to parse tick from redis: %s", exc)
@@ -127,6 +134,7 @@ def _parse_ohlc(payload: str) -> Optional[OHLCBar]:
             low=float(data.get("low", 0)),
             close=float(data.get("close", 0)),
             volume=volume,
+            open_interest=data.get("oi") or data.get("open_interest"),
             start_at=start_ts,
             end_at=end_ts,
         )
@@ -177,31 +185,12 @@ class RedisMarketStore(MarketStore):
         # Initialize technical indicators service if enabled
         if self._enable_technical_indicators:
             try:
-                from ..technical_indicators_service import TechnicalIndicatorsService
-
-                # Read execution mode from Redis if available (for backtest awareness)
-                mode = "LIVE"
-                run_id = None
-                try:
-                    mode = redis_client.get("system:execution_mode") or "LIVE"
-                    run_id = redis_client.get("system:run_id")
-                    if mode == "BACKTEST" and run_id:
-                        logger.info(f"MarketStore: Detected BACKTEST mode (run_id: {run_id})")
-                except Exception as e:
-                    logger.warning(f"MarketStore: Could not read execution mode from Redis: {e}")
-
-                self._technical_service = TechnicalIndicatorsService(
-                    redis_client=redis_client,
-                    mode=mode,
-                    run_id=run_id
-                )
-
-                # Initialize technical service with existing OHLC data
-                self._initialize_technical_service_with_existing_data()
-
-                logger.info(f"Technical indicators service initialized in MarketStore ({mode} mode)")
+                from ..technical_indicators_service import get_technical_service
+                self._technical_service = get_technical_service()
+                if self._technical_service is None:
+                    logger.info("Technical indicators service not yet available, will check later")
             except Exception as e:
-                logger.warning(f"Could not initialize technical indicators service: {e}")
+                logger.warning(f"Could not import technical indicators service: {e}")
                 self._technical_service = None
         else:
             self._technical_service = None
@@ -246,6 +235,7 @@ class RedisMarketStore(MarketStore):
                                 'low': bar.low,
                                 'close': bar.close,
                                 'volume': bar.volume,
+                                'oi': bar.open_interest,
                                 'start_at': bar.start_at.isoformat(),
                                 'timestamp': bar.start_at.isoformat()
                             })
@@ -268,12 +258,36 @@ class RedisMarketStore(MarketStore):
         payload_json = json.dumps(payload)
         try:
             self.redis.setex(get_redis_key(f"tick:{tick.instrument}:{ts_key}"), self._tick_ttl, payload_json)
-            # Also store latest tick blob and price for quick lookup
-            self.redis.setex(get_redis_key(f"tick:{tick.instrument}:latest"), self._tick_ttl, payload_json)
-            self.redis.setex(get_redis_key(f"price:{tick.instrument}:latest"), self._price_ttl, str(tick.last_price))
-            self.redis.setex(get_redis_key(f"price:{tick.instrument}:latest_ts"), self._price_ttl, ts_key)
-            if tick.volume is not None:
-                self.redis.setex(get_redis_key(f"volume:{tick.instrument}:latest"), self._price_ttl, str(tick.volume))
+            # Also store latest tick blob and price for quick lookup.
+            # Guard against out-of-order ticks overriding fresher latest pointers.
+            should_update_latest = True
+            latest_ts_key = get_redis_key(f"price:{tick.instrument}:latest_ts")
+            existing_latest_ts = self.redis.get(latest_ts_key)
+            if existing_latest_ts:
+                try:
+                    existing_dt = datetime.fromisoformat(str(existing_latest_ts).replace("Z", "+00:00"))
+                    new_dt = tick.timestamp
+                    if new_dt.tzinfo is None and existing_dt.tzinfo is not None:
+                        new_dt = new_dt.replace(tzinfo=existing_dt.tzinfo)
+                    elif new_dt.tzinfo is not None and existing_dt.tzinfo is None:
+                        existing_dt = existing_dt.replace(tzinfo=new_dt.tzinfo)
+                    should_update_latest = new_dt >= existing_dt
+                except Exception:
+                    should_update_latest = True
+
+            if should_update_latest:
+                self.redis.setex(get_redis_key(f"tick:{tick.instrument}:latest"), self._tick_ttl, payload_json)
+                self.redis.setex(get_redis_key(f"price:{tick.instrument}:latest"), self._price_ttl, str(tick.last_price))
+                self.redis.setex(latest_ts_key, self._price_ttl, ts_key)
+                if tick.volume is not None:
+                    self.redis.setex(get_redis_key(f"volume:{tick.instrument}:latest"), self._price_ttl, str(tick.volume))
+            else:
+                logger.debug(
+                    "Skipping stale tick for latest pointer: %s ts=%s existing=%s",
+                    tick.instrument,
+                    ts_key,
+                    existing_latest_ts,
+                )
             
             # Publish tick to Redis pub/sub for real-time subscribers (Socket.IO, signal monitoring, etc.)
             try:
@@ -339,20 +353,30 @@ class RedisMarketStore(MarketStore):
                         print(f"OHLC stored for {instrument}")
 
                         # Also update technical indicators when candle closes
-                        if self._enable_technical_indicators and self._technical_service:
-                            print(f"UPDATING INDICATORS for {instrument} candle close")
-                            candle_dict = {
-                                "open": bar.open,
-                                "high": bar.high,
-                                "low": bar.low,
-                                "close": bar.close,
-                                "volume": bar.volume or 0,
-                                "start_at": bar.start_at.isoformat(),
-                                "timestamp": bar.start_at.isoformat()
-                            }
-                            print(f"Calling update_candle with data")
-                            result = self._technical_service.update_candle(instrument, candle_dict)
-                            print(f"INDICATORS UPDATED for {instrument}: RSI={getattr(result, 'rsi_14', 'N/A')}, MACD={getattr(result, 'macd_value', 'N/A')}")
+                        if self._enable_technical_indicators:
+                            # Try to get technical service if not available
+                            if self._technical_service is None:
+                                try:
+                                    from ..technical_indicators_service import get_technical_service
+                                    self._technical_service = get_technical_service()
+                                except Exception:
+                                    pass
+                            
+                            if self._technical_service:
+                                print(f"UPDATING INDICATORS for {instrument} candle close")
+                                candle_dict = {
+                                    "open": bar.open,
+                                    "high": bar.high,
+                                    "low": bar.low,
+                                    "close": bar.close,
+                                    "volume": bar.volume or 0,
+                                    "oi": bar.open_interest,
+                                    "start_at": bar.start_at.isoformat(),
+                                    "timestamp": bar.start_at.isoformat()
+                                }
+                                print(f"Calling update_candle with data")
+                                result = self._technical_service.update_candle(instrument, candle_dict)
+                                print(f"INDICATORS UPDATED for {instrument}: RSI={getattr(result, 'rsi_14', 'N/A')}, MACD={getattr(result, 'macd_value', 'N/A')}")
                         else:
                             print(f"TECHNICAL SERVICE NOT AVAILABLE: enabled={self._enable_technical_indicators}, service={self._technical_service is not None}")
                     except Exception as e:
@@ -413,7 +437,10 @@ class RedisMarketStore(MarketStore):
         if not self._available:
             return None
         try:
-            payload = self.redis.get(f"tick:{instrument}:latest")
+            payload = self.redis.get(get_redis_key(f"tick:{instrument}:latest"))
+            # Backward compatibility for legacy unprefixed keys
+            if not payload:
+                payload = self.redis.get(f"tick:{instrument}:latest")
             return _parse_tick(payload)
         except Exception as exc:  # noqa: BLE001
             logger.warning("Error reading latest tick: %s", exc)
@@ -436,6 +463,7 @@ class RedisMarketStore(MarketStore):
                 "low": bar.low,
                 "close": bar.close,
                 "volume": bar.volume or 0,
+                "oi": bar.open_interest,
                 "end_at": bar.end_at.isoformat(),
             }
 

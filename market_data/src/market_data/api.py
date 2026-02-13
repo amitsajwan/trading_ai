@@ -69,6 +69,12 @@ def build_historical_replay(store: MarketStore, data_source: str = "synthetic", 
 
         replay.stop()
     """
+    if data_source == "zerodha" and not kite:
+        raise ValueError(
+            "Zerodha historical replay requested but no KiteConnect instance was provided. "
+            "This is a real-only mode: install kiteconnect and provide valid credentials/token."
+        )
+
     if data_source == "zerodha" and kite:
         # Use real Zerodha historical data
         if start_date:

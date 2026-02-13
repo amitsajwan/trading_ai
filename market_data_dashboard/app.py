@@ -21,7 +21,9 @@ from typing import Dict, Any, List, Optional, Tuple
 import time
 import redis
 import uuid
-import redis.asyncio as aioredis
+import threading
+import queue
+import fnmatch
 
 try:
     import sys
@@ -196,9 +198,11 @@ def _timeframe_aliases(timeframe: str) -> List[str]:
     return list(dict.fromkeys(out))
 
 
-def _ohlc_sorted_keys_to_try(instrument: str, timeframe: str) -> List[str]:
+def _ohlc_sorted_keys_to_try(instrument: str, timeframe: str, preferred_mode: Optional[str] = None) -> List[str]:
     tfs = _timeframe_aliases(timeframe)
     prefixes = ["live", "historical", "paper", ""]
+    if preferred_mode in {"live", "historical", "paper"}:
+        prefixes = [preferred_mode] + [p for p in prefixes if p != preferred_mode]
     keys: List[str] = []
     for tf in tfs:
         for p in prefixes:
@@ -207,6 +211,19 @@ def _ohlc_sorted_keys_to_try(instrument: str, timeframe: str) -> List[str]:
             else:
                 keys.append(f"ohlc_sorted:{instrument}:{tf}")
     return keys
+
+
+def _extract_key_mode(redis_key: Optional[str]) -> Optional[str]:
+    """Extract mode prefix from Redis key (live/historical/paper)."""
+    if not redis_key:
+        return None
+    if redis_key.startswith("live:"):
+        return "live"
+    if redis_key.startswith("historical:"):
+        return "historical"
+    if redis_key.startswith("paper:"):
+        return "paper"
+    return None
 
 
 def _parse_ohlc_json_rows(rows: List[str]) -> List[Dict[str, Any]]:
@@ -226,11 +243,12 @@ def _read_ohlc_from_redis(
     timeframe: str,
     limit: int = 100,
     order: str = "asc",
+    preferred_mode: Optional[str] = None,
 ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
     """Read OHLC bars from Redis sorted sets, trying multiple key patterns."""
     r = _redis_sync_client()
 
-    keys = _ohlc_sorted_keys_to_try(instrument, timeframe)
+    keys = _ohlc_sorted_keys_to_try(instrument, timeframe, preferred_mode=preferred_mode)
     for key in keys:
         try:
             count = r.zcard(key)
@@ -253,6 +271,53 @@ def _read_ohlc_from_redis(
             continue
 
     return [], None
+
+
+def _discover_instruments_from_redis(max_instruments: int = 25) -> List[str]:
+    """Best-effort discovery of instruments present in Redis OHLC sorted-set keys.
+
+    Looks for keys like:
+      - live:ohlc_sorted:{instrument}:{timeframe}
+      - historical:ohlc_sorted:{instrument}:{timeframe}
+      - ohlc_sorted:{instrument}:{timeframe}
+    """
+    try:
+        r = _redis_sync_client()
+    except Exception:
+        return []
+
+    patterns = ["*:ohlc_sorted:*:*", "ohlc_sorted:*:*"]
+    instruments: set[str] = set()
+
+    for pat in patterns:
+        cursor = 0
+        while True:
+            try:
+                cursor, keys = r.scan(cursor=cursor, match=pat, count=500)
+            except Exception:
+                break
+
+            for key in keys or []:
+                try:
+                    parts = str(key).split(":")
+                    inst: Optional[str] = None
+                    # live:ohlc_sorted:INST:TF
+                    if len(parts) >= 4 and parts[1] == "ohlc_sorted":
+                        inst = parts[2]
+                    # ohlc_sorted:INST:TF
+                    elif len(parts) >= 3 and parts[0] == "ohlc_sorted":
+                        inst = parts[1]
+                    if inst:
+                        instruments.add(inst)
+                        if len(instruments) >= int(max_instruments or 0):
+                            return sorted(instruments)
+                except Exception:
+                    continue
+
+            if cursor == 0:
+                break
+
+    return sorted(instruments)
 
 
 def _extract_bar_timestamp(bar: Dict[str, Any]) -> Optional[str]:
@@ -369,6 +434,29 @@ templates = Jinja2Templates(directory=str(templates))
 # Market Data API configuration
 MARKET_DATA_API_URL = os.getenv("MARKET_DATA_API_URL", "http://localhost:8004")
 
+# Lightweight in-memory caches to keep UI responsive when upstream API is slow.
+_LAST_GOOD_INDICATORS: Dict[str, Dict[str, Any]] = {}
+_LAST_GOOD_DEPTH: Dict[str, Dict[str, Any]] = {}
+_LAST_GOOD_OPTIONS: Dict[str, Dict[str, Any]] = {}
+
+
+def _get_current_mode_hint(timeout_seconds: float = 1.5) -> Optional[str]:
+    """Best-effort mode lookup from upstream API (live/historical/paper)."""
+    try:
+        response = requests.get(
+            f"{MARKET_DATA_API_URL}/api/v1/system/mode",
+            timeout=timeout_seconds,
+        )
+        if response.status_code != 200:
+            return None
+        payload = response.json()
+        mode = str(payload.get("mode") or "").strip().lower()
+        if mode in {"live", "historical", "paper"}:
+            return mode
+    except Exception:
+        return None
+    return None
+
 
 # ============================================================================
 # WebSocket: STOMP over WebSocket + Redis Pub/Sub Bridge
@@ -469,7 +557,20 @@ def _stomp_destination_to_redis(destination: str) -> List[Tuple[str, str]]:
 @app.websocket("/ws")
 async def websocket_stomp(ws: WebSocket):
     """WebSocket endpoint that supports STOMP and bridges Redis pub/sub to browser."""
-    await ws.accept()
+    requested_subprotocols = ws.scope.get("subprotocols") or []
+    selected_subprotocol = next(
+        (
+            protocol
+            for protocol in ("v12.stomp", "v11.stomp", "v10.stomp", "stomp")
+            if protocol in requested_subprotocols
+        ),
+        None,
+    )
+
+    if selected_subprotocol:
+        await ws.accept(subprotocol=selected_subprotocol)
+    else:
+        await ws.accept()
 
     conn_id = str(uuid.uuid4())
     mode: Optional[str] = None  # 'stomp' or 'legacy'
@@ -477,7 +578,9 @@ async def websocket_stomp(ws: WebSocket):
     message_seq = 0
     buffer = ""
 
-    redis_client = aioredis.Redis(
+    # NOTE: redis.asyncio pubsub is unreliable in some Windows setups.
+    # Use sync Redis pubsub in a background thread and forward into this async WS.
+    redis_client = redis.Redis(
         host=REDIS_HOST,
         port=REDIS_PORT,
         db=0,
@@ -485,7 +588,10 @@ async def websocket_stomp(ws: WebSocket):
         socket_connect_timeout=2,
         socket_timeout=2,
     )
-    pubsub = redis_client.pubsub()
+    pubsub = redis_client.pubsub(ignore_subscribe_messages=True)
+    loop = asyncio.get_running_loop()
+    stop_event = threading.Event()
+    ctrl_q: "queue.SimpleQueue[tuple[str, str]]" = queue.SimpleQueue()
 
     # STOMP subscriptions (internal_id -> {stomp_id, destination, kind, name})
     stomp_subs: Dict[str, Dict[str, str]] = {}
@@ -507,67 +613,114 @@ async def websocket_stomp(ws: WebSocket):
         )
         await ws.send_text(frame)
 
-    async def _redis_forwarder():
-        """Forward messages from Redis pub/sub to this WebSocket."""
+    def _channel_matches_pattern(channel_name: Any, pattern_glob: str) -> bool:
+        """Return True if a Redis channel name matches a glob-style pattern.
+
+        Redis PSUBSCRIBE patterns use glob semantics (e.g., market:ohlc:FOO:*).
+        redis-py asyncio may not always provide msg['pattern'] consistently, so
+        we defensively match against the channel string ourselves.
+        """
+        if not pattern_glob:
+            return False
         try:
-            async for msg in pubsub.listen():
-                if not msg:
-                    continue
+            ch = channel_name.decode("utf-8") if isinstance(channel_name, (bytes, bytearray)) else str(channel_name)
+            return fnmatch.fnmatchcase(ch, pattern_glob)
+        except Exception:
+            return False
 
-                msg_type = msg.get("type")
-                if msg_type in {"subscribe", "psubscribe", "unsubscribe", "punsubscribe"}:
-                    continue
+    async def _handle_redis_message(msg: Dict[str, Any]) -> None:
+        """Handle a single Redis pub/sub message and forward to the WS client."""
+        try:
+            if not msg:
+                return
 
-                channel = msg.get("channel")
-                data = msg.get("data")
-                pattern = msg.get("pattern")
+            msg_type = msg.get("type")
+            if msg_type not in {"message", "pmessage"}:
+                return
 
-                if not channel:
-                    continue
+            channel = msg.get("channel")
+            data = msg.get("data")
 
-                # Attempt JSON decode
-                decoded: Any
-                if isinstance(data, (bytes, bytearray)):
-                    try:
-                        data = data.decode("utf-8")
-                    except Exception:
-                        data = str(data)
-                if isinstance(data, str):
-                    try:
-                        decoded = json.loads(data)
-                    except Exception:
-                        decoded = data
-                else:
+            if not channel:
+                return
+
+            channel = channel.decode("utf-8") if isinstance(channel, (bytes, bytearray)) else str(channel)
+
+            # Attempt JSON decode
+            decoded: Any
+            if isinstance(data, (bytes, bytearray)):
+                try:
+                    data = data.decode("utf-8")
+                except Exception:
+                    data = str(data)
+            if isinstance(data, str):
+                try:
+                    decoded = json.loads(data)
+                except Exception:
                     decoded = data
+            else:
+                decoded = data
 
-                payload = {
-                    "type": "message",
-                    "channel": channel,
-                    "data": decoded,
-                    "timestamp": datetime.now(timezone.utc).isoformat(),
-                }
+            payload = {
+                "type": "message",
+                "channel": channel,
+                "data": decoded,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
 
-                # Deliver to matching subscriptions
-                if mode == "legacy":
-                    for sub in list(legacy_subs.values()):
-                        kind = sub.get("kind")
-                        name = sub.get("name")
-                        if kind == "channel" and name == channel:
-                            await ws.send_text(json.dumps(payload, ensure_ascii=False))
-                        elif kind == "pattern" and pattern and name == pattern:
-                            await ws.send_text(json.dumps(payload, ensure_ascii=False))
-                else:
-                    for sub in list(stomp_subs.values()):
-                        kind = sub.get("kind")
-                        name = sub.get("name")
-                        if kind == "channel" and name == channel:
-                            await _send_stomp_message(sub.get("stomp_id", ""), sub.get("destination", ""), payload)
-                        elif kind == "pattern" and pattern and name == pattern:
-                            await _send_stomp_message(sub.get("stomp_id", ""), sub.get("destination", ""), payload)
+            if mode == "legacy":
+                for sub in list(legacy_subs.values()):
+                    kind = sub.get("kind")
+                    name = sub.get("name")
+                    if kind == "channel" and name == channel:
+                        await ws.send_text(json.dumps(payload, ensure_ascii=False))
+                    elif kind == "pattern" and _channel_matches_pattern(channel, name):
+                        await ws.send_text(json.dumps(payload, ensure_ascii=False))
+                return
+
+            for sub in list(stomp_subs.values()):
+                kind = sub.get("kind")
+                name = sub.get("name")
+                if kind == "channel" and name == channel:
+                    await _send_stomp_message(sub.get("stomp_id", ""), sub.get("destination", ""), payload)
+                elif kind == "pattern" and _channel_matches_pattern(channel, name):
+                    await _send_stomp_message(sub.get("stomp_id", ""), sub.get("destination", ""), payload)
         except Exception as e:
-            logger.warning("WS Redis forwarder ended (%s): %s", conn_id, e)
+            logger.warning("WS forward error (%s): %s", conn_id, e)
 
-    forward_task = asyncio.create_task(_redis_forwarder())
+    def _redis_thread() -> None:
+        """Blocking Redis pubsub loop running in a background thread."""
+        try:
+            while not stop_event.is_set():
+                # Apply any pending control commands
+                while True:
+                    try:
+                        action, name = ctrl_q.get_nowait()
+                    except Exception:
+                        break
+                    try:
+                        if action == "subscribe":
+                            pubsub.subscribe(name)
+                        elif action == "psubscribe":
+                            pubsub.psubscribe(name)
+                        elif action == "unsubscribe":
+                            pubsub.unsubscribe(name)
+                        elif action == "punsubscribe":
+                            pubsub.punsubscribe(name)
+                    except Exception:
+                        continue
+
+                msg = pubsub.get_message(timeout=1.0)
+                if msg:
+                    try:
+                        asyncio.run_coroutine_threadsafe(_handle_redis_message(msg), loop)
+                    except Exception:
+                        pass
+        except Exception as e:
+            logger.warning("Redis WS thread ended (%s): %s", conn_id, e)
+
+    t = threading.Thread(target=_redis_thread, name=f"ws-redis-{conn_id}", daemon=True)
+    t.start()
 
     async def _legacy_subscribe(channels: list[str]):
         # Best-effort mapping from old dashboard channel list to actual Redis channels.
@@ -575,23 +728,23 @@ async def websocket_stomp(ws: WebSocket):
             # already includes timeframe?
             if ch.startswith("market:ohlc:") and ch.count(":") == 2:
                 # old: market:ohlc:{instrument} -> subscribe to all TF
-                await pubsub.psubscribe(f"{ch}:*")
+                ctrl_q.put(("psubscribe", f"{ch}:*"))
                 legacy_subs[ch] = {"destination": ch, "kind": "pattern", "name": f"{ch}:*"}
                 continue
             if ch.startswith("indicators:") and ch.count(":") == 1:
                 # old: indicators:{instrument} -> indicators:{instrument}:*
                 pat = f"{ch}:*"
-                await pubsub.psubscribe(pat)
+                ctrl_q.put(("psubscribe", pat))
                 legacy_subs[ch] = {"destination": ch, "kind": "pattern", "name": pat}
                 continue
             if ch.startswith("market:tick:") and ch.count(":") == 2:
                 # old: market:tick:{instrument} -> market:tick:{instrument}:*
                 pat = f"{ch}:*"
-                await pubsub.psubscribe(pat)
+                ctrl_q.put(("psubscribe", pat))
                 legacy_subs[ch] = {"destination": ch, "kind": "pattern", "name": pat}
                 continue
 
-            await pubsub.subscribe(ch)
+            ctrl_q.put(("subscribe", ch))
             legacy_subs[ch] = {"destination": ch, "kind": "channel", "name": ch}
 
         await ws.send_text(json.dumps({"type": "subscribed", "channels": channels}, ensure_ascii=False))
@@ -692,9 +845,9 @@ async def websocket_stomp(ws: WebSocket):
                             "name": name,
                         }
                         if kind == "pattern":
-                            await pubsub.psubscribe(name)
+                            ctrl_q.put(("psubscribe", name))
                         else:
-                            await pubsub.subscribe(name)
+                            ctrl_q.put(("subscribe", name))
 
                     receipt = headers.get("receipt")
                     if receipt:
@@ -709,9 +862,9 @@ async def websocket_stomp(ws: WebSocket):
                         if not sub:
                             continue
                         if sub.get("kind") == "pattern":
-                            await pubsub.punsubscribe(sub.get("name", ""))
+                            ctrl_q.put(("punsubscribe", sub.get("name", "")))
                         else:
-                            await pubsub.unsubscribe(sub.get("name", ""))
+                            ctrl_q.put(("unsubscribe", sub.get("name", "")))
                     continue
 
                 if command == "DISCONNECT":
@@ -736,15 +889,15 @@ async def websocket_stomp(ws: WebSocket):
         logger.warning("WebSocket error (%s): %s", conn_id, e)
     finally:
         try:
-            forward_task.cancel()
+            stop_event.set()
         except Exception:
             pass
         try:
-            await pubsub.close()
+            pubsub.close()
         except Exception:
             pass
         try:
-            await redis_client.close()
+            redis_client.close()
         except Exception:
             pass
 
@@ -897,23 +1050,51 @@ async def market_data_status():
         status["redis"] = {"status": "unhealthy", "error": str(e), "host": REDIS_HOST, "port": REDIS_PORT}
         r = None
 
+    # If API instruments endpoint is missing/unhelpful, auto-discover instruments from Redis.
+    if r is not None and (not instruments or instruments == ["BANKNIFTY26FEBFUT"]):
+        try:
+            discovered = await asyncio.to_thread(_discover_instruments_from_redis, 25)
+            if discovered:
+                instruments = discovered
+        except Exception:
+            pass
+
+    api_mode = str(status.get("market_data_api", {}).get("mode") or "").strip().lower()
+    if api_mode not in {"live", "historical", "paper"}:
+        api_mode = None
+
     for instrument in instruments:
         try:
             if not r:
                 status["instruments"][instrument] = {"status": "unreachable", "error": "Redis unavailable"}
                 continue
 
-            # Find the first key with data (1min is a good baseline for status cards)
+            # Prefer keys from current execution mode, then fall back to any mode.
+            # This avoids showing historical namespace as green/available during live runs.
             best_key = None
             best_count = 0
-            for key in _ohlc_sorted_keys_to_try(instrument, "1min"):
+            best_mode_key = None
+            best_mode_count = 0
+
+            for key in _ohlc_sorted_keys_to_try(instrument, "1min", preferred_mode=api_mode):
                 try:
                     c = r.zcard(key)
-                    if c and c > best_count:
+                    if not c:
+                        continue
+                    key_mode = _extract_key_mode(key)
+                    if api_mode and key_mode == api_mode:
+                        if c > best_mode_count:
+                            best_mode_key = key
+                            best_mode_count = c
+                    elif c > best_count:
                         best_key = key
                         best_count = c
                 except Exception:
                     continue
+
+            if best_mode_key:
+                best_key = best_mode_key
+                best_count = best_mode_count
 
             if not best_key or best_count == 0:
                 status["instruments"][instrument] = {
@@ -930,13 +1111,19 @@ async def market_data_status():
             first_bar = json.loads(first_row[0]) if first_row else {}
             last_bar = json.loads(last_row[0]) if last_row else {}
 
+            data_mode = _extract_key_mode(best_key)
+            mode_mismatch = bool(api_mode and data_mode and data_mode != api_mode)
+
             status["instruments"][instrument] = {
-                "status": "available",
+                "status": "mode_mismatch" if mode_mismatch else "available",
                 "data_points": int(best_count),
                 "first_timestamp": _normalize_timestamp_string(_extract_bar_timestamp(first_bar)),
                 "latest_timestamp": _normalize_timestamp_string(_extract_bar_timestamp(last_bar)),
                 "latest_price": last_bar.get("close") or last_bar.get("last_price"),
                 "redis_key": best_key,
+                "data_mode": data_mode,
+                "expected_mode": api_mode,
+                "mode_mismatch": mode_mismatch,
             }
         except Exception as e:
             status["instruments"][instrument] = {"status": "error", "error": str(e)}
@@ -971,10 +1158,12 @@ def validate_data_availability(status: Dict[str, Any]) -> Dict[str, Any]:
     validation["checks"]["total_instruments"] = len(status.get("instruments", {}))
 
     # Overall status
-    if not api_healthy:
-        validation["overall_status"] = "critical"
-    elif instruments_with_data == 0:
-        validation["overall_status"] = "warning"
+    # IMPORTANT: In historical mode, Redis-backed data can be valid even if the
+    # upstream Market Data API health check is temporarily red.
+    if instruments_with_data == 0:
+        validation["overall_status"] = "critical" if not api_healthy else "warning"
+    elif not api_healthy:
+        validation["overall_status"] = "degraded"
     elif instruments_with_data >= 2:
         validation["overall_status"] = "healthy"
     else:
@@ -1053,19 +1242,62 @@ async def get_ohlc_data(
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/market-data/indicators/{instrument}")
-async def get_technical_indicators(instrument: str):
+async def get_technical_indicators(instrument: str, timeframe: str = "1min"):
     """Get technical indicators for an instrument"""
+    cache_key = f"{instrument}:{timeframe}"
     try:
+        # Normalize timeframe for API call
+        tf = timeframe
+        if tf == "1min":
+            tf = "minute"  # API expects "minute" for 1min
+
         response = requests.get(
-            f"{MARKET_DATA_API_URL}/api/v1/technical/indicators/{instrument}",
-            timeout=10
+            f"{MARKET_DATA_API_URL}/api/v1/technical/indicators/{instrument}?timeframe={tf}",
+            timeout=(1.5, 4)
         )
         if response.status_code == 200:
-            return _normalize_timestamp_fields(response.json())
-        else:
-            raise HTTPException(status_code=response.status_code, detail="Failed to fetch technical indicators")
+            payload = _normalize_timestamp_fields(response.json())
+            if isinstance(payload, dict):
+                payload.setdefault("instrument", instrument)
+                payload.setdefault("timeframe", timeframe)
+                payload.setdefault("status", "ok")
+                _LAST_GOOD_INDICATORS[cache_key] = payload
+            return payload
+
+        # Upstream returned non-200: serve stale cache if present.
+        cached = _LAST_GOOD_INDICATORS.get(cache_key)
+        if cached:
+            out = dict(cached)
+            out["status"] = "stale"
+            out["warning"] = f"Upstream indicators API returned {response.status_code}"
+            out["timestamp"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            return _normalize_timestamp_fields(out)
+
+        return {
+            "instrument": instrument,
+            "timeframe": timeframe,
+            "indicators": {},
+            "status": "no_data",
+            "error": f"Upstream indicators API returned {response.status_code}",
+            "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        cached = _LAST_GOOD_INDICATORS.get(cache_key)
+        if cached:
+            out = dict(cached)
+            out["status"] = "stale"
+            out["warning"] = f"Using cached indicators due to upstream error: {e}"
+            out["timestamp"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            return _normalize_timestamp_fields(out)
+
+        return {
+            "instrument": instrument,
+            "timeframe": timeframe,
+            "indicators": {},
+            "status": "error",
+            "error": str(e),
+            "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        }
 
 @app.get("/api/market-data/instruments")
 async def get_available_instruments():
@@ -1075,21 +1307,34 @@ async def get_available_instruments():
         if response.status_code == 200:
             return _normalize_timestamp_fields(response.json())
         else:
-            return {"instruments": ["BANKNIFTY26FEBFUT"]}
+            # fallback to Redis discovery
+            discovered = await asyncio.to_thread(_discover_instruments_from_redis, 50)
+            return {"instruments": discovered or ["BANKNIFTY26FEBFUT"]}
     except Exception as e:
-        return {"instruments": ["BANKNIFTY26FEBFUT"]}
+        discovered = await asyncio.to_thread(_discover_instruments_from_redis, 50)
+        return {"instruments": discovered or ["BANKNIFTY26FEBFUT"]}
 
 @app.get("/api/market-data/depth/{instrument}")
 async def get_market_depth(instrument: str):
     """Get market depth (order book) for an instrument"""
+    cache_key = instrument
+    upstream_error: Optional[str] = None
     try:
         # First try the Market Data API
-        response = requests.get(
-            f"{MARKET_DATA_API_URL}/api/v1/market/depth/{instrument}",
-            timeout=5
-        )
-        if response.status_code == 200:
-            return _normalize_timestamp_fields(response.json())
+        try:
+            response = requests.get(
+                f"{MARKET_DATA_API_URL}/api/v1/market/depth/{instrument}",
+                timeout=(1.5, 3)
+            )
+            if response.status_code == 200:
+                payload = _normalize_timestamp_fields(response.json())
+                if isinstance(payload, dict):
+                    payload.setdefault("status", "ok")
+                    _LAST_GOOD_DEPTH[cache_key] = payload
+                return payload
+            upstream_error = f"Upstream depth API returned {response.status_code}"
+        except Exception as api_err:
+            upstream_error = str(api_err)
         
         # If API doesn't have endpoint, read directly from Redis
         r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0, decode_responses=True)
@@ -1099,27 +1344,44 @@ async def get_market_depth(instrument: str):
         timestamp = r.get(get_redis_key(f"depth:{instrument}:timestamp"))
         
         if not buy_data or not sell_data:
+            cached = _LAST_GOOD_DEPTH.get(cache_key)
+            if cached:
+                out = dict(cached)
+                out["status"] = "stale"
+                out["warning"] = upstream_error or "No fresh depth data available"
+                out["timestamp"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                return _normalize_timestamp_fields(out)
             return {
                 "instrument": instrument,
                 "buy": [],
                 "sell": [],
                 "timestamp": _normalize_timestamp_string(timestamp) or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                "status": "no_data"
+                "status": "no_data",
+                "warning": upstream_error,
             }
         
         buy_levels = json.loads(buy_data)
         sell_levels = json.loads(sell_data)
         
-        return {
+        out = {
             "instrument": instrument,
             "buy": buy_levels[:5],  # Top 5 bids
             "sell": sell_levels[:5],  # Top 5 asks
             "timestamp": _normalize_timestamp_string(timestamp) or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "status": "ok"
         }
+        _LAST_GOOD_DEPTH[cache_key] = out
+        return out
         
     except Exception as e:
         logger.error(f"Error fetching depth for {instrument}: {e}")
+        cached = _LAST_GOOD_DEPTH.get(cache_key)
+        if cached:
+            out = dict(cached)
+            out["status"] = "stale"
+            out["warning"] = str(e)
+            out["timestamp"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            return _normalize_timestamp_fields(out)
         return {
             "instrument": instrument,
             "buy": [],
@@ -1132,16 +1394,26 @@ async def get_market_depth(instrument: str):
 @app.get("/api/market-data/options/{instrument}")
 async def get_options_chain(instrument: str, expiry: str = None):
     """Get options chain for an instrument"""
+    cache_key = f"{instrument}:{expiry or 'default'}"
+    upstream_error: Optional[str] = None
     try:
         # First try the Market Data API
         params = {"expiry": expiry} if expiry else {}
-        response = requests.get(
-            f"{MARKET_DATA_API_URL}/api/v1/options/chain/{instrument}",
-            params=params,
-            timeout=10
-        )
-        if response.status_code == 200:
-            return _normalize_timestamp_fields(response.json())
+        try:
+            response = requests.get(
+                f"{MARKET_DATA_API_URL}/api/v1/options/chain/{instrument}",
+                params=params,
+                timeout=(2, 25)
+            )
+            if response.status_code == 200:
+                payload = _normalize_timestamp_fields(response.json())
+                if isinstance(payload, dict):
+                    payload.setdefault("status", "ok")
+                    _LAST_GOOD_OPTIONS[cache_key] = payload
+                return payload
+            upstream_error = f"Upstream options API returned {response.status_code}"
+        except Exception as api_err:
+            upstream_error = str(api_err)
         
         # If API doesn't have endpoint, read directly from Redis
         r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0, decode_responses=True)
@@ -1153,6 +1425,24 @@ async def get_options_chain(instrument: str, expiry: str = None):
         options_data = r.get(options_key)
         
         if not options_data:
+            cached = _LAST_GOOD_OPTIONS.get(cache_key)
+            if cached:
+                out = dict(cached)
+                out["status"] = "stale"
+                out["warning"] = upstream_error or "No fresh options chain data available"
+                out["timestamp"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                return _normalize_timestamp_fields(out)
+
+            mode_hint = _get_current_mode_hint()
+            if mode_hint == "historical":
+                message = "Options chain data not available. This is normal for historical mode."
+            elif mode_hint == "live":
+                message = "Options chain data is temporarily unavailable in live mode (upstream timeout or no published chain for this instrument)."
+            elif mode_hint == "paper":
+                message = "Options chain data is currently unavailable in paper mode for this instrument."
+            else:
+                message = "Options chain data is currently unavailable for this instrument."
+
             # Return minimal structure for UI
             return {
                 "instrument": instrument,
@@ -1160,13 +1450,26 @@ async def get_options_chain(instrument: str, expiry: str = None):
                 "strikes": [],
                 "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                 "status": "no_data",
-                "message": "Options chain data not available. This is normal for historical mode."
+                "mode_hint": mode_hint,
+                "message": message,
+                "warning": upstream_error,
             }
         
-        return _normalize_timestamp_fields(json.loads(options_data))
+        out = _normalize_timestamp_fields(json.loads(options_data))
+        if isinstance(out, dict):
+            out.setdefault("status", "ok")
+            _LAST_GOOD_OPTIONS[cache_key] = out
+        return out
         
     except Exception as e:
         logger.error(f"Error fetching options for {instrument}: {e}")
+        cached = _LAST_GOOD_OPTIONS.get(cache_key)
+        if cached:
+            out = dict(cached)
+            out["status"] = "stale"
+            out["warning"] = str(e)
+            out["timestamp"] = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            return _normalize_timestamp_fields(out)
         return {
             "instrument": instrument,
             "expiry": expiry,

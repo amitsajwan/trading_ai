@@ -47,6 +47,9 @@ class MarketTick:
     timestamp: datetime
     last_price: float
     volume: Optional[int] = None
+    open_interest: Optional[int] = None
+    oi_day_high: Optional[int] = None
+    oi_day_low: Optional[int] = None
     original_timestamp: Optional[datetime] = None
 
 
@@ -63,6 +66,7 @@ class OHLCBar:
     volume: Optional[int]
     start_at: datetime
     end_at: datetime
+    open_interest: Optional[int] = None
 
 
 class MarketStore(Protocol):

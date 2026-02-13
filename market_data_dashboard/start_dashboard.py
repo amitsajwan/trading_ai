@@ -14,10 +14,10 @@ os.chdir(script_dir)
 try:
     from dotenv import load_dotenv
     
-    # Load local .env first (highest priority)
+    # Load local .env first as defaults (do not override explicit parent env)
     local_env = os.path.join(script_dir, ".env")
     if os.path.exists(local_env):
-        load_dotenv(local_env, override=True)
+        load_dotenv(local_env, override=False)
         print(f"Loaded environment from: {local_env}")
     
     # Load parent .env as fallback

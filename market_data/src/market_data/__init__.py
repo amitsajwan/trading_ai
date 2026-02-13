@@ -24,11 +24,24 @@ try:
 except ImportError:
     # Fallback if news_module is not available
     MacroDataAdapter = None
-from .technical_indicators_service import (
-    TechnicalIndicators,
-    TechnicalIndicatorsService,
-    get_technical_service
-)
+try:
+    from .technical_indicators_service import (
+        TechnicalIndicators,
+        TechnicalIndicatorsService,
+        get_technical_service,
+    )
+except (ImportError, KeyboardInterrupt) as e:
+    if isinstance(e, KeyboardInterrupt):
+        raise
+    print(f"WARNING: Technical indicators service not available: {e}")
+    TechnicalIndicators = None
+    TechnicalIndicatorsService = None
+    get_technical_service = None
+except Exception as e:
+    print(f"WARNING: Technical indicators service not available: {e}")
+    TechnicalIndicators = None
+    TechnicalIndicatorsService = None
+    get_technical_service = None
 from .technical_indicators_constants import *
 
 __all__ = [

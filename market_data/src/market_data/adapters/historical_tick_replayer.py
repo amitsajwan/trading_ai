@@ -467,6 +467,7 @@ class HistoricalTickReplayer(MarketIngestion):
                 low_price = float(candle.get("low", 0))
                 close_price = float(candle.get("close", 0))
                 volume = int(candle.get("volume", 0))
+                open_interest = candle.get("oi") if candle.get("oi") is not None else candle.get("open_interest")
                 
                 # Use spot volume if futures volume is zero
                 if volume == 0 and spot_volumes:
@@ -500,7 +501,9 @@ class HistoricalTickReplayer(MarketIngestion):
                     low=low_price,
                     close=close_price,
                     volume=volume,
-                    start_at=timestamp
+                    open_interest=open_interest,
+                    start_at=timestamp,
+                    end_at=timestamp + timedelta(minutes=1)
                 )
                 self.store.store_ohlc(ohlc_bar)
 
@@ -514,6 +517,7 @@ class HistoricalTickReplayer(MarketIngestion):
                             "low": low_price,
                             "close": close_price,
                             "volume": volume,
+                            "oi": open_interest,
                             "instrument": normalized_instrument,
                         })
                     except Exception as e:
@@ -523,7 +527,8 @@ class HistoricalTickReplayer(MarketIngestion):
                     instrument=normalized_instrument,
                     timestamp=timestamp,
                     last_price=close_price,
-                    volume=volume  # Allow 0 volume, don't set to None
+                    volume=volume,  # Allow 0 volume, don't set to None
+                    open_interest=open_interest
                 )]
 
                 ticks.extend(candle_ticks)

@@ -1,168 +1,158 @@
-# Market Data (market_data)
+# Market Data (`market_data`)
 
-Mode-aware market data ingestion, storage, and APIs for live, historical, and mock workflows. This guide is the **single source of truth** for running the `market_data` module.
+Canonical runtime guide for ingestion, replay, and API.
 
-## ✅ What this module does
+For full system behavior (including dashboard + WS bridge), also read `../MODE_SYSTEM.md`.
+For quick command selection (live / real historical / mock), see `../README.md`.
+**For GenAI agent data integration**, see `../GENAI_AGENT_DATA_REFERENCE.md`.
 
-- Live market data ingestion via Zerodha WebSocket and REST
-- Historical replay (Zerodha or CSV) into Redis
-- Mock/synthetic replay for local testing
-- REST API for ticks, OHLC, depth, options chain, and indicators
-- Mode isolation via Redis key prefixes
+## What this module provides
 
-## 🧭 Architecture (market_data only)
+- Supervisor runtime (`market_data.runner`)
+- Historical replay runtime (`market_data.runner_historical` + `runtime.py`)
+- API service (`market_data.api_service`) on port `8004`
+- Redis-backed storage and pub/sub messages for ticks, OHLC, and indicators
 
-```
-Sources (Live / Historical / Mock)
-                        │
-                        ▼
- Ingestion + Replay (collectors / replayer)
-                        │
-                        ▼
-                    Redis
-                        │
-                        ▼
-                Market Data API
-```
+## Critical policy: Zerodha historical is real-only
 
-**Mode isolation:** keys are prefixed using `EXECUTION_MODE` (`live` or `historical`).
+When source is `zerodha`, the system is **fail-fast**:
 
-## ⚙️ Prerequisites
+- No automatic synthetic fallback
+- `kiteconnect` must be installed
+- Valid Zerodha credentials/token must be available
+- Replay must produce data within readiness timeout
 
-- Python 3.8+
-- Redis running (default: `localhost:6379`)
-- Zerodha credentials for live or Zerodha historical replay
+If any of the above fails, startup exits with a non-zero status.
 
-## 🔐 Credentials (live or zerodha historical)
+## Prerequisites
 
-Provide either:
-- `credentials.json` in the repo root, or
-- environment variables: `KITE_API_KEY`, `KITE_ACCESS_TOKEN`
+- Python virtual environment (`.venv` recommended)
+- Redis available at configured host/port
+- Credentials for Zerodha real modes
 
-Generate credentials interactively:
+Install runtime deps (includes `kiteconnect`):
+
+- `python -m pip install -r market_data/requirements.txt`
+
+Critical note: technical indicators (Momentum/Volatility/Levels/OI) require
+`pandas`, `numpy`, and `pandas-ta` in the same Python environment used by
+`start_system.ps1`. If these are missing, indicator APIs may return partial or
+`no_data` payloads and dashboard cards will show `--`.
+
+## Credentials
+
+Provide one of:
+
+- root `credentials.json`
+- environment: `KITE_API_KEY`, `KITE_ACCESS_TOKEN`
+
+Interactive auth helper:
 
 - `python -m market_data.tools.kite_auth`
 
-## 🚀 Run (recommended)
+## Recommended startup (repo root)
 
-### Live mode (WebSocket + LTP + depth)
+### Windows PowerShell (canonical)
 
-- `python -m market_data.runner --mode live --start-collectors`
-
-### Historical mode (Zerodha)
-
-- `python -m market_data.runner --mode historical --historical-source zerodha --historical-from 2026-01-28 --historical-speed 10`
-
-### Historical mode (CSV file)
-
-- `python -m market_data.runner --mode historical --historical-source path/to/file.csv --historical-speed 10`
-
-### Mock mode (synthetic)
-
-- `python -m market_data.runner --mode mock --historical-speed 5`
-
-## 🧰 One-command full startup (repo root)
-
-## ✅ Startup command clarity (important)
-
-Use these as the only startup commands:
-
-- Linux/macOS/Git-Bash:
-  - `./start_all.sh --source kite`
-  - `./start_all.sh --source historical --historical-source synthetic`
-  - `./start_all.sh --source mock`
-  - Stop: `./stop_all.sh`
-
-- PowerShell users (native, no bash):
+- Real historical replay (Zerodha, explicit env):
+  - Ensure port 8004 is free (`Get-NetTCPConnection -LocalPort 8004`); stop any stale python on that port.
+  - Start Redis on expected port (default 6380 for repo scripts).
+  - Set env and run:
+    ```powershell
+    $env:PYTHONPATH = "$PWD\market_data\src;$PWD"
+    $env:REDIS_PORT = "6380"
+    $env:INSTRUMENT_SYMBOL = "BANKNIFTY26MARFUT"
+    $env:MODE = "historical"
+    python -m market_data.runner --mode historical --historical-source zerodha --historical-from 2026-02-11 --historical-speed 1
+    ```
+  - Or use helper script: `./stop_system.ps1; ./start_system.ps1 -Source historical -HistoricalSource zerodha -HistoricalFrom 2026-02-11 -HistoricalSpeed 1 -FreshStart`
+- Live:
   - `./start_system.ps1 -Source kite`
-  - `./start_system.ps1 -Source historical -HistoricalSource synthetic`
+- Mock/dev:
   - `./start_system.ps1 -Source mock`
-  - Stop: `./stop_system.ps1`
 
-Legacy compatibility:
-- `-Mode live|historical|paper` is still accepted and mapped to `-Source kite|historical|mock`.
+### Bash (legacy/secondary)
 
-From the repository root you can start the full stack (ingestion + API + dashboard) with a single command:
-
+- `./start_all.sh --source historical --historical-source zerodha --historical-from 2026-02-11 --historical-speed 1`
 - `./start_all.sh --source kite`
 - `./start_all.sh --source mock`
-- `./start_all.sh --source historical --historical-source zerodha`
 
-Behavior:
-- Uses one websocket-source contract (`kite` / `mock` / `historical`) while keeping downstream collectors/processors/API/dashboard unchanged.
-- `--source historical` now runs through the same websocket collector path (historical websocket adapter), so switching source does not change downstream flow.
-- `--source kite` includes auth as part of startup via `market_data.runner --prompt-login`.
-- Fresh start is enabled by default and only clears the selected mode namespace (`live:*` or `historical:*`) so live and historical caches remain isolated.
-- Stop all started services with `./stop_all.sh`.
+Stop:
 
-## 🧪 API health checks
+- PowerShell: `./stop_system.ps1`
+- Bash: `./stop_all.sh`
 
-- `http://localhost:8004/health`
-- `http://localhost:8004/api/v1/market/price/BANKNIFTY`
+## Direct module commands (advanced)
 
-## 🔧 Configuration
+- API only: `python -m market_data.api_service`
+- Supervisor: `python -m market_data.runner --mode live --start-collectors`
+- Historical replay process: `python -m market_data.runner_historical --historical-source zerodha --historical-from 2026-02-11 --historical-speed 1`
 
-| Variable | Purpose | Default |
+## Health checks
+
+- API: `http://127.0.0.1:8004/health`
+- Dashboard proxy health (if dashboard running): `http://127.0.0.1:8000/api/market-data/health`
+
+## Runtime environment variables
+
+| Variable | Purpose | Typical value |
 |---|---|---|
 | `REDIS_HOST` | Redis host | `localhost` |
-| `REDIS_PORT` | Redis port | `6379` |
-| `EXECUTION_MODE` | Redis key prefix (`live` / `historical`) | `live` |
-| `INSTRUMENT_SYMBOL` | Default instrument | `BANKNIFTY26JANFUT` |
-| `INSTRUMENTS` | Comma-separated instruments for unified ingestion | _(optional)_ |
-| `INSTRUMENT_TRADING_SYMBOLS` | Comma-separated trading symbols | _(optional)_ |
-| `INSTRUMENT_EXCHANGES` | Comma-separated exchanges | _(optional)_ |
-| `INSTRUMENT_EXCHANGE` | Exchange | `NFO` |
-| `KITE_API_KEY` | Zerodha API key | _(required for live/zerodha)_ |
-| `KITE_ACCESS_TOKEN` | Zerodha access token | _(required for live/zerodha)_ |
-| `TRADING_MODE` | Unified ingestion mode (`live` / `historical` / `mock`) | `live` |
-| `HISTORICAL_SOURCE` | Replay source (`zerodha` / `synthetic` / CSV path) | `synthetic` |
-| `HISTORICAL_FROM` | Replay start date (YYYY-MM-DD) | _(optional)_ |
-| `HISTORICAL_SPEED` | Replay speed multiplier | `1.0` |
-| `TRADING_PROVIDER` | Provider selection (`zerodha` / `mock`) | _(optional)_ |
-| `USE_MOCK_KITE` | Force mock provider when set | `0` |
+| `REDIS_PORT` | Redis port | `6380` (repo default setup) |
+| `EXECUTION_MODE` | Redis namespace prefix | `live` or `historical` |
+| `INSTRUMENT_SYMBOL` | Replay/ingestion instrument symbol | `BANKNIFTY26FEBFUT` |
+| `HISTORICAL_SOURCE` | Replay source | `zerodha` / `synthetic` / CSV path |
+| `HISTORICAL_FROM` | Replay date | `YYYY-MM-DD` |
+| `HISTORICAL_SPEED` | Replay speed multiplier | `1` |
+| `HISTORICAL_READY_TIMEOUT` | Fail-fast timeout (seconds) | `60` |
 
-## 🧩 Key entrypoints
+## Key runtime files
 
-- `python -m market_data.api_service` — run API only
-- `python -m market_data.runner` — supervisor for API + collectors + replay
-- `python -m market_data.collectors.websocket_tick_collector` — websocket collector (source via `KITE_WS_SOURCE=real|mock|historical`)
-- `python -m market_data.runner_historical` — legacy replay-only path
-- `./start_all.sh --source kite|mock|historical` — bash full-stack startup from repo root
-- `./start_system.ps1 -Source kite|mock|historical` — PowerShell-native full-stack startup
+- `src/market_data/runner.py` — supervisor, dependency validation, preflight checks
+- `src/market_data/runtime.py` — replay config, Zerodha credential resolution, fail-fast behavior
+- `src/market_data/runner_historical.py` — replay process entrypoint
+- `src/market_data/adapters/unified_replayer.py` — replay engine (zerodha/csv/synthetic)
+- `src/market_data/api_service.py` — API server
 
-## 🧱 Core runtime files (current)
+## Troubleshooting
 
-```
-market_data/
-├── README.md
-├── src/market_data/
-│   ├── runner.py
-│   ├── api_service.py
-│   ├── collectors/
-│   │   ├── websocket_tick_collector.py
-│   │   ├── ltp_collector.py
-│   │   └── depth_collector.py
-│   ├── sources/
-│   │   ├── mock_kite_websocket.py
-│   │   ├── historical_kite_websocket.py
-│   │   └── websocket.py
-│   └── adapters/
-│       └── unified_replayer.py
-└── ../start_all.sh
-```
+### `kiteconnect` missing
 
-## 🛠️ Troubleshooting
+- Install into active venv: `python -m pip install -r market_data/requirements.txt`
 
-### Redis not reachable
-- Verify Redis is running and `REDIS_HOST`/`REDIS_PORT` are correct.
+### Zerodha historical exits immediately
 
-### API starts but has no data
-- In live mode: ensure credentials are valid and collectors started.
-- In historical/mock: ensure websocket source is running (`--source historical` or `--source mock`) and Redis keys are populated.
+Likely causes:
 
-### Wrong mode data
-- Set `EXECUTION_MODE` explicitly before starting services.
+- invalid/expired access token
+- missing credentials file/env vars
+- no data returned for requested date/instrument
+
+Check logs:
+
+- `.run/market_data.log`
+- `.run/market_data.err`
+
+### API is healthy but charts look empty
+
+- verify instrument is present in Redis with `historical:ohlc_sorted:*` (e.g., `historical:ohlc_sorted:BANKNIFTY26MARFUT:1min`)
+- 5m charts need the first five 1m candles to populate; initial `No OHLC data found ...:5min` is expected until ~5 bars are stored
+- verify dashboard can connect to `/ws`
+- verify Redis pub/sub channels (`market:ohlc:*`) are active
+- if OI indicators throw numba typing errors, update to latest code (pandas fallbacks) and restart
+
+### Charts move but technical indicator cards stay `--`
+
+Likely causes:
+- API process is down (`:8004` not listening)
+- Indicator dependencies missing in active venv (`pandas`, `numpy`, `pandas-ta`)
+- Selected timeframe has no bars yet (e.g., early 5m window)
+
+Checks:
+- `http://127.0.0.1:8004/health`
+- `http://127.0.0.1:8004/api/v1/technical/indicators/<INSTRUMENT>?timeframe=minute`
+- `http://127.0.0.1:8004/api/v1/technical/indicators/<INSTRUMENT>?timeframe=5min`
 
 ---
 
-**Last Updated:** March 2026
+Last updated: 2026-02-12
