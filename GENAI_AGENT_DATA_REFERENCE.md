@@ -9,6 +9,25 @@ The platform provides three main data access methods:
 2. **Dashboard APIs** (`http://localhost:8000`) - Aggregated views and status
 3. **Real-time Streaming** (`ws://localhost:8000/ws`) - Live updates via STOMP over WebSocket
 
+## Connection quick reference (exact values)
+
+Use these values directly.
+
+| Component | Exact address | Notes |
+|---|---|---|
+| Market Data API | `http://127.0.0.1:8004` | Core ingestion/replay API |
+| Dashboard API/UI | `http://127.0.0.1:8000` | UI + proxy/enhanced endpoints |
+| WebSocket/STOMP | `ws://127.0.0.1:8000/ws` | STOMP broker endpoint (`/ws`) |
+| Redis (PowerShell canonical flow) | `localhost:6380` | Loaded from `market_data/.env` (`REDIS_PORT=6380`) |
+| Redis (Bash fallback if not overridden) | `localhost:6379` | `start_all.sh` default unless `REDIS_PORT` is exported |
+
+### Redis port rule (important)
+
+- If you use **`start_system.ps1`** (recommended), Redis port comes from `market_data/.env` (currently `6380`).
+- If you use **`start_all.sh`**, Redis defaults to `6379` unless you set `REDIS_PORT`.
+
+To avoid mismatches across tools, prefer one runtime path per session (PowerShell recommended on Windows).
+
 ## Canonical startup (how to run)
 
 Use repo-root scripts as the single source of truth.
@@ -36,6 +55,20 @@ Use repo-root scripts as the single source of truth.
 - API health: `GET http://127.0.0.1:8004/health`
 - Dashboard health: `GET http://127.0.0.1:8000/api/health`
 - Mode: `GET http://127.0.0.1:8004/api/v1/system/mode`
+
+### First data calls (copy these first)
+
+After health is up, these calls should return usable payloads without digging through code:
+
+1. `GET http://127.0.0.1:8004/api/v1/market/instruments`
+2. `GET http://127.0.0.1:8004/api/v1/market/ohlc/{instrument}?timeframe=1min&limit=50&order=desc`
+3. `GET http://127.0.0.1:8004/api/v1/technical/indicators/{instrument}?timeframe=1min`
+4. `GET http://127.0.0.1:8000/api/market-data/status`
+5. `GET http://127.0.0.1:8000/api/market-data/options/{instrument}`
+
+For real-time streaming, connect STOMP to:
+
+- `ws://127.0.0.1:8000/ws`
 
 ## What data is created by the system
 
@@ -273,7 +306,9 @@ Additional fields that may be present:
 ## Real-Time Streaming (WebSocket + STOMP)
 
 ### Connection Details
-- **URL**: `ws://localhost:8000/ws`
+- **URL (local)**: `ws://127.0.0.1:8000/ws`
+- **URL (same host alternative)**: `ws://localhost:8000/ws`
+- **URL (if HTTPS reverse proxy is used)**: `wss://<host>/ws`
 - **Protocol**: STOMP over WebSocket
 - **Supported Subprotocols**: `v12.stomp`, `v11.stomp`, `v10.stomp`, `stomp`
 
@@ -355,6 +390,9 @@ STOMP.subscribe('/topic/indicators/BANKNIFTY26JANFUT', function(message) {
 ## Data Storage & Keys
 
 ### Redis Key Patterns
+
+> Keys are mode-prefixed at runtime (`live:*`, `historical:*`, `paper:*`).
+> Example: `historical:ohlc_sorted:BANKNIFTY26MARFUT:1min`.
 
 #### Market Data
 - `price:{instrument}:latest` - Current price
