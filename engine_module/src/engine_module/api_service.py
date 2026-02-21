@@ -13,17 +13,22 @@ import os
 import sys
 import asyncio
 import logging
+import re
+import json
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
+from urllib.parse import quote
+from urllib.request import urlopen
 import redis
 from pymongo import MongoClient
 
 from .api import build_orchestrator
 from .contracts import Orchestrator, AnalysisResult
+from .capital_config import resolve_account_capital
 
 # Fix Windows console encoding for emojis (same as start_local.py)
 if sys.platform == 'win32':
@@ -50,6 +55,148 @@ logger = logging.getLogger('engine_module')
 
 # IST timezone for Indian financial markets
 IST = timezone(timedelta(hours=5, minutes=30))
+
+
+_RUNTIME_RISK_CONFIG_REDIS_KEY = "engine:runtime:risk_config"
+_runtime_risk_config_cache: Dict[str, Any] | None = None
+
+
+def _safe_float(value: Any, default: float) -> float:
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+
+def _coerce_optional_confidence(value: Any) -> float | None:
+    """Normalize confidence to 0..1 when present, else None."""
+    try:
+        if value is None:
+            return None
+        parsed = float(value)
+        if parsed < 0:
+            return None
+        if parsed <= 1:
+            return parsed
+        if parsed <= 100:
+            return parsed / 100.0
+        return None
+    except Exception:
+        return None
+
+
+def _default_runtime_risk_config() -> Dict[str, Any]:
+    capital_value, capital_source = resolve_account_capital(default=500000.0)
+    if capital_source == "TRADING_CAPITAL":
+        logger.warning(
+            "Using legacy TRADING_CAPITAL in runtime risk defaults. Set ACCOUNT_CAPITAL instead."
+        )
+    return {
+        "account_capital": float(capital_value),
+        "max_position_size_pct": _safe_float(os.getenv("SIGNAL_MAX_POSITION_SIZE_PCT"), 20.0),
+        "max_position_value": _safe_float(os.getenv("SIGNAL_MAX_POSITION_VALUE"), 0.0),
+        "min_confidence_threshold": _safe_float(os.getenv("SIGNAL_MIN_CONFIDENCE_THRESHOLD"), 0.6),
+        "updated_at": datetime.now(IST).isoformat(),
+        "source": "env_defaults",
+    }
+
+
+def _normalize_runtime_risk_config(payload: Dict[str, Any] | None, base: Dict[str, Any] | None = None) -> Dict[str, Any]:
+    cfg = dict(base or _default_runtime_risk_config())
+    payload = payload or {}
+    cfg["account_capital"] = max(0.0, _safe_float(payload.get("account_capital", cfg.get("account_capital")), cfg["account_capital"]))
+    cfg["max_position_size_pct"] = max(0.0, _safe_float(payload.get("max_position_size_pct", cfg.get("max_position_size_pct")), cfg["max_position_size_pct"]))
+    cfg["max_position_value"] = max(0.0, _safe_float(payload.get("max_position_value", cfg.get("max_position_value")), cfg["max_position_value"]))
+    cfg["min_confidence_threshold"] = min(
+        1.0,
+        max(0.0, _safe_float(payload.get("min_confidence_threshold", cfg.get("min_confidence_threshold")), cfg["min_confidence_threshold"])),
+    )
+    cfg["updated_at"] = datetime.now(IST).isoformat()
+    return cfg
+
+
+def _persist_runtime_risk_config(cfg: Dict[str, Any]) -> None:
+    try:
+        redis_client = get_redis_client()
+        redis_client.set(_RUNTIME_RISK_CONFIG_REDIS_KEY, json.dumps(cfg))
+    except Exception as e:
+        logger.warning("Failed to persist runtime risk config to Redis: %s", e)
+
+
+def _load_runtime_risk_config() -> Dict[str, Any]:
+    base = _default_runtime_risk_config()
+    try:
+        redis_client = get_redis_client()
+        raw = redis_client.get(_RUNTIME_RISK_CONFIG_REDIS_KEY)
+        if raw:
+            if isinstance(raw, bytes):
+                raw = raw.decode()
+            stored = json.loads(str(raw))
+            return _normalize_runtime_risk_config(stored, base=base)
+    except Exception as e:
+        logger.warning("Failed to load runtime risk config from Redis, using defaults: %s", e)
+    return _normalize_runtime_risk_config({}, base=base)
+
+
+def _get_runtime_risk_config(refresh: bool = False) -> Dict[str, Any]:
+    global _runtime_risk_config_cache
+    if refresh or _runtime_risk_config_cache is None:
+        _runtime_risk_config_cache = _load_runtime_risk_config()
+    return dict(_runtime_risk_config_cache)
+
+
+def _set_runtime_risk_config(payload: Dict[str, Any]) -> Dict[str, Any]:
+    global _runtime_risk_config_cache
+    current = _get_runtime_risk_config(refresh=True)
+    updated = _normalize_runtime_risk_config(payload, base=current)
+    updated["source"] = "api_runtime"
+    _runtime_risk_config_cache = updated
+
+    # Keep env in sync for backward-compatible modules that still read env.
+    os.environ["ACCOUNT_CAPITAL"] = str(updated["account_capital"])
+    os.environ["SIGNAL_MAX_POSITION_SIZE_PCT"] = str(updated["max_position_size_pct"])
+    os.environ["SIGNAL_MAX_POSITION_VALUE"] = str(updated["max_position_value"])
+    os.environ["SIGNAL_MIN_CONFIDENCE_THRESHOLD"] = str(updated["min_confidence_threshold"])
+    _persist_runtime_risk_config(updated)
+    _apply_runtime_config_to_signal_agent(updated)
+    return dict(updated)
+
+
+def _apply_runtime_config_to_signal_agent(cfg: Dict[str, Any]) -> None:
+    """Apply runtime risk config to in-memory SignalCreationAgent, if available."""
+    if _orchestrator is None or not hasattr(_orchestrator, "agents"):
+        return
+    try:
+        for agent in getattr(_orchestrator, "agents", []):
+            if agent.__class__.__name__ != "SignalCreationAgent":
+                continue
+            if not hasattr(agent, "risk_config") or not isinstance(agent.risk_config, dict):
+                continue
+            agent.risk_config["max_position_size_pct"] = max(0.0, _safe_float(cfg.get("max_position_size_pct"), 20.0) / 100.0)
+            agent.risk_config["max_position_value_abs"] = max(0.0, _safe_float(cfg.get("max_position_value"), 0.0))
+            agent.risk_config["min_confidence_threshold"] = min(1.0, max(0.0, _safe_float(cfg.get("min_confidence_threshold"), 0.6)))
+            logger.info("Applied runtime risk config to SignalCreationAgent")
+            break
+    except Exception as e:
+        logger.warning("Failed applying runtime config to SignalCreationAgent: %s", e)
+
+
+def _resolve_capital_from_env(default: float = 500000.0) -> float:
+    """Resolve account capital used for risk sizing contexts."""
+    runtime_cfg = _get_runtime_risk_config()
+    runtime_capital = _safe_float(runtime_cfg.get("account_capital"), -1.0)
+    if runtime_capital > 0:
+        return runtime_capital
+
+    value, source = resolve_account_capital(default=default)
+    if source == "TRADING_CAPITAL":
+        logger.warning(
+            "Using legacy TRADING_CAPITAL in Engine API context builder. "
+            "Set ACCOUNT_CAPITAL instead."
+        )
+    return value
 
 # Import market hours checker
 try:
@@ -126,6 +273,37 @@ def _serialize_bson(obj: Any) -> Any:
         return obj
 
 
+def _normalize_execution_mode(value: Any) -> str:
+    """Normalize execution mode values from Redis/env to canonical engine values."""
+    if value is None:
+        return "LIVE"
+    if isinstance(value, bytes):
+        value = value.decode()
+    mode = str(value).strip().upper()
+    if mode in {"HISTORICAL", "HISTORY"}:
+        return "BACKTEST"
+    if mode in {"LIVE", "PAPER", "BACKTEST"}:
+        return mode
+    return "LIVE"
+
+
+def _resolve_runtime_instrument(redis_client: Any, default_instrument: str) -> str:
+    """Resolve active instrument from Redis contract keys with env/config fallback."""
+    keys = ("system:instrument", "instrument:active")
+    for key in keys:
+        try:
+            value = redis_client.get(key)
+            if value:
+                if isinstance(value, bytes):
+                    value = value.decode()
+                value = str(value).strip().upper()
+                if value:
+                    return value
+        except Exception:
+            continue
+    return (default_instrument or "BANKNIFTY-I").strip().upper()
+
+
 # Pydantic models for API requests/responses
 class HealthResponse(BaseModel):
     """Health check response."""
@@ -171,6 +349,13 @@ class SignalResponse(BaseModel):
     metadata: Optional[Dict[str, Any]] = None
 
 
+class RuntimeRiskConfigUpdate(BaseModel):
+    account_capital: Optional[float] = None
+    max_position_size_pct: Optional[float] = None
+    max_position_value: Optional[float] = None
+    min_confidence_threshold: Optional[float] = None
+
+
 # Socket.IO removed - real-time updates now handled by Redis WebSocket Gateway
 # See redis_ws_gateway module for direct Redis pub/sub to WebSocket forwarding
 WEBSOCKET_AVAILABLE = False
@@ -205,6 +390,17 @@ async def run_orchestrator_cycles():
 
     # Get Redis client for mode and virtual time checks
     redis_client = get_redis_client()
+    last_mode_logged: Optional[str] = None
+
+    def _cycle_interval_seconds(mode: str) -> int:
+        default_value = "60" if mode == "BACKTEST" else "900"
+        env_key = "BACKTEST_AUTO_CYCLE_INTERVAL_SECONDS" if mode == "BACKTEST" else "AUTO_CYCLE_INTERVAL_SECONDS"
+        raw = os.getenv(env_key, default_value)
+        try:
+            value = int(str(raw).strip())
+        except Exception:
+            value = int(default_value)
+        return max(5, value)
 
     while True:
         try:
@@ -215,23 +411,17 @@ async def run_orchestrator_cycles():
                 continue
 
             # Get execution mode
-            execution_mode = redis_client.get("system:execution_mode")
-            if execution_mode:
-                execution_mode = execution_mode.decode() if isinstance(execution_mode, bytes) else execution_mode
-            else:
-                execution_mode = "LIVE"
-
-            if execution_mode == "BACKTEST":
-                # In BACKTEST mode, wait for candle triggers instead of running on timer
-                logger.info("BACKTEST mode: Waiting for candle triggers (no automatic cycles)")
-                await asyncio.sleep(300)  # Wait 5 minutes and check again (BACKTEST cycles are triggered externally)
-                continue
-
-            # LIVE/PAPER mode: Run on timer as before
-            logger.info("Starting automatic orchestrator cycles (15-minute intervals)")
+            execution_mode = _normalize_execution_mode(redis_client.get("system:execution_mode"))
+            cycle_interval_seconds = _cycle_interval_seconds(execution_mode)
+            if execution_mode != last_mode_logged:
+                logger.info(
+                    "%s mode: Automatic orchestrator cycles enabled (interval=%ss)",
+                    execution_mode,
+                    cycle_interval_seconds,
+                )
+                last_mode_logged = execution_mode
 
             # Check if virtual time is enabled (historical mode)
-            from datetime import datetime
             virtual_time_enabled = redis_client.get("system:virtual_time:enabled")
             if virtual_time_enabled:
                 virtual_time_str = virtual_time_enabled.decode() if isinstance(virtual_time_enabled, bytes) else virtual_time_enabled
@@ -257,26 +447,34 @@ async def run_orchestrator_cycles():
                 current_time_ist = datetime.now(IST)
 
             market_open = is_market_open(current_time_ist)
+            if execution_mode == "BACKTEST":
+                market_open = True
 
             if not market_open:
                 logger.debug(f"Market closed (current time: {current_time_ist.strftime('%H:%M:%S %Z')}), skipping cycle")
-                await asyncio.sleep(300)  # Wait 5 minutes when market is closed
+                await asyncio.sleep(min(300, cycle_interval_seconds))
                 continue
+
+            from config import get_config
+            config = get_config()
+            active_instrument = _resolve_runtime_instrument(redis_client, config.instrument_symbol)
 
             # Run analysis cycle
             context = {
-                "instrument": "BANKNIFTY",
+                "instrument": active_instrument,
                 "market_hours": True,
-                "timestamp": current_time_ist
+                "timestamp": current_time_ist,
+                "execution_mode": execution_mode,
+                "cash_available": _resolve_capital_from_env(),
             }
 
-            logger.info(f"Running {execution_mode} orchestrator cycle")
+            logger.info(f"Running {execution_mode} orchestrator cycle for {active_instrument}")
             result = await _orchestrator.run_cycle(context)
 
             logger.info(f"Orchestrator cycle complete: {result.decision} (confidence: {result.confidence:.2f})")
 
-            # Wait 15 minutes before next cycle
-            await asyncio.sleep(15 * 60)
+            # Wait for the configured interval before next cycle
+            await asyncio.sleep(cycle_interval_seconds)
 
         except Exception as e:
             logger.error(f"Error in orchestrator cycle: {e}")
@@ -334,7 +532,8 @@ async def run_candle_triggered_cycles():
                             "market_hours": True,  # Always true in backtest
                             "timestamp": candle_timestamp,
                             "candle_data": data,  # Include candle data for backtest context
-                            "mode": "BACKTEST"
+                            "mode": "BACKTEST",
+                            "cash_available": _resolve_capital_from_env(),
                         }
 
                         logger.info(f"Running BACKTEST orchestrator cycle for candle at {candle_timestamp.strftime('%H:%M:%S')}")
@@ -362,6 +561,7 @@ async def lifespan(app: FastAPI):
         # Check Redis connection
         redis_client = get_redis_client()
         redis_client.ping()
+        _get_runtime_risk_config(refresh=True)
         
         # Check MongoDB connection
         mongo_client = get_mongo_client()
@@ -427,14 +627,8 @@ async def lifespan(app: FastAPI):
             # Build orchestrator with Redis client for market data and agents
             logger.info("Engine API: Building orchestrator...")
             # Get execution mode and run_id from Redis (set by historical replayer)
-            execution_mode = redis_client.get("system:execution_mode")
+            execution_mode = _normalize_execution_mode(redis_client.get("system:execution_mode"))
             run_id = redis_client.get("system:run_id")
-
-            # Decode bytes if needed
-            if execution_mode:
-                execution_mode = execution_mode.decode() if isinstance(execution_mode, bytes) else execution_mode
-            else:
-                execution_mode = "LIVE"  # Default to LIVE mode
 
             if run_id:
                 run_id = run_id.decode() if isinstance(run_id, bytes) else run_id
@@ -445,8 +639,9 @@ async def lifespan(app: FastAPI):
             from .enhanced_orchestrator import TradingContext
             from config import get_config
             config = get_config()
+            active_instrument = _resolve_runtime_instrument(redis_client, config.instrument_symbol)
             context = TradingContext(
-                instrument=config.instrument_symbol,  # Use configured instrument from environment
+                instrument=active_instrument,
                 mode=execution_mode,
                 run_id=run_id
             )
@@ -460,6 +655,7 @@ async def lifespan(app: FastAPI):
                 context=context
             )
             logger.info("Engine API: Orchestrator initialized successfully with signal monitoring support")
+            _apply_runtime_config_to_signal_agent(_get_runtime_risk_config())
             
             # Sync existing signals from MongoDB to SignalMonitor on startup
             if signal_monitor and mongo_db is not None:
@@ -479,17 +675,13 @@ async def lifespan(app: FastAPI):
             except Exception as tick_error:
                 logger.warning(f"Engine API: Failed to start tick subscriber: {tick_error}")
             
-            # DISABLED: Candle-triggered cycles for BACKTEST mode (blocking Redis subscription)
-            # TODO: Implement async Redis subscription for candle-triggered cycles
+            # Candle-triggered cycles remain disabled (blocking Redis subscription).
+            # BACKTEST now uses the same automatic cycle manager with a shorter interval.
             # Get execution mode for BACKTEST check
-            execution_mode = redis_client.get("system:execution_mode")
-            if execution_mode:
-                execution_mode = execution_mode.decode() if isinstance(execution_mode, bytes) else execution_mode
-            else:
-                execution_mode = "LIVE"
+            execution_mode = _normalize_execution_mode(redis_client.get("system:execution_mode"))
 
             if execution_mode == "BACKTEST":
-                logger.info("Engine API: Candle-triggered cycles DISABLED for BACKTEST mode (use manual cycles instead)")
+                logger.info("Engine API: Candle-triggered cycles DISABLED for BACKTEST mode (automatic timer cycles enabled)")
 
             # Start automatic orchestrator cycles (every 15 minutes)
             try:
@@ -583,6 +775,7 @@ _orchestrator: Optional[Orchestrator] = None
 _redis_client: Optional[redis.Redis] = None
 _mongo_client: Optional[MongoClient] = None
 _orchestrator_task: Optional[asyncio.Task] = None
+_redis_contract: Optional[Dict[str, Any]] = None
 
 # Socket.IO removed - real-time updates now handled by Redis WebSocket Gateway
 # Export the FastAPI app directly (no Socket.IO wrapping)
@@ -590,13 +783,129 @@ main_app = app
 
 
 def get_redis_client() -> redis.Redis:
-    """Get Redis client from environment."""
+    """Get Redis client using runtime contract discovery first, then env fallback."""
     global _redis_client
     if _redis_client is None:
-        host = os.getenv("REDIS_HOST", "localhost")
-        port = int(os.getenv("REDIS_PORT", "6379"))
-        _redis_client = redis.Redis(host=host, port=port, db=0, decode_responses=True)
+        candidates: List[Dict[str, Any]] = []
+
+        runtime_contract = _discover_redis_contract()
+        if runtime_contract:
+            candidates.append(runtime_contract)
+
+        env_host = os.getenv("REDIS_HOST", "localhost")
+        try:
+            env_port = int(os.getenv("REDIS_PORT", "6380"))
+        except Exception:
+            env_port = 6380
+        try:
+            env_db = int(os.getenv("REDIS_DB", "0"))
+        except Exception:
+            env_db = 0
+        candidates.append({"host": env_host, "port": env_port, "db": env_db, "source": "env"})
+
+        seen = set()
+        deduped: List[Dict[str, Any]] = []
+        for c in candidates:
+            key = (str(c.get("host", "")), int(c.get("port", 0)), int(c.get("db", 0)))
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(c)
+
+        last_error: Optional[Exception] = None
+        for c in deduped:
+            host = str(c.get("host") or "localhost")
+            port = int(c.get("port") or 6380)
+            db = int(c.get("db") or 0)
+            client = redis.Redis(host=host, port=port, db=db, decode_responses=True)
+            try:
+                client.ping()
+                _redis_client = client
+                logger.info(
+                    "Engine Redis client initialized via %s: %s:%s db=%s",
+                    c.get("source", "unknown"),
+                    host,
+                    port,
+                    db,
+                )
+                break
+            except Exception as e:
+                last_error = e
+                logger.warning(
+                    "Redis candidate failed (%s): %s:%s db=%s (%s)",
+                    c.get("source", "unknown"),
+                    host,
+                    port,
+                    db,
+                    e,
+                )
+
+        if _redis_client is None:
+            # Keep behavior compatible: return a client object even if ping failed.
+            logger.warning("All Redis discovery candidates failed; using env fallback client without ping.")
+            _redis_client = redis.Redis(host=env_host, port=env_port, db=env_db, decode_responses=True)
+            if last_error:
+                logger.warning("Last Redis init error: %s", last_error)
     return _redis_client
+
+
+def _discover_redis_contract() -> Optional[Dict[str, Any]]:
+    """Discover Redis host/port/db from source dashboard contract APIs."""
+    global _redis_contract
+    if _redis_contract:
+        return _redis_contract
+
+    base = (os.getenv("SOURCE_DASHBOARD_BASE_URL", "http://127.0.0.1:8002") or "").rstrip("/")
+    if not base:
+        return None
+
+    default_instrument = (
+        os.getenv("INSTRUMENT_SYMBOL")
+        or os.getenv("DEFAULT_INSTRUMENT")
+        or os.getenv("VITE_INSTRUMENT_SYMBOL")
+        or "BANKNIFTY-I"
+    )
+    instrument = str(default_instrument).strip().upper()
+
+    try:
+        with urlopen(f"{base}/api/capabilities", timeout=3.0) as resp:
+            capabilities = json.loads(resp.read().decode("utf-8"))
+            discovered_instrument = (
+                capabilities.get("default_instrument")
+                or ((capabilities.get("instruments") or [None])[0])
+                or instrument
+            )
+            if discovered_instrument:
+                instrument = str(discovered_instrument).strip().upper()
+    except Exception:
+        pass
+
+    try:
+        catalog_url = f"{base}/api/catalog?instrument={quote(instrument)}"
+        with urlopen(catalog_url, timeout=3.0) as resp:
+            catalog = json.loads(resp.read().decode("utf-8"))
+            redis_info = catalog.get("redis") or {}
+            host = str(redis_info.get("host") or "localhost")
+            port = int(redis_info.get("port") or 6380)
+            db = int(redis_info.get("db") or 0)
+            _redis_contract = {
+                "host": host,
+                "port": port,
+                "db": db,
+                "instrument": instrument,
+                "source": "catalog",
+            }
+            logger.info(
+                "Discovered Redis contract from source catalog: %s:%s db=%s instrument=%s",
+                host,
+                port,
+                db,
+                instrument,
+            )
+            return _redis_contract
+    except Exception as e:
+        logger.warning("Failed to discover Redis contract from source APIs: %s", e)
+        return None
 
 
 def get_mongo_client() -> MongoClient:
@@ -639,6 +948,63 @@ async def health_check():
     )
 
 
+@app.get("/api/v1/debug/risk-env")
+async def debug_risk_env():
+    """Debug endpoint: effective process env values used by risk sizing."""
+    runtime_cfg = _get_runtime_risk_config()
+    return {
+        "ACCOUNT_CAPITAL": os.getenv("ACCOUNT_CAPITAL"),
+        "TRADING_CAPITAL": os.getenv("TRADING_CAPITAL"),
+        "SIGNAL_MAX_POSITION_SIZE_PCT": os.getenv("SIGNAL_MAX_POSITION_SIZE_PCT"),
+        "MAX_POSITION_SIZE_PCT": os.getenv("MAX_POSITION_SIZE_PCT"),
+        "SIGNAL_MAX_POSITION_VALUE": os.getenv("SIGNAL_MAX_POSITION_VALUE"),
+        "SIGNAL_MIN_CONFIDENCE_THRESHOLD": os.getenv("SIGNAL_MIN_CONFIDENCE_THRESHOLD"),
+        "runtime_risk_config": runtime_cfg,
+        "resolved_cash_available": _resolve_capital_from_env(),
+    }
+
+
+@app.get("/api/v1/trading/runtime-config")
+async def get_runtime_trading_config():
+    """Get live runtime trading config used for risk sizing and signal gating."""
+    cfg = _get_runtime_risk_config(refresh=True)
+    return {
+        "account_capital": cfg["account_capital"],
+        "max_position_size_pct": cfg["max_position_size_pct"],
+        "max_position_value": cfg["max_position_value"],
+        "min_confidence_threshold": cfg["min_confidence_threshold"],
+        "updated_at": cfg.get("updated_at"),
+        "source": cfg.get("source", "runtime"),
+    }
+
+
+@app.post("/api/v1/trading/runtime-config")
+async def update_runtime_trading_config(payload: RuntimeRiskConfigUpdate):
+    """Update live runtime trading config without restarting services."""
+    updates: Dict[str, Any] = {}
+    if payload.account_capital is not None:
+        updates["account_capital"] = payload.account_capital
+    if payload.max_position_size_pct is not None:
+        updates["max_position_size_pct"] = payload.max_position_size_pct
+    if payload.max_position_value is not None:
+        updates["max_position_value"] = payload.max_position_value
+    if payload.min_confidence_threshold is not None:
+        updates["min_confidence_threshold"] = payload.min_confidence_threshold
+
+    cfg = _set_runtime_risk_config(updates)
+    return {
+        "success": True,
+        "config": {
+            "account_capital": cfg["account_capital"],
+            "max_position_size_pct": cfg["max_position_size_pct"],
+            "max_position_value": cfg["max_position_value"],
+            "min_confidence_threshold": cfg["min_confidence_threshold"],
+            "updated_at": cfg.get("updated_at"),
+            "source": cfg.get("source", "runtime"),
+        }
+    }
+
+
 @app.get("/test")
 async def test_endpoint():
     """Simple test endpoint."""
@@ -655,11 +1021,7 @@ async def get_mode_info():
         redis_client = get_redis_client()
 
         # Get execution mode from Redis
-        execution_mode = redis_client.get("system:execution_mode")
-        if execution_mode:
-            execution_mode = execution_mode.decode() if isinstance(execution_mode, bytes) else execution_mode
-        else:
-            execution_mode = "LIVE"
+        execution_mode = _normalize_execution_mode(redis_client.get("system:execution_mode"))
 
         # Get run_id from Redis
         run_id = redis_client.get("system:run_id")
@@ -675,7 +1037,7 @@ async def get_mode_info():
             "mode": execution_mode,
             "run_id": run_id,
             "instrument": instrument,
-            "source": "redis" if execution_mode != "LIVE" else "default"
+            "source": "redis" if redis_client.get("system:execution_mode") is not None else "default"
         }
     except Exception as e:
         # Fallback to default mode if Redis is unavailable
@@ -692,7 +1054,9 @@ async def analyze_endpoint_v1():
     """Run orchestrator analysis cycle using configured instrument."""
     from config import get_config
     config = get_config()
-    return await _run_analysis(config.instrument_symbol)
+    redis_client = get_redis_client()
+    active_instrument = _resolve_runtime_instrument(redis_client, config.instrument_symbol)
+    return await _run_analysis(active_instrument)
 
 async def _run_analysis(instrument: str, context_override: Optional[Dict[str, Any]] = None):
     """Internal function to run orchestrator analysis."""
@@ -702,15 +1066,73 @@ async def _run_analysis(instrument: str, context_override: Optional[Dict[str, An
         logger.info(f"Running manual orchestrator analysis for {instrument}")
 
         if not _orchestrator:
-            logger.error("Orchestrator not initialized")
-            return {"status": "error", "message": "Orchestrator not initialized"}
+            logger.warning("Orchestrator not initialized; attempting lazy initialization for manual run")
+            try:
+                # Lazy init path so UI "Run Analysis" works even after partial startup failures.
+                redis_client = get_redis_client()
+                mongo_client = get_mongo_client()
+
+                from genai_module.core.llm_provider_manager import LLMProviderManager
+                from genai_module.api import build_llm_client
+                from engine_module.agent_factory import create_default_agents
+                from .enhanced_orchestrator import TradingContext
+                from config import get_config
+
+                config = get_config()
+                llm_manager = LLMProviderManager()
+                llm_client = build_llm_client(llm_manager)
+                agents = create_default_agents(
+                    profile="balanced",
+                    llm_client=llm_client,
+                    news_service=None,
+                )
+
+                signal_monitor = None
+                try:
+                    from .signal_monitor import get_signal_monitor
+                    signal_monitor = get_signal_monitor()
+                except Exception:
+                    signal_monitor = None
+
+                mongo_db = None
+                try:
+                    db_name = os.getenv("MONGODB_DATABASE", "zerodha_trading")
+                    mongo_db = mongo_client[db_name]
+                except Exception:
+                    mongo_db = None
+
+                execution_mode = _normalize_execution_mode(redis_client.get("system:execution_mode"))
+                run_id = redis_client.get("system:run_id")
+                if run_id:
+                    run_id = run_id.decode() if isinstance(run_id, bytes) else run_id
+
+                active_instrument = _resolve_runtime_instrument(redis_client, config.instrument_symbol)
+                trading_context = TradingContext(
+                    instrument=active_instrument,
+                    mode=execution_mode,
+                    run_id=run_id,
+                )
+
+                _orchestrator = build_orchestrator(
+                    llm_client=llm_client,
+                    redis_client=redis_client,
+                    agents=agents,
+                    signal_monitor=signal_monitor,
+                    mongo_db=mongo_db,
+                    context=trading_context,
+                )
+                logger.info("Lazy initialization succeeded for manual analysis")
+            except Exception as lazy_init_err:
+                logger.exception("Lazy orchestrator initialization failed: %s", lazy_init_err)
+                return {"status": "error", "message": f"Orchestrator not initialized: {lazy_init_err}"}
 
         # Run orchestrator cycle (don't set instrument - let orchestrator use its configured one)
         context = {
             "timestamp": datetime.now(),
             "market_hours": True,
             "cycle_interval": "manual",
-            "manual_run": True
+            "manual_run": True,
+            "cash_available": _resolve_capital_from_env(),
         }
 
         # Merge any context override
@@ -719,11 +1141,7 @@ async def _run_analysis(instrument: str, context_override: Optional[Dict[str, An
 
         # Add execution mode to context for orchestrator decision logic
         redis_client = get_redis_client()
-        execution_mode = redis_client.get("system:execution_mode")
-        if execution_mode:
-            execution_mode = execution_mode.decode() if isinstance(execution_mode, bytes) else execution_mode
-        else:
-            execution_mode = "LIVE"
+        execution_mode = _normalize_execution_mode(redis_client.get("system:execution_mode"))
         context["execution_mode"] = execution_mode
         logger.info(f"API: Set execution_mode in context: {execution_mode}")
         virtual_time_enabled = redis_client.get("system:virtual_time:enabled")
@@ -765,39 +1183,100 @@ async def _run_analysis(instrument: str, context_override: Optional[Dict[str, An
 
         result = await _orchestrator.run_cycle(context)
 
+        # Prepare normalized response cache used by Redis publish + Mongo persistence.
+        agent_responses: List[Dict[str, Any]] = []
+        active_instrument = instrument
+        runtime_run_id = ""
+
         # Publish the result to Redis so UI can receive it via WebSocket
         try:
-            # Extract agent responses from the TradingDecision
+            def _to_serializable(value: Any) -> Any:
+                if value is None or isinstance(value, (str, int, float, bool)):
+                    return value
+                if isinstance(value, datetime):
+                    return value.isoformat()
+                if isinstance(value, dict):
+                    return {str(k): _to_serializable(v) for k, v in value.items()}
+                if isinstance(value, (list, tuple, set)):
+                    return [_to_serializable(v) for v in value]
+                return str(value)
+
+            # Extract rich agent responses from TradingDecision
             agent_responses = []
+            redis_client = get_redis_client()
+            active_instrument = _resolve_runtime_instrument(redis_client, instrument)
+            runtime_run_id = redis_client.get("system:run_id")
+            if isinstance(runtime_run_id, bytes):
+                runtime_run_id = runtime_run_id.decode()
+            runtime_run_id = runtime_run_id or ""
+
             if hasattr(result, 'agent_results') and result.agent_results:
-                agent_responses = [
-                    {
-                        "agent": getattr(ar, 'agent', 'unknown'),
-                        "decision": str(getattr(ar, 'decision', 'HOLD')),
-                        "confidence": float(getattr(ar, 'confidence', 0.0))
-                    } for ar in result.agent_results
-                ]
+                for ar in result.agent_results:
+                    try:
+                        details = getattr(ar, "details", None)
+                        if not isinstance(details, dict):
+                            details = {}
+                        input_data = getattr(ar, "input_data", None)
+                        if not isinstance(input_data, dict):
+                            input_data = details.get("agent_input_snapshot") if isinstance(details.get("agent_input_snapshot"), dict) else {}
+
+                        agent_name = (
+                            getattr(ar, "agent", None)
+                            or getattr(ar, "name", None)
+                            or details.get("agent_name")
+                            or details.get("agent")
+                            or ""
+                        )
+                        agent_name = str(agent_name).strip() if agent_name else ""
+                        if not agent_name or agent_name.lower() in {"unknown", "unknown agent"}:
+                            # Skip unknown/malformed rows to avoid "Unknown Agent" in UI.
+                            continue
+
+                        response_ts = (
+                            getattr(ar, "timestamp", None)
+                            or details.get("timestamp")
+                            or current_time_ist.isoformat()
+                        )
+                        response_reasoning = (
+                            getattr(ar, "reasoning", None)
+                            or details.get("reasoning")
+                            or details.get("thesis")
+                            or details.get("summary")
+                            or ""
+                        )
+
+                        agent_responses.append({
+                            "agent": agent_name,
+                            "decision": str(getattr(ar, "decision", "HOLD")),
+                            "confidence": float(getattr(ar, "confidence", 0.0) or 0.0),
+                            "timestamp": str(response_ts),
+                            "reasoning": str(response_reasoning),
+                            "details": _to_serializable(details),
+                            "input_data": _to_serializable(input_data or {}),
+                            "run_id": getattr(ar, "run_id", None) or details.get("run_id") or runtime_run_id,
+                            "cycle_id": getattr(ar, "cycle_id", None) or details.get("cycle_id") or context.get("cycle_id"),
+                            "instrument": active_instrument,
+                            "mode": execution_mode,
+                        })
+                    except Exception as parse_err:
+                        logger.debug("Skipping malformed agent result in manual run: %s", parse_err)
             else:
                 logger.warning("No agent_results found in TradingDecision")
-                # Provide fallback agent responses
                 agent_responses = []
 
             # Publish to Redis channels for UI
-            import redis
             import json
-            redis_client = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
 
-            # Use the configured instrument (what the orchestrator actually used)
-            from config import get_config
-            config = get_config()
             decision_data = {
-                "instrument": config.instrument_symbol,
+                "instrument": active_instrument,
                 "decision": str(result.decision) if result.decision else "HOLD",
                 "confidence": float(result.confidence) if result.confidence is not None else 0.0,
                 "reasoning": getattr(result, 'reasoning', ''),
                 "timestamp": datetime.now(IST).isoformat(),
                 "agent_responses": agent_responses,
-                "manual_run": True
+                "manual_run": True,
+                "run_id": runtime_run_id,
+                "mode": execution_mode,
             }
 
             # Publish to orchestrator decision channels
@@ -814,8 +1293,8 @@ async def _run_analysis(instrument: str, context_override: Optional[Dict[str, An
             db = mongo_client["zerodha_trading"]
             agent_discussions = db["agent_discussions"]
 
-            # Extract agent signals from agent_results or aggregated_analysis
-            agent_signals = agent_responses  # We already have them in the right format
+            # Extract agent signals from normalized rich agent responses
+            agent_signals = agent_responses
 
             # Save each agent's decision
             timestamp = datetime.now(IST)
@@ -823,19 +1302,43 @@ async def _run_analysis(instrument: str, context_override: Optional[Dict[str, An
             for entry in agent_signals:
                 if isinstance(entry, dict) and entry.get("agent"):
                     agent_name = entry.get("agent", "Unknown Agent")
+                    if str(agent_name).strip().lower() in {"unknown", "unknown agent"}:
+                        continue
                     signal = entry.get("decision")
                     if signal:  # Only save if we have a decision
                         confidence = entry.get("confidence", 0.0)
+                        details = entry.get("details") if isinstance(entry.get("details"), dict) else {}
+                        input_data = entry.get("input_data") if isinstance(entry.get("input_data"), dict) else {}
+                        reasoning_text = (
+                            entry.get("reasoning")
+                            or details.get("reasoning")
+                            or details.get("thesis")
+                            or details.get("summary")
+                            or ""
+                        )
 
                         discussion_doc = {
-                            "timestamp": timestamp.isoformat(),
+                            "timestamp": str(entry.get("timestamp") or timestamp.isoformat()),
                             "agent_name": agent_name,
                             "signal": signal,
                             "decision": signal,  # Alias for compatibility
                             "confidence": float(confidence) if confidence is not None else 0.0,
-                            "reasoning": entry.get("reasoning", ""),
-                            "indicators": entry.get("indicators", {}),
-                            "instrument": config.instrument_symbol,
+                            "reasoning": str(reasoning_text),
+                            "indicators": _to_serializable(entry.get("indicators", {})),
+                            "details": _to_serializable(details),
+                            "input_data": _to_serializable(input_data),
+                            "agent_input_snapshot": _to_serializable(
+                                details.get("agent_input_snapshot") if isinstance(details.get("agent_input_snapshot"), dict) else input_data
+                            ),
+                            "instrument": active_instrument,
+                            "run_id": entry.get("run_id") or runtime_run_id,
+                            "cycle_id": entry.get("cycle_id") or context.get("cycle_id"),
+                            "mode": execution_mode,
+                            "context_snapshot": _to_serializable({
+                                "market_hours": context.get("market_hours"),
+                                "execution_mode": context.get("execution_mode"),
+                                "manual_run": context.get("manual_run"),
+                            }),
                         }
                         agent_discussions.insert_one(discussion_doc)
                         saved_count += 1
@@ -857,17 +1360,23 @@ async def _run_analysis(instrument: str, context_override: Optional[Dict[str, An
                                 "decision": signal,
                                 "direction": direction,
                                 "confidence": float(confidence) if confidence is not None else 0.0,
-                                "timestamp": timestamp.isoformat(),
-                                "instrument": instrument
+                                "timestamp": str(entry.get("timestamp") or timestamp.isoformat()),
+                                "instrument": active_instrument,
+                                "reasoning": str(reasoning_text),
+                                "details": _to_serializable(details),
+                                "input_data": _to_serializable(input_data),
+                                "run_id": entry.get("run_id") or runtime_run_id,
+                                "cycle_id": entry.get("cycle_id") or context.get("cycle_id"),
+                                "mode": execution_mode,
                             }
                             redis_client.publish("engine:decision", json.dumps(decision_data))
-                            redis_client.publish(f"engine:decision:{instrument}", json.dumps(decision_data))
+                            redis_client.publish(f"engine:decision:{active_instrument}", json.dumps(decision_data))
 
                             # Persist last decision in Redis for "replay on subscribe"
                             # Publish to Redis with run isolation
                             from .system_context import get_cache_manager
                             cache_manager = get_cache_manager()
-                            cache_manager.set(f"engine:decision:{instrument}:latest", json.dumps(decision_data), expire_seconds=3600)  # 1 hour
+                            cache_manager.set(f"engine:decision:{active_instrument}:latest", json.dumps(decision_data), expire_seconds=3600)  # 1 hour
                             cache_manager.set("engine:decision:latest", json.dumps(decision_data), expire_seconds=3600)
                         except Exception as pub_err:
                             logger.debug(f"Failed to publish decision to Redis pub/sub: {pub_err}")
@@ -880,17 +1389,17 @@ async def _run_analysis(instrument: str, context_override: Optional[Dict[str, An
             # Continue even if save fails
 
         # Format response for UI
-        from config import get_config
-        config = get_config()
         response = {
             "status": "success",
             "message": "Analysis completed successfully",
-            "instrument": config.instrument_symbol,
+            "instrument": active_instrument,
             "decision": str(result.decision) if result.decision else "HOLD",
             "confidence": float(result.confidence) if result.confidence is not None else 0.0,
             "details": {"agent_results": agent_responses, "reasoning": getattr(result, 'reasoning', '')},
             "agent_responses": agent_responses,  # Include agent responses in HTTP response
-            "timestamp": datetime.now(IST).isoformat()
+            "timestamp": datetime.now(IST).isoformat(),
+            "run_id": runtime_run_id,
+            "mode": execution_mode,
         }
 
         logger.info(f"Manual analysis completed: {result.decision} ({result.confidence:.2f})")
@@ -1782,6 +2291,15 @@ async def get_agent_status():
     """
     try:
         agents_info = []
+        current_run_id = ""
+        try:
+            redis_client = get_redis_client()
+            _raw_run_id = redis_client.get("system:run_id")
+            if isinstance(_raw_run_id, bytes):
+                _raw_run_id = _raw_run_id.decode()
+            current_run_id = str(_raw_run_id or "").strip()
+        except Exception:
+            current_run_id = ""
         
         # Get agent list from orchestrator if available
         agent_names = []
@@ -1806,7 +2324,7 @@ async def get_agent_status():
             for agent_name in agent_names:
                 latest_discussion = agent_discussions.find_one(
                     {"agent_name": agent_name},
-                    sort=[("timestamp", -1)]
+                    sort=[("_id", -1)]
                 )
                 
                 last_decision = None
@@ -1815,12 +2333,26 @@ async def get_agent_status():
                 if latest_discussion:
                     last_decision = latest_discussion.get("signal") or latest_discussion.get("decision")
                     updated_at = latest_discussion.get("timestamp", updated_at)
-                
+                    row_run_id = str(latest_discussion.get("run_id") or "").strip()
+                    row_cycle_id = latest_discussion.get("cycle_id")
+                    ran_in_current_run = bool(current_run_id and row_run_id and row_run_id == current_run_id)
+                else:
+                    row_run_id = ""
+                    row_cycle_id = None
+                    ran_in_current_run = False
+                confidence = _coerce_optional_confidence(
+                    latest_discussion.get("confidence") if latest_discussion else None
+                )
+
                 agents_info.append({
                     "name": agent_name,
                     "state": "active",
                     "status": "active",
                     "last_decision": last_decision,
+                    "confidence": confidence,
+                    "run_id": row_run_id,
+                    "cycle_id": row_cycle_id,
+                    "ran_in_current_run": ran_in_current_run,
                     "updated_at": updated_at
                 })
         except Exception as db_error:
@@ -1832,6 +2364,10 @@ async def get_agent_status():
                     "state": "active",
                     "status": "active",
                     "last_decision": None,
+                    "confidence": None,
+                    "run_id": "",
+                    "cycle_id": None,
+                    "ran_in_current_run": False,
                     "updated_at": datetime.now(IST).isoformat()
                 })
         
@@ -2189,14 +2725,8 @@ async def reinitialize_orchestrator():
             logger.warning("Engine API: MongoDB database not available: %s", e)
 
         # Get execution mode and run_id from Redis
-        execution_mode = redis_client.get("system:execution_mode")
+        execution_mode = _normalize_execution_mode(redis_client.get("system:execution_mode"))
         run_id = redis_client.get("system:run_id")
-
-        # Decode bytes if needed
-        if execution_mode:
-            execution_mode = execution_mode.decode() if isinstance(execution_mode, bytes) else execution_mode
-        else:
-            execution_mode = "LIVE"  # Default to LIVE mode
 
         if run_id:
             run_id = run_id.decode() if isinstance(run_id, bytes) else run_id
@@ -2207,8 +2737,9 @@ async def reinitialize_orchestrator():
         from .enhanced_orchestrator import TradingContext
         from config import get_config
         config = get_config()
+        active_instrument = _resolve_runtime_instrument(redis_client, config.instrument_symbol)
         context = TradingContext(
-            instrument=config.instrument_symbol,  # Use configured instrument from environment
+            instrument=active_instrument,
             mode=execution_mode,
             run_id=run_id
         )
@@ -2238,7 +2769,7 @@ async def reinitialize_orchestrator():
             "message": "Orchestrator reinitialized successfully",
             "execution_mode": execution_mode,
             "run_id": run_id,
-            "instrument": config.instrument_symbol
+            "instrument": active_instrument
         }
 
     except Exception as e:
@@ -2260,14 +2791,10 @@ async def run_orchestrator_cycle_endpoint():
         from datetime import datetime
         from config import get_config
         config = get_config()
-        instrument = config.instrument_symbol
+        instrument = _resolve_runtime_instrument(redis_client, config.instrument_symbol)
 
         redis_client = get_redis_client()
-        execution_mode = redis_client.get("system:execution_mode")
-        if execution_mode:
-            execution_mode = execution_mode.decode() if isinstance(execution_mode, bytes) else execution_mode
-        else:
-            execution_mode = "LIVE"
+        execution_mode = _normalize_execution_mode(redis_client.get("system:execution_mode"))
         print(f"RUN_CYCLE_MODE: execution_mode={execution_mode}")
 
         # Check market hours for orchestrator decisions
@@ -2308,7 +2835,8 @@ async def run_orchestrator_cycle_endpoint():
             'timestamp': datetime.now(),
             'cycle_info': {'cycle_number': 1, 'duration_seconds': 0},
             'execution_mode': execution_mode,
-            'market_hours': market_open
+            'market_hours': market_open,
+            'cash_available': _resolve_capital_from_env(),
         }
         print(f"RUN_CYCLE_CONTEXT: market_hours={market_open}, execution_mode={execution_mode}")
 
@@ -2335,11 +2863,7 @@ async def run_orchestrator_cycle_endpoint():
         }
         # Add execution flow info
         redis_client = get_redis_client()
-        exec_mode = redis_client.get("system:execution_mode")
-        if exec_mode:
-            exec_mode = exec_mode.decode() if isinstance(exec_mode, bytes) else exec_mode
-        else:
-            exec_mode = "LIVE"
+        exec_mode = _normalize_execution_mode(redis_client.get("system:execution_mode"))
 
         response_data["execution_info"] = {
             "execution_mode": exec_mode,
@@ -2362,6 +2886,15 @@ async def get_agent_status():
     """
     try:
         agents_info = []
+        current_run_id = ""
+        try:
+            redis_client = get_redis_client()
+            _raw_run_id = redis_client.get("system:run_id")
+            if isinstance(_raw_run_id, bytes):
+                _raw_run_id = _raw_run_id.decode()
+            current_run_id = str(_raw_run_id or "").strip()
+        except Exception:
+            current_run_id = ""
 
         # Get agent list from orchestrator if available
         agent_names = []
@@ -2387,38 +2920,43 @@ async def get_agent_status():
             for agent_name in agent_names:
                 latest_discussion = agent_discussions.find_one(
                     {"agent_name": agent_name},
-                    sort=[("timestamp", -1)]
+                    sort=[("_id", -1)]
                 )
 
                 last_decision = None
                 updated_at = datetime.now(IST).isoformat()
 
                 if latest_discussion:
-                    # Return full decision object with reasoning
+                    confidence = _coerce_optional_confidence(latest_discussion.get("confidence"))
+                    row_run_id = str(latest_discussion.get("run_id") or "").strip()
+                    row_cycle_id = latest_discussion.get("cycle_id")
+                    ran_in_current_run = bool(current_run_id and row_run_id and row_run_id == current_run_id)
+                    # Return full decision object from persisted agent output.
                     last_decision = {
                         "decision": latest_discussion.get("signal") or latest_discussion.get("decision"),
-                        "confidence": latest_discussion.get("confidence", 0),
-                        "reasoning": latest_discussion.get("reasoning", "Decision made"),
+                        "confidence": confidence,
+                        "reasoning": latest_discussion.get("reasoning", ""),
                         "additionalDetails": {
-                            "reasoning": latest_discussion.get("reasoning", "Decision made")
+                            "reasoning": latest_discussion.get("reasoning", "")
                         }
                     }
                     updated_at = latest_discussion.get("timestamp", updated_at)
                 else:
-                    last_decision = {
-                        "decision": "HOLD",
-                        "confidence": 0,
-                        "reasoning": "No recent decision available",
-                        "additionalDetails": {
-                            "reasoning": "No recent decision available"
-                        }
-                    }
+                    confidence = None
+                    row_run_id = ""
+                    row_cycle_id = None
+                    ran_in_current_run = False
+                    last_decision = None
 
                 agents_info.append({
                     "name": agent_name,
                     "state": "active",
                     "status": "active",
                     "last_decision": last_decision,
+                    "confidence": confidence,
+                    "run_id": row_run_id,
+                    "cycle_id": row_cycle_id,
+                    "ran_in_current_run": ran_in_current_run,
                     "updated_at": updated_at
                 })
         except Exception as db_error:
@@ -2430,6 +2968,10 @@ async def get_agent_status():
                     "state": "active",
                     "status": "active",
                     "last_decision": None,
+                    "confidence": None,
+                    "run_id": "",
+                    "cycle_id": None,
+                    "ran_in_current_run": False,
                     "updated_at": datetime.now(IST).isoformat()
                 })
 
@@ -2449,20 +2991,40 @@ async def list_agents():
                 name = getattr(agent, '_agent_name', agent.__class__.__name__)
                 desc = (agent.__doc__ or '').strip().split('\n')[0] if getattr(agent, '__doc__', None) else ''
                 has_memory = hasattr(agent, 'memory')
+                contract = {}
+                if hasattr(_orchestrator, "_agent_contract"):
+                    try:
+                        contract = _orchestrator._agent_contract(agent)  # type: ignore[attr-defined]
+                    except Exception:
+                        contract = {}
                 agent_list.append({
                     'name': name,
                     'description': desc,
-                    'has_memory': has_memory
+                    'has_memory': has_memory,
+                    'tier': contract.get("tier", getattr(agent, "_agent_tier", "custom")),
+                    'decision_authority': bool(contract.get("decision_authority", getattr(agent, "_decision_authority", False))),
+                    'required_for_cycle': bool(contract.get("required_for_cycle", getattr(agent, "_required_for_cycle", False))),
+                    'run_in_supporting_phase': bool(contract.get("run_in_supporting_phase", getattr(agent, "_run_in_supporting_phase", True))),
+                    'primary_research': bool(contract.get("primary_research", getattr(agent, "_primary_research", False))),
+                    'supporting_judge': bool(contract.get("supporting_judge", getattr(agent, "_supporting_judge", False))),
+                    'input_requirements': contract.get("input_requirements", getattr(agent, "_input_requirements", {})) or {},
                 })
         else:
-            # Fallback list
-            defaults = [
-                "TechnicalAgent", "SentimentAgent", "MacroAgent", "FundamentalAgent",
-                "MomentumAgent", "TrendAgent", "VolumeAgent", "MeanReversionAgent",
-                "BullResearcher", "BearResearcher", "ResearchManager", "OptionsStrategyAgent",
-                "NeutralRiskAgent", "RiskManager", "ExecutionAgent"
-            ]
-            agent_list = [{'name': a, 'description': '', 'has_memory': a in ('BullResearcher', 'BearResearcher')} for a in defaults]
+            from .agent_registry import list_agent_registrations
+
+            for reg in list_agent_registrations(profile="balanced"):
+                agent_list.append({
+                    "name": reg.name,
+                    "description": reg.description or "",
+                    "has_memory": reg.name in ("BullResearcher", "BearResearcher"),
+                    "tier": reg.tier,
+                    "decision_authority": bool(reg.decision_authority),
+                    "required_for_cycle": bool(reg.required_for_cycle),
+                    "run_in_supporting_phase": bool(reg.run_in_supporting_phase),
+                    "primary_research": bool(reg.primary_research),
+                    "supporting_judge": bool(reg.supporting_judge),
+                    "input_requirements": reg.input_requirements.to_dict() if reg.input_requirements else {},
+                })
         return agent_list
     except Exception as e:
         logger.exception("Error listing agents: %s", e)
@@ -2477,7 +3039,7 @@ async def get_agent_details(agent_name: str):
         db = mongo_client[os.getenv("MONGODB_DATABASE", "zerodha_trading")]
         agent_discussions = db["agent_discussions"]
 
-        latest = agent_discussions.find_one({"agent_name": agent_name}, sort=[("timestamp", -1)])
+        latest = agent_discussions.find_one({"agent_name": agent_name}, sort=[("_id", -1)])
 
         # Attempt to get agent object for config/introspection
         config = {}
@@ -2515,7 +3077,7 @@ async def get_agent_history(agent_name: str, limit: int = 50):
         db = mongo_client[os.getenv("MONGODB_DATABASE", "zerodha_trading")]
         agent_discussions = db["agent_discussions"]
 
-        cursor = agent_discussions.find({"agent_name": agent_name}).sort("timestamp", -1).limit(limit)
+        cursor = agent_discussions.find({"agent_name": agent_name}).sort("_id", -1).limit(limit)
         results = []
         for doc in cursor:
             if doc.get('_id'):
@@ -2550,6 +3112,19 @@ async def get_agent_response(agent_name: str, response_id: str):
             raise HTTPException(status_code=404, detail="Response not found")
         if doc.get('_id'):
             doc['_id'] = str(doc['_id'])
+
+        details = doc.get("details") if isinstance(doc.get("details"), dict) else {}
+        fallback_snapshot = (
+            doc.get("input_data")
+            or doc.get("agent_input_snapshot")
+            or details.get("agent_input_snapshot")
+            or (details.get("decision_contract") or {}).get("deterministic_inputs")
+            or {}
+        )
+        if not isinstance(doc.get("input_data"), dict):
+            doc["input_data"] = fallback_snapshot if isinstance(fallback_snapshot, dict) else {}
+        if not isinstance(doc.get("agent_input_snapshot"), dict):
+            doc["agent_input_snapshot"] = fallback_snapshot if isinstance(fallback_snapshot, dict) else {}
         return doc
     except HTTPException:
         raise
@@ -2585,41 +3160,90 @@ async def get_agent_memory(agent_name: str, q: str = None, limit: int = 10):
 async def get_agent_dependencies():
     """Return a simple dependency graph for agents (nodes + edges)."""
     try:
-        # Build a conservative dependency graph based on known roles
-        nodes = []
-        edges = []
+        nodes: List[Dict[str, Any]] = []
+        edges: List[Dict[str, Any]] = []
 
-        # Try to enumerate agents from orchestrator
-        agent_names = []
+        agent_contracts: List[Dict[str, Any]] = []
         if _orchestrator is not None and hasattr(_orchestrator, 'agents') and _orchestrator.agents:
-            agent_names = [getattr(a, '_agent_name', a.__class__.__name__) for a in _orchestrator.agents]
+            for agent in _orchestrator.agents:
+                if hasattr(_orchestrator, "_agent_contract"):
+                    contract = _orchestrator._agent_contract(agent)  # type: ignore[attr-defined]
+                else:
+                    contract = {"name": getattr(agent, "_agent_name", agent.__class__.__name__), "input_requirements": {}}
+                agent_contracts.append(contract)
         else:
-            agent_names = [
-                "TechnicalAgent", "SentimentAgent", "MacroAgent", "FundamentalAgent",
-                "MomentumAgent", "TrendAgent", "VolumeAgent", "MeanReversionAgent",
-                "BullResearcher", "BearResearcher", "ResearchManager", "OptionsStrategyAgent",
-                "NeutralRiskAgent", "ConservativeRiskAgent", "AggressiveRiskAgent", "RiskManager", "ExecutionAgent"
-            ]
+            from .agent_registry import list_agent_registrations
 
-        for name in agent_names:
-            nodes.append({"id": name, "label": name})
+            for reg in list_agent_registrations(profile="balanced"):
+                agent_contracts.append({
+                    "name": reg.name,
+                    "tier": reg.tier,
+                    "primary_research": bool(reg.primary_research),
+                    "run_in_supporting_phase": bool(reg.run_in_supporting_phase),
+                    "supporting_judge": bool(reg.supporting_judge),
+                    "input_requirements": reg.input_requirements.to_dict() if reg.input_requirements else {},
+                })
 
-        # Add common edges
-        # Technical -> Momentum/Trend/MeanReversion/Volume
-        for t in ["MomentumAgent", "TrendAgent", "MeanReversionAgent", "VolumeAgent"]:
-            edges.append({"from": "TechnicalAgent", "to": t, "type": "data_flow"})
+        for contract in agent_contracts:
+            name = str(contract.get("name") or "").strip()
+            if not name:
+                continue
+            nodes.append({
+                "id": name,
+                "label": name,
+                "tier": contract.get("tier", "custom"),
+            })
 
-        # Bull/Bear -> ResearchManager
-        edges.append({"from": "BullResearcher", "to": "ResearchManager", "type": "coordination"})
-        edges.append({"from": "BearResearcher", "to": "ResearchManager", "type": "coordination"})
+        # Build data-source dependency edges directly from input requirements.
+        seen_data_nodes = set()
+        for contract in agent_contracts:
+            name = str(contract.get("name") or "").strip()
+            if not name:
+                continue
+            requirements = contract.get("input_requirements", {})
+            if not isinstance(requirements, dict):
+                continue
+            required_fields = []
+            required_fields.extend(requirements.get("required", []) or [])
+            required_fields.extend(requirements.get("required_any", []) or [])
+            for field in required_fields:
+                field_name = str(field or "").strip()
+                if not field_name:
+                    continue
+                source_node = f"data:{field_name}"
+                if source_node not in seen_data_nodes:
+                    seen_data_nodes.add(source_node)
+                    nodes.append({"id": source_node, "label": field_name, "tier": "data_source"})
+                edges.append({"from": source_node, "to": name, "type": "input_requirement"})
 
-        # ResearchManager -> OptionsStrategyAgent
-        edges.append({"from": "ResearchManager", "to": "OptionsStrategyAgent", "type": "coordination"})
+        # Add orchestration phase edges to show control flow.
+        primary_research = [c for c in agent_contracts if bool(c.get("primary_research", False))]
+        supporting_agents = [c for c in agent_contracts if bool(c.get("run_in_supporting_phase", True))]
+        supporting_judges = [c for c in agent_contracts if bool(c.get("supporting_judge", False))]
 
-        # Risk veto edges
-        edges.append({"from": "NeutralRiskAgent", "to": "ExecutionAgent", "type": "veto"})
-        edges.append({"from": "ConservativeRiskAgent", "to": "ExecutionAgent", "type": "veto"})
-        edges.append({"from": "AggressiveRiskAgent", "to": "ExecutionAgent", "type": "veto"})
+        for contract in primary_research:
+            name = str(contract.get("name") or "").strip()
+            if name:
+                edges.append({"from": "orchestrator:research_phase", "to": name, "type": "phase_execution"})
+
+        for contract in supporting_agents:
+            name = str(contract.get("name") or "").strip()
+            if name:
+                edges.append({"from": "orchestrator:supporting_phase", "to": name, "type": "phase_execution"})
+                for primary in primary_research:
+                    pname = str(primary.get("name") or "").strip()
+                    if pname:
+                        edges.append({"from": pname, "to": name, "type": "thesis_context"})
+
+        for judge in supporting_judges:
+            jname = str(judge.get("name") or "").strip()
+            if not jname:
+                continue
+            edges.append({"from": "orchestrator:judge_phase", "to": jname, "type": "phase_execution"})
+            for supporting in supporting_agents:
+                sname = str(supporting.get("name") or "").strip()
+                if sname and sname != jname:
+                    edges.append({"from": sname, "to": jname, "type": "agent_results"})
 
         return {"nodes": nodes, "edges": edges}
     except Exception as e:
@@ -2802,6 +3426,34 @@ class DataValidator:
     @staticmethod
     def validate_options_data(options_data: Dict[str, Any], current_time: datetime) -> Dict[str, Any]:
         """Validate options chain data."""
+        def _coerce_liquidity_number(value: Any) -> float:
+            if value is None or value == "":
+                return 0.0
+            if isinstance(value, (int, float)):
+                return float(value)
+            text = str(value).strip()
+            if not text:
+                return 0.0
+            normalized = text.replace(",", "").replace(" ", "").upper()
+            if normalized in {"NONE", "NULL", "NAN", "-"}:
+                return 0.0
+            match = re.match(r"^(-?\d+(?:\.\d+)?)([A-Z]+)?$", normalized)
+            if not match:
+                match = re.search(r"(-?\d+(?:\.\d+)?)([A-Z]+)?", normalized)
+                if not match:
+                    return 0.0
+            number = float(match.group(1))
+            suffix = (match.group(2) or "").upper()
+            if suffix in {"K"}:
+                return number * 1_000.0
+            if suffix in {"M"}:
+                return number * 1_000_000.0
+            if suffix in {"L", "LAC", "LAKH"}:
+                return number * 100_000.0
+            if suffix in {"CR", "CRORE"}:
+                return number * 10_000_000.0
+            return number
+
         if not options_data or not options_data.get("success"):
             return {
                 "valid": False,
@@ -2833,12 +3485,20 @@ class DataValidator:
         timestamp = options_data.get("timestamp")
         if timestamp:
             try:
+                if isinstance(current_time, str):
+                    from dateutil import parser
+                    current_time = parser.parse(current_time)
                 if isinstance(timestamp, str):
                     from dateutil import parser
                     data_time = parser.parse(timestamp)
                 else:
                     data_time = timestamp
-
+                # Normalize timezone awareness before subtraction.
+                if isinstance(current_time, datetime) and isinstance(data_time, datetime):
+                    if current_time.tzinfo is not None and data_time.tzinfo is None:
+                        data_time = data_time.replace(tzinfo=current_time.tzinfo)
+                    elif current_time.tzinfo is None and data_time.tzinfo is not None:
+                        current_time = current_time.replace(tzinfo=data_time.tzinfo)
                 age_minutes = (current_time - data_time).total_seconds() / 60
                 if age_minutes > DataValidator.MAX_OPTIONS_AGE_MINUTES:
                     return {
@@ -2851,8 +3511,14 @@ class DataValidator:
                 logger.warning(f"Could not validate options data timestamp: {e}")
 
         # Check for liquid strikes
-        liquid_calls = [c for c in calls if (c.get("oi", 0) > 500 or c.get("volume", 0) > 50)]
-        liquid_puts = [p for p in puts if (p.get("oi", 0) > 500 or p.get("volume", 0) > 50)]
+        liquid_calls = [
+            c for c in calls
+            if (_coerce_liquidity_number(c.get("oi", 0)) > 500 or _coerce_liquidity_number(c.get("volume", 0)) > 50)
+        ]
+        liquid_puts = [
+            p for p in puts
+            if (_coerce_liquidity_number(p.get("oi", 0)) > 500 or _coerce_liquidity_number(p.get("volume", 0)) > 50)
+        ]
 
         if len(liquid_calls) < 3 or len(liquid_puts) < 3:
             return {
@@ -2891,7 +3557,9 @@ class DataValidator:
 if __name__ == "__main__":
     import uvicorn
     
-    port = int(os.getenv("ENGINE_API_PORT", "8006"))
+    # Default to 9006 so direct `python -m engine_module.api_service` aligns
+    # with dashboard/startup contract wiring (all internal services on 9xxx).
+    port = int(os.getenv("ENGINE_API_PORT", "9006"))
     host = os.getenv("ENGINE_API_HOST", "0.0.0.0")
     
     print(f"Starting Engine API on {host}:{port}")

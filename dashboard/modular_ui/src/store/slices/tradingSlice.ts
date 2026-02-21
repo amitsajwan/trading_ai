@@ -51,7 +51,7 @@ export interface Trade {
 
 export interface AgentStatus {
   name: string
-  status: 'active' | 'inactive' | 'error'
+  status: 'active' | 'inactive' | 'error' | 'excluded' | 'stale' | 'idle'
   last_update: string
   signal?: string
   confidence?: number
@@ -59,12 +59,15 @@ export interface AgentStatus {
   technical_indicators?: any
   reasoning?: string
   cycle_info?: any
+  run_id?: string
+  cycle_id?: string
+  ran_in_current_run?: boolean
 }
 
 export interface AgentResponse {
   agent: string
-  decision: 'BUY' | 'SELL' | 'HOLD'
-  confidence: number
+  decision: string
+  confidence?: number
   timestamp: string
   details: {
     reasoning?: string
@@ -79,18 +82,38 @@ export interface AgentResponse {
     [key: string]: any
   }
   structured_report?: any
+  run_id?: string
+  cycle_id?: string
+  response_id?: string
 }
 
 export interface OrchestratorDecision {
   decision_id: string
   timestamp: string
   instrument: string
-  final_decision: 'BUY' | 'SELL' | 'HOLD'
+  final_decision: string
   confidence: number
   agent_responses: AgentResponse[]
   reasoning: string
   signal_created?: boolean
   signal_id?: string
+  run_id?: string
+  cycle_id?: string
+  research_thesis?: {
+    agent?: string
+    decision?: string
+    confidence?: number
+    reasoning?: string
+  } | null
+  execution_verdict?: {
+    decision?: string
+    confidence?: number
+    judge?: string
+    can_trade?: boolean
+    gate_reason?: string
+    status?: string
+    signal_created?: boolean
+  } | null
 }
 
 export interface StrategyRecommendation {
@@ -177,7 +200,8 @@ export interface TradingSignal {
   signal_id: string
   condition_id?: string
   instrument: string
-  action: 'BUY' | 'SELL' | 'HOLD'
+  action: string
+  signal?: string
   confidence: number
   reasoning: string
   timestamp: string
@@ -192,6 +216,7 @@ export interface TradingSignal {
   strategy_type?: string
   expires_at?: string
   execution_mode?: string
+  reason_hash?: string
   parsed_conditions?: Array<{
     indicator: string
     operator: string
@@ -260,45 +285,143 @@ const initialState: TradingState = {
 export const fetchLatestDecision = createAsyncThunk(
   'trading/fetchLatestDecision',
   async () => {
-    const response = await axios.get('/api/engine/decision/latest')
-    return response.data
+    const response = await axios.get('/api/latest-signal')
+    const payload = response.data?.signal || response.data || {}
+    return {
+      instrument: payload.instrument || 'BANKNIFTY-I',
+      signal: payload.action || payload.signal || 'HOLD',
+      confidence: Number(payload.confidence || 0),
+      reasoning: payload.reasoning || '',
+      timestamp: payload.timestamp || new Date().toISOString(),
+      entry_price: payload.entry_price,
+      stop_loss: payload.stop_loss,
+      take_profit: payload.take_profit,
+    }
   }
 )
 
 export const fetchPortfolio = createAsyncThunk(
   'trading/fetchPortfolio',
   async () => {
-    const response = await axios.get('/api/engine/portfolio')
-    return response.data
+    const response = await axios.get('/api/portfolio')
+    const payload = response.data || {}
+    const summary = payload.summary || {}
+    return {
+      total_value: Number(summary.total_value || 0),
+      cash_balance: Number(summary.cash_balance || 0),
+      positions: payload.positions || [],
+      day_pnl: Number(summary.day_pnl || 0),
+      total_pnl: Number(summary.total_pnl || 0),
+      margin_used: Number(summary.margin_used || 0),
+      margin_available: Number(summary.margin_available || 0),
+      positions_count: Number(summary.positions_count || (payload.positions || []).length || 0),
+      timestamp: payload.timestamp || new Date().toISOString(),
+    }
   }
 )
 
 export const fetchRecentTrades = createAsyncThunk(
   'trading/fetchRecentTrades',
   async (limit: number = 20) => {
-    const response = await axios.get(`${ENGINE_BASE}/api/engine/trades`, { params: { limit } })
-    return response.data
+    const response = await axios.get('/api/recent-trades', { params: { limit } })
+    return Array.isArray(response.data) ? response.data : []
   }
 )
 
 export const fetchAgentStatuses = createAsyncThunk(
   'trading/fetchAgentStatuses',
-  async () => {
-    const response = await axios.get(`${DASHBOARD_BASE}/api/agent-status`)
-    const data = response.data
+  async (_, { rejectWithValue }) => {
+    const toOptionalConfidence = (value: any): number | undefined => {
+      if (value === null || value === undefined || value === '') return undefined
+      const n = Number(value)
+      if (!Number.isFinite(n) || n < 0) return undefined
+      if (n <= 1) return n
+      if (n <= 100) return n / 100
+      return undefined
+    }
 
-    // Transform the data to match the expected AgentStatus format
-    if (data.agents) {
+    const normalizeDashboardPayload = (data: any): AgentStatus[] | null => {
+      if (!(data?.agents && typeof data.agents === 'object')) return null
       return Object.values(data.agents).map((agent: any) => ({
         name: agent.name,
-        status: agent.status,
+        status: (agent.status || 'idle') as AgentStatus['status'],
         last_update: agent.last_update,
         signal: agent.signal,
-        confidence: agent.confidence,
-        summary: agent.summary
+        confidence: toOptionalConfidence(agent.confidence),
+        summary: agent.summary,
+        reasoning: agent.reasoning,
+        // Preserve true provenance; do not stamp current run on legacy/stale records.
+        run_id: agent.run_id || '',
+        cycle_id: agent.cycle_id || '',
+        ran_in_current_run:
+          typeof agent.ran_in_current_run === 'boolean'
+            ? agent.ran_in_current_run
+            : undefined
       }))
     }
-    return []
+
+    const normalizeEnginePayload = (data: any): AgentStatus[] | null => {
+      if (!Array.isArray(data)) return null
+      return data.map((agent: any) => {
+        const rawLastDecision = agent.last_decision
+        const isDecisionObject = rawLastDecision && typeof rawLastDecision === 'object' && !Array.isArray(rawLastDecision)
+        const signal = isDecisionObject
+          ? (rawLastDecision.decision || rawLastDecision.signal || '')
+          : (rawLastDecision || '')
+        const reasoning = isDecisionObject
+          ? (rawLastDecision.reasoning || agent.reasoning)
+          : agent.reasoning
+        const confidence = toOptionalConfidence(
+          isDecisionObject ? rawLastDecision.confidence ?? agent.confidence : agent.confidence
+        )
+
+        return {
+          name: agent.name,
+          status: (agent.status || agent.state || 'idle') as AgentStatus['status'],
+          last_update: agent.updated_at || agent.last_update || '',
+          signal,
+          confidence,
+          summary: agent,
+          reasoning,
+          run_id: agent.run_id || '',
+          cycle_id: agent.cycle_id || '',
+          ran_in_current_run:
+            typeof agent.ran_in_current_run === 'boolean'
+              ? agent.ran_in_current_run
+              : undefined
+        }
+      })
+    }
+
+    const endpoints = [
+      // Prefer engine endpoint first: faster path and richer run metadata.
+      '/api/engine/agents/status',
+      '/api/agent-status',
+    ]
+
+    let lastError = 'Failed to fetch agent statuses'
+    try {
+      for (const endpoint of endpoints) {
+        try {
+          const response = await axios.get(endpoint, { timeout: 20000 })
+          const data = response.data
+
+          const dashboardNormalized = normalizeDashboardPayload(data)
+          if (dashboardNormalized) return dashboardNormalized
+
+          const engineNormalized = normalizeEnginePayload(data)
+          if (engineNormalized) return engineNormalized
+
+          lastError = `Agent status payload malformed from ${endpoint}`
+        } catch (err: any) {
+          lastError = err?.response?.data?.error || err?.message || `Failed endpoint ${endpoint}`
+        }
+      }
+
+      return rejectWithValue(lastError)
+    } catch (err: any) {
+      return rejectWithValue(err.response?.data?.error || err.message || 'Failed to fetch agent statuses')
+    }
   }
 )
 
@@ -315,8 +438,16 @@ export interface AgentMemoryItem {
   similarity?: number
 }
 
-const ENGINE_BASE = (import.meta.env.VITE_ENGINE_API_URL as string) || ''
-const DASHBOARD_BASE = (import.meta.env.VITE_DASHBOARD_API_URL as string) || ''
+const ENGINE_BASE = ''
+const DASHBOARD_BASE = ''
+
+function extractSignalsFromPayload(payload: any): any[] {
+  if (Array.isArray(payload)) return payload
+  if (Array.isArray(payload?.signals)) return payload.signals
+  if (Array.isArray(payload?.data)) return payload.data
+  if (Array.isArray(payload?.items)) return payload.items
+  return []
+}
 
 export const fetchAgentDetails = createAsyncThunk(
   'trading/fetchAgentDetails',
@@ -434,22 +565,56 @@ export const toggleOptionsAlgo = createAsyncThunk(
 
 export const fetchSignals = createAsyncThunk(
   'trading/fetchSignals',
-  async (instrument: string = import.meta.env.VITE_INSTRUMENT_SYMBOL || 'BANKNIFTY26JANFUT', { rejectWithValue }) => {
+  async (instrument?: string, { rejectWithValue }) => {
     try {
-      const response = await axios.get(`${ENGINE_BASE}/api/v1/signals/${instrument}`)
-      // Transform the data to match expected format
-      const signals = Array.isArray(response.data) ? response.data : []
+      const requestedInstrument = (instrument || '').trim().toUpperCase()
+      let runtimeInstrument = requestedInstrument
+      if (!runtimeInstrument) {
+        try {
+          const modeResp = await axios.get('/api/control/mode/info')
+          runtimeInstrument = String(modeResp?.data?.instrument || '').trim().toUpperCase()
+        } catch {
+          // Best-effort only; fallback below.
+        }
+      }
+      const targetInstrument =
+        runtimeInstrument ||
+        ((import.meta.env.VITE_INSTRUMENT_SYMBOL as string) || 'BANKNIFTY-I').toUpperCase()
+
+      const response = await axios.get(`/api/v1/signals/${encodeURIComponent(targetInstrument)}`, {
+        params: { limit: 200 }
+      })
+      let signals = extractSignalsFromPayload(response.data)
+
+      // Recover from stale UI instrument by retrying with backend active instrument.
+      if (requestedInstrument && signals.length === 0) {
+        const fallbackModeResp = await axios.get('/api/control/mode/info')
+        const fallbackInstrument = String(fallbackModeResp?.data?.instrument || '').trim().toUpperCase()
+        const fallbackResponse = fallbackInstrument
+          ? await axios.get(`/api/v1/signals/${encodeURIComponent(fallbackInstrument)}`, { params: { limit: 200 } })
+          : await axios.get(`/api/v1/signals/${encodeURIComponent('BANKNIFTY-I')}`, { params: { limit: 200 } })
+        signals = extractSignalsFromPayload(fallbackResponse.data)
+      }
+
       return signals.map((signal: any) => ({
         id: signal._id || signal.signal_id,
-        signal_id: signal.signal_id,
-        strategy: signal.action || signal.strategy || 'unknown', // Use action field for strategy
-        instrument: signal.instrument,
+        signal_id: signal.signal_id || signal.id || signal.condition_id,
+        condition_id: signal.condition_id,
+        strategy: signal.action || signal.signal || signal.strategy || 'unknown',
+        signal: signal.signal || signal.action || signal.strategy || 'HOLD',
+        action: signal.action || signal.signal || signal.strategy || 'HOLD',
+        instrument: signal.instrument || targetInstrument || 'BANKNIFTY-I',
         entry_price: signal.entry_price,
         stop_loss: signal.stop_loss,
         take_profit: signal.take_profit,
-        confidence: signal.confidence || 0,
+        confidence: Number(signal.confidence || 0),
         status: signal.status || 'pending',
-        timestamp: signal.timestamp,
+        timestamp: signal.timestamp || signal.created_at || new Date().toISOString(),
+        indicator: signal.indicator,
+        operator: signal.operator,
+        threshold: signal.threshold,
+        current_value: signal.current_value,
+        reason_hash: signal.reason_hash,
         conditions: signal.conditions || [],
         reasoning: signal.reasoning || '',
         execution_mode: signal.execution_mode,
@@ -538,7 +703,10 @@ export const fetchOrchestratorAnalysis = createAsyncThunk(
   'trading/fetchOrchestratorAnalysis',
   async ({ instrument, context }: { instrument: string; context?: any }, { rejectWithValue }) => {
     try {
-      const response = await axios.post(`${ENGINE_BASE}/api/v1/analyze`)
+      const response = await axios.post('/api/trading/cycle', {
+        instrument,
+        context: context || {},
+      })
       return response.data
     } catch (err: any) {
       return rejectWithValue(err.response?.data?.error || err.message || 'Failed to run orchestrator analysis')
@@ -548,10 +716,59 @@ export const fetchOrchestratorAnalysis = createAsyncThunk(
 
 export const fetchOrchestratorDecisions = createAsyncThunk(
   'trading/fetchOrchestratorDecisions',
-  async (limit: number = 20, { rejectWithValue }) => {
+  async (
+    arg: number | { limit?: number; instrument?: string } = 20,
+    { rejectWithValue, getState }
+  ) => {
     try {
-      const response = await axios.get('/api/orchestrator-decisions', { params: { limit } })
-      return response.data.decisions || []
+      const requestedLimit = typeof arg === 'number' ? arg : (arg?.limit ?? 20)
+      const requestedInstrument = typeof arg === 'number' ? '' : (arg?.instrument || '')
+
+      const state = getState() as any
+      const stateInstrument =
+        state?.ui?.executionMode?.instrument ||
+        state?.trading?.latestDecision?.instrument ||
+        ''
+
+      let runtimeInstrument = (requestedInstrument || stateInstrument || '').toUpperCase()
+      if (!runtimeInstrument) {
+        try {
+          const modeInfo = await axios.get('/api/control/mode/info')
+          runtimeInstrument = String(modeInfo?.data?.instrument || '').toUpperCase()
+        } catch {
+          // Best effort only; final fallback below.
+        }
+      }
+      const instrument =
+        runtimeInstrument ||
+        ((import.meta.env.VITE_INSTRUMENT_SYMBOL as string) || 'BANKNIFTY-I').toUpperCase()
+
+      const response = await axios.get('/api/orchestrator-decisions', {
+        params: { limit: requestedLimit, instrument, include_history: false }
+      })
+      const rows = response.data.decisions || []
+      return rows.map((d: any) => {
+        const ts = d.timestamp || d.created_at || new Date().toISOString()
+        const runId = d.run_id || d.details?.run_id || d.orchestrator_run_id
+        const cycleId = d.cycle_id || d.details?.cycle_id || d.invocation_id
+        const agentResponses = (d.agent_responses || [])
+          .filter((r: any) => !!(r && r.agent))
+          .map((r: any) => ({ ...r, agent: String(r.agent) }))
+        return {
+          ...d,
+          timestamp: ts,
+          run_id: runId,
+          cycle_id: cycleId,
+          agent_responses: agentResponses,
+          research_thesis: d.research_thesis || d.details?.research_thesis || null,
+          execution_verdict: d.execution_verdict || d.details?.execution_verdict || null,
+          decision_id:
+            d.decision_id ||
+            d._id ||
+            d.signal_id ||
+            `${d.instrument || instrument}:${runId || ''}:${cycleId || ''}:${d.final_decision || d.decision || 'HOLD'}:${ts}`,
+        }
+      })
     } catch (err: any) {
       return rejectWithValue(err.response?.data?.error || err.message || 'Failed to fetch orchestrator decisions')
     }
@@ -621,13 +838,19 @@ const tradingSlice = createSlice({
     },
     updateAgentResponse: (state, action: PayloadAction<AgentResponse>) => {
       const response = action.payload
-      const existingIndex = state.agentResponses.findIndex(r => r.agent === response.agent)
+      const key =
+        response.response_id ||
+        `${response.agent || 'UNKNOWN'}:${response.run_id || ''}:${response.cycle_id || ''}:${response.timestamp || ''}`
+      const existingIndex = state.agentResponses.findIndex(r =>
+        (r.response_id && response.response_id && r.response_id === response.response_id) ||
+        `${r.agent || 'UNKNOWN'}:${r.run_id || ''}:${r.cycle_id || ''}:${r.timestamp || ''}` === key
+      )
       if (existingIndex >= 0) {
-        state.agentResponses[existingIndex] = response
+        state.agentResponses[existingIndex] = { ...state.agentResponses[existingIndex], ...response }
       } else {
-        state.agentResponses.push(response)
-        // Keep only last 50 responses per agent
-        state.agentResponses = state.agentResponses.slice(-50)
+        state.agentResponses.unshift(response)
+        // Keep only last 200 responses across runs
+        state.agentResponses = state.agentResponses.slice(0, 200)
       }
       state.lastUpdated = new Date().toISOString()
     },
@@ -645,7 +868,24 @@ const tradingSlice = createSlice({
     },
     updateOrchestratorDecision: (state, action: PayloadAction<OrchestratorDecision>) => {
       const decision = action.payload
-      state.orchestratorDecisions.unshift(decision)
+      const compositeKey = `${decision.instrument || ''}:${decision.run_id || ''}:${decision.cycle_id || ''}:${decision.final_decision || ''}:${decision.timestamp || ''}`
+      const existingIndex = state.orchestratorDecisions.findIndex(d =>
+        (d.decision_id && decision.decision_id && d.decision_id === decision.decision_id) ||
+        `${d.instrument || ''}:${d.run_id || ''}:${d.cycle_id || ''}:${d.final_decision || ''}:${d.timestamp || ''}` === compositeKey
+      )
+      if (existingIndex >= 0) {
+        state.orchestratorDecisions[existingIndex] = {
+          ...state.orchestratorDecisions[existingIndex],
+          ...decision,
+          // Prefer richer agent breakdown when subsequent update arrives.
+          agent_responses:
+            (decision.agent_responses && decision.agent_responses.length > 0)
+              ? decision.agent_responses
+              : state.orchestratorDecisions[existingIndex].agent_responses
+        }
+      } else {
+        state.orchestratorDecisions.unshift(decision)
+      }
       // Keep only last 20 decisions
       if (state.orchestratorDecisions.length > 20) {
         state.orchestratorDecisions = state.orchestratorDecisions.slice(0, 20)
@@ -810,14 +1050,32 @@ const tradingSlice = createSlice({
         const payload = action.payload || {}
         const arg = (action.meta && (action.meta.arg as any)) || {}
         const instrument = arg.instrument || payload.instrument || 'UNKNOWN'
+        const rawAgentResponses =
+          payload.agent_responses ||
+          payload.details?.agent_responses ||
+          payload.details?.agent_results ||
+          []
+        const normalizedAgentResponses = (rawAgentResponses || [])
+          .filter((r: any) => !!(r && r.agent))
+          .map((r: any) => ({
+            ...r,
+            agent: String(r.agent),
+          }))
         const newDecision: OrchestratorDecision = {
-          decision_id: String(Date.now()),
-          timestamp: new Date().toISOString(),
+          decision_id:
+            payload.decision_id ||
+            payload._id ||
+            `${instrument}:${payload.run_id || ''}:${payload.cycle_id || ''}:${Date.now()}`,
+          timestamp: payload.timestamp || new Date().toISOString(),
           instrument,
-          final_decision: (payload.decision || 'HOLD') as any,
+          final_decision: (payload.final_decision || payload.decision || 'HOLD') as any,
           confidence: payload.confidence || 0,
-          agent_responses: payload.agent_responses || [],
-          reasoning: payload.message || '',
+          agent_responses: normalizedAgentResponses,
+          reasoning: payload.reasoning || payload.message || '',
+          research_thesis: payload.research_thesis || payload.details?.research_thesis || null,
+          execution_verdict: payload.execution_verdict || payload.details?.execution_verdict || null,
+          run_id: payload.run_id || payload.details?.run_id,
+          cycle_id: payload.cycle_id || payload.details?.cycle_id,
           signal_created: false
         }
         state.orchestratorDecisions.unshift(newDecision)
@@ -834,7 +1092,8 @@ const tradingSlice = createSlice({
     // Fetch Orchestrator Decisions (load existing decisions)
     builder
       .addCase(fetchOrchestratorDecisions.pending, (state) => {
-        state.loading.orchestrator = true
+        // Preserve existing cards during refresh to avoid UI blink.
+        state.loading.orchestrator = state.orchestratorDecisions.length === 0
         state.error = null
       })
       .addCase(fetchOrchestratorDecisions.fulfilled, (state, action: any) => {
@@ -1019,3 +1278,4 @@ const tradingSlice = createSlice({
 
 export const { updateDecision, updatePortfolio, addTrade, clearError, addOrUpdateSignal, setSignals, updateAgentResponse, updateAgentStatus, updateOrchestratorDecision } = tradingSlice.actions
 export default tradingSlice.reducer
+

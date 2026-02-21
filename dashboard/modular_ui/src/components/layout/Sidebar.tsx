@@ -18,6 +18,7 @@ import { toggleSidebar } from '../../store/slices/uiSlice'
 
 const navigation = [
   { name: 'Dashboard', href: '/', icon: Home, current: true },
+  { name: 'Latest Run', href: '/latest-run', icon: Users, current: false },
   { name: 'Market Data', href: '/market-data', icon: BarChart3, current: false },
   { name: 'Trading', href: '/trading', icon: TrendingUp, current: false },
   { name: 'Analytics', href: '/analytics', icon: Activity, current: false },
