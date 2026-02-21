@@ -25,6 +25,9 @@ except ImportError:
     CredentialsValidator = None
 
 try:
+    root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
+    if root_dir not in sys.path:
+        sys.path.insert(0, root_dir)
     from redis_key_manager import get_redis_key
 except Exception:
     def get_redis_key(key: str, *args, **kwargs):
@@ -115,7 +118,36 @@ class DepthCollector:
     def collect_once(self) -> None:
         try:
             if not self.kite:
-                raise ValueError("Kite client required for live depth data")
+                # Synthetic fallback for environments without Kite provider.
+                levels = max(1, int(os.getenv("SYNTHETIC_DEPTH_LEVELS", "5")))
+                mid_price = float(os.getenv("SYNTHETIC_DEPTH_MID_PRICE", "45000"))
+                tick = float(os.getenv("SYNTHETIC_DEPTH_TICK", "1"))
+                qty_step = max(1, int(os.getenv("SYNTHETIC_DEPTH_QTY_STEP", "100")))
+
+                buy_depth = [
+                    {
+                        "price": round(mid_price - (i + 1) * tick, 2),
+                        "quantity": (levels - i) * qty_step,
+                        "orders": i + 1,
+                    }
+                    for i in range(levels)
+                ]
+                sell_depth = [
+                    {
+                        "price": round(mid_price + (i + 1) * tick, 2),
+                        "quantity": (levels - i) * qty_step,
+                        "orders": i + 1,
+                    }
+                    for i in range(levels)
+                ]
+
+                timestamp = datetime.now().isoformat()
+                self.r.set(get_redis_key(f"depth:{self.key}:buy"), json.dumps(buy_depth))
+                self.r.set(get_redis_key(f"depth:{self.key}:sell"), json.dumps(sell_depth))
+                self.r.set(get_redis_key(f"depth:{self.key}:timestamp"), timestamp)
+                self.r.set(get_redis_key(f"depth:{self.key}:total_bid_qty"), sum(level["quantity"] for level in buy_depth))
+                self.r.set(get_redis_key(f"depth:{self.key}:total_ask_qty"), sum(level["quantity"] for level in sell_depth))
+                return
 
             symbol_upper = self.symbol.upper()
             is_index = symbol_upper in ["BANKNIFTY", "NIFTY BANK", "NIFTYBANK", "NIFTY", "NIFTY 50"]

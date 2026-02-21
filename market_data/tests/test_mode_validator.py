@@ -7,6 +7,7 @@ from market_data.mode_validator import (
     ModeValidationError,
     log_mode_startup
 )
+from market_data.env_settings import redis_config
 
 
 @pytest.fixture
@@ -203,12 +204,15 @@ class TestModeValidatorIntegration:
         
         # Setup
         os.environ["EXECUTION_MODE"] = "live"
-        redis_client = redis.Redis(host='localhost', port=6379, db=0)
+        redis_cfg = redis_config(decode_responses=False)
+        redis_host = redis_cfg["host"]
+        redis_port = redis_cfg["port"]
+        redis_client = redis.Redis(**redis_cfg)
         
         try:
             redis_client.ping()
         except redis.ConnectionError:
-            pytest.skip("Redis not available for integration test")
+            pytest.skip(f"Redis not available for integration test ({redis_host}:{redis_port})")
         
         # Execute
         result = validate_mode_consistency(redis_client, "integration_test")
@@ -223,12 +227,15 @@ class TestModeValidatorIntegration:
         """Test mode consistency when multiple services check."""
         import redis
         
-        redis_client = redis.Redis(host='localhost', port=6379, db=0)
+        redis_cfg = redis_config(decode_responses=False)
+        redis_host = redis_cfg["host"]
+        redis_port = redis_cfg["port"]
+        redis_client = redis.Redis(**redis_cfg)
         
         try:
             redis_client.ping()
         except redis.ConnectionError:
-            pytest.skip("Redis not available")
+            pytest.skip(f"Redis not available ({redis_host}:{redis_port})")
         
         # Validate from multiple "services"
         result1 = validate_mode_consistency(redis_client, "service_1")

@@ -1,11 +1,25 @@
 import redis
 import json
-import os
 from market_data.data_storage_manager import DataStorageManager
+from market_data.env_settings import redis_config
+
+try:
+    from redis_key_manager import get_redis_key
+except Exception:
+    def get_redis_key(key: str, *args, **kwargs):
+        return key
 
 
 def test_store_ohlc_bar_adds_metadata_and_sorted_set(tmp_path):
-    r = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
+    redis_cfg = redis_config(decode_responses=True)
+    redis_host = redis_cfg["host"]
+    redis_port = redis_cfg["port"]
+    r = redis.Redis(**redis_cfg)
+    try:
+        r.ping()
+    except Exception:
+        import pytest
+        pytest.skip(f"redis on {redis_host}:{redis_port} is not available")
     mgr = DataStorageManager(r)
 
     instrument = 'TEST_INSTR'
@@ -19,7 +33,12 @@ def test_store_ohlc_bar_adds_metadata_and_sorted_set(tmp_path):
     }
 
     # Ensure clean state
-    r.delete(f"ohlc_sorted:{instrument}:{timeframe}")
+    sorted_key = f"ohlc_sorted:{instrument}:{timeframe}"
+    mode_sorted_key = get_redis_key(sorted_key)
+    r.delete(sorted_key)
+    if mode_sorted_key != sorted_key:
+        r.delete(mode_sorted_key)
+
     keys = r.keys(f"ohlc:{instrument}:{timeframe}:*")
     for k in keys:
         r.delete(k)
@@ -28,11 +47,15 @@ def test_store_ohlc_bar_adds_metadata_and_sorted_set(tmp_path):
     assert success
 
     # Check sorted set populated
-    count = r.zcount(f"ohlc_sorted:{instrument}:{timeframe}", '-inf', '+inf')
+    count = r.zcount(mode_sorted_key, '-inf', '+inf')
+    if int(count) == 0 and mode_sorted_key != sorted_key:
+        count = r.zcount(sorted_key, '-inf', '+inf')
     assert int(count) >= 1
 
     # Check entry contains metadata
-    results = r.zrange(f"ohlc_sorted:{instrument}:{timeframe}", -5, -1)
+    results = r.zrange(mode_sorted_key, -5, -1)
+    if not results and mode_sorted_key != sorted_key:
+        results = r.zrange(sorted_key, -5, -1)
     found = False
     for entry in results:
         data = json.loads(entry)

@@ -1,12 +1,12 @@
 import pytest
 from datetime import datetime, timedelta
-from market_data.adapters.historical_tick_replayer import HistoricalTickReplayer
+from market_data.adapters.unified_replayer import UnifiedHistoricalReplayer
 from market_data.api import build_store
 
 
 def test_compute_rebase_offset_and_adjust_tick():
     store = build_store()
-    replayer = HistoricalTickReplayer(store, data_source='synthetic', rebase=True)
+    replayer = UnifiedHistoricalReplayer(store, data_source='synthetic', rebase=True)
 
     # Create synthetic ticks and set as loaded ticks (use internal method)
     ticks = replayer._generate_synthetic_ticks(duration_minutes=1, instrument='TEST')

@@ -5,6 +5,7 @@ from market_data.tools.kite_auth import login_via_browser
 
 def test_login_fails_without_env(monkeypatch, tmp_path):
     # Ensure no API keys in env
+    monkeypatch.setenv("KITE_SKIP_DOTENV_LOAD", "1")
     monkeypatch.delenv("KITE_API_KEY", raising=False)
     monkeypatch.delenv("KITE_API_SECRET", raising=False)
 

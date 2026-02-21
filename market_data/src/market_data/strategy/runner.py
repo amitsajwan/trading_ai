@@ -15,7 +15,8 @@ except ImportError:  # pragma: no cover - optional in some environments
     KiteConnect = None
 
 from market_data.api import build_store
-from market_data.adapters.historical_tick_replayer import HistoricalTickReplayer
+from market_data.adapters.unified_replayer import UnifiedHistoricalReplayer
+from market_data.kite_client import create_kite_client
 from market_data.strategy.base import Strategy
 
 logger = logging.getLogger(__name__)
@@ -51,9 +52,7 @@ def _build_kite() -> Any:  # Returns KiteConnect instance or None
     if not api_key or not access_token:
         logger.warning("Kite credentials not found; set KITE_API_KEY and KITE_ACCESS_TOKEN")
         return None
-    kite = KiteConnect(api_key=api_key)
-    kite.set_access_token(access_token)
-    return kite
+    return create_kite_client(api_key=api_key, access_token=access_token)
 
 
 class StrategyRunner:
@@ -72,7 +71,7 @@ class StrategyRunner:
         data_source: str = "zerodha",
         speed: float = 0.0,
     ) -> None:
-        """Run a backtest/replay for a single date using HistoricalTickReplayer.
+        """Run a backtest/replay for a single date using UnifiedHistoricalReplayer.
         
         Technical indicators are automatically calculated by TechnicalIndicatorsService
         and passed to strategy.on_new_candle().
@@ -87,7 +86,7 @@ class StrategyRunner:
         def candle_callback_with_indicators(candle, indicators=None):
             strategy.on_new_candle(candle, indicators)
 
-        replayer = HistoricalTickReplayer(
+        replayer = UnifiedHistoricalReplayer(
             store=store,
             data_source=data_source,
             speed=speed,

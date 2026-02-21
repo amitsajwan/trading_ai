@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import random
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -53,6 +54,18 @@ try:
 except Exception:
     get_redis_key = None
 
+try:
+    from market_data.env_settings import redis_config as md_redis_config, resolve_instrument_symbol
+except Exception:
+    md_redis_config = None
+    resolve_instrument_symbol = None
+
+try:
+    from market_data.volume_utils import compute_volume_diff, extract_volume_fields
+except Exception:
+    compute_volume_diff = None
+    extract_volume_fields = None
+
 
 def get_symbol_config():
     if config:
@@ -67,7 +80,8 @@ def get_symbol_config():
             exchange = "NFO"  # Futures & Options
         
         return exchange, symbol
-    return "NSE", "BANKNIFTY"
+    fallback_symbol = resolve_instrument_symbol() if resolve_instrument_symbol else ""
+    return os.getenv("INSTRUMENT_EXCHANGE", "NSE"), (fallback_symbol or "UNKNOWN")
 
 
 def sanitize_key(symbol: str) -> str:
@@ -76,15 +90,6 @@ def sanitize_key(symbol: str) -> str:
 
 class LTPDataProcessor:
     """Redis subscriber that processes WebSocket ticks and applies volume logic."""
-
-    # Core instrument mapping for derivatives
-    CORE_INSTRUMENT_MAPPING = {
-        'BANKNIFTY26JANFUT': 'BANKNIFTY',
-        'BANKNIFTY27JANFUT': 'BANKNIFTY',
-        'NIFTY26JANFUT': 'NIFTY',
-        'NIFTY27JANFUT': 'NIFTY',
-        # Add more mappings as needed for other derivatives
-    }
 
     def __init__(self, market_memory: Any) -> None:
         print(f"DEBUG: LTPDataProcessor.__init__ called with market_memory: {type(market_memory)} {market_memory}")
@@ -100,13 +105,12 @@ class LTPDataProcessor:
 
         # Redis client for pub/sub
         if redis:
-            redis_config = config.get_redis_config() if config else {
-                "host": os.getenv("REDIS_HOST", "localhost"),
-                "port": int(os.getenv("REDIS_PORT", "6379")),
-                "db": 0,
-                "decode_responses": True
-            }
-            self.redis_client = redis.Redis(**redis_config)
+            redis_cfg = config.get_redis_config(decode_responses=True) if config else None
+            if redis_cfg is None and md_redis_config is not None:
+                redis_cfg = md_redis_config(decode_responses=True)
+            if redis_cfg is None:
+                raise RuntimeError("Redis configuration unavailable")
+            self.redis_client = redis.Redis(**redis_cfg)
             self.pubsub = self.redis_client.pubsub(decode_responses=False)
         else:
             self.redis_client = None
@@ -115,6 +119,7 @@ class LTPDataProcessor:
         # Volume tracking for differencing
         self.last_volume = {}
         self.last_timestamp = {}
+        self._progress_log_interval = int(os.getenv("LTP_PROCESSOR_LOG_EVERY", "500"))
 
         # Setup logging
         logging.basicConfig(level=logging.INFO)
@@ -122,8 +127,14 @@ class LTPDataProcessor:
 
     def _get_core_instrument(self) -> Optional[str]:
         """Get the core instrument for volume data (e.g., BANKNIFTY for futures)."""
-        trading_symbol = config.instrument_trading_symbol if config else self.symbol
-        return self.CORE_INSTRUMENT_MAPPING.get(trading_symbol)
+        trading_symbol = (config.instrument_trading_symbol if config else self.symbol) or ""
+        normalized = trading_symbol.upper().replace(" ", "")
+        if normalized in {"BANKNIFTY", "NIFTY"}:
+            return normalized
+        match = re.match(r"^(BANKNIFTY|NIFTY)\d{2}[A-Z]{3}(?:FUT|CE|PE)$", normalized)
+        if match:
+            return match.group(1)
+        return None
 
     def _determine_volume_source(self) -> str:
         """Determine volume source priority: core > direct > synthetic."""
@@ -133,41 +144,31 @@ class LTPDataProcessor:
 
     def _calculate_volume_diff(self, instrument_name: str, current_volume: int, timestamp: datetime) -> int:
         """Calculate volume difference from previous tick."""
-        key = instrument_name
-        last_vol = self.last_volume.get(key, 0)
-        last_ts = self.last_timestamp.get(key)
+        if compute_volume_diff is None:
+            key = instrument_name
+            if key not in self.last_volume:
+                self.last_volume[key] = current_volume
+                self.last_timestamp[key] = timestamp
+                return 0
+            last_vol = self.last_volume.get(key, 0)
+            volume_diff = max(0, current_volume - last_vol)
+            self.last_volume[key] = current_volume
+            self.last_timestamp[key] = timestamp
+            return volume_diff
 
-        self.logger.debug(f"[LTP] _calculate_volume_diff for {instrument_name}: current={current_volume}, last={last_vol}")
-
-        # Reset if timestamp indicates new candle or significant time gap
-        if last_ts and (timestamp - last_ts).total_seconds() > 300:  # 5 minutes
-            self.logger.debug(f"[LTP] Resetting volume tracking due to time gap > 5 minutes")
-            last_vol = 0
-
-        volume_diff = max(0, current_volume - last_vol)
-        self.logger.debug(f"[LTP] Volume difference calculated: {volume_diff} = max(0, {current_volume} - {last_vol})")
-
-        # Update tracking
-        self.last_volume[key] = current_volume
-        self.last_timestamp[key] = timestamp
-
-        return volume_diff
+        return compute_volume_diff(
+            instrument_name,
+            current_volume,
+            timestamp,
+            last_volume=self.last_volume,
+            last_timestamp=self.last_timestamp,
+            reset_gap_seconds=300,
+        )
 
     def _extract_volume(self, tick_data: Dict[str, Any]) -> Tuple[Optional[int], str]:
-        for key in ("volume", "cumulative_volume", "volume_traded"):
-            if key in tick_data and tick_data[key] is not None:
-                try:
-                    return int(tick_data[key]), "cumulative"
-                except (TypeError, ValueError):
-                    return None, "missing"
-
-        if "candle_volume" in tick_data and tick_data["candle_volume"] is not None:
-            try:
-                return int(tick_data["candle_volume"]), "delta"
-            except (TypeError, ValueError):
-                return None, "missing"
-
-        return None, "missing"
+        if extract_volume_fields is None:
+            return None, "missing"
+        return extract_volume_fields(tick_data)
 
     def _get_enhanced_volume(self, tick_data: Dict[str, Any], instrument_name: str, timestamp: datetime) -> Tuple[int, str]:
         """Get volume with proper source prioritization."""
@@ -204,7 +205,7 @@ class LTPDataProcessor:
             instrument_name = tick_data.get("instrument", "unknown")
             timestamp_str = tick_data.get("timestamp", datetime.now().isoformat())
 
-            self.logger.info(f"[LTP] Processing tick for instrument: {instrument_name}")
+            self.logger.debug(f"[LTP] Processing tick for instrument: {instrument_name}")
             self.logger.debug(f"[LTP] Tick data keys: {list(tick_data.keys())}")
 
             # Assertion: Ensure required fields are present
@@ -239,23 +240,35 @@ class LTPDataProcessor:
                 raise AssertionError("market_memory should be disabled")
 
             # Step 3: Get enhanced volume
-            self.logger.info(f"[LTP] Getting enhanced volume for {instrument_name}")
+            self.logger.debug(f"[LTP] Getting enhanced volume for {instrument_name}")
             final_volume, volume_source = self._get_enhanced_volume(tick_data, instrument_name, timestamp)
-            self.logger.info(f"[LTP] Enhanced volume: {final_volume} (source: {volume_source})")
+            self.logger.debug(f"[LTP] Enhanced volume: {final_volume} (source: {volume_source})")
 
             # Assertion: Volume should be non-negative
             assert final_volume >= 0, f"Volume cannot be negative: {final_volume}"
 
             # Step 4: Create enhanced data payload
+            cumulative_volume = None
+            for key in ("cumulative_volume", "volume_traded"):
+                if tick_data.get(key) is not None:
+                    try:
+                        cumulative_volume = int(tick_data[key])
+                    except (TypeError, ValueError):
+                        cumulative_volume = None
+                    break
+
             enhanced_data = {
+                **tick_data,
                 "instrument": instrument_name,
                 "timestamp": timestamp.isoformat(),
                 "last_price": tick_data.get("last_price", 0),
+                "candle_volume": int(final_volume),
                 "volume": final_volume,
                 "volume_source": volume_source,
                 "core_instrument": self.core_instrument if self.core_instrument != instrument_name else None,
-                **tick_data  # Include all original tick data
             }
+            if cumulative_volume is not None:
+                enhanced_data["cumulative_volume"] = cumulative_volume
 
             self.logger.debug(f"[LTP] Created enhanced data payload with keys: {list(enhanced_data.keys())}")
 
@@ -273,7 +286,7 @@ class LTPDataProcessor:
                 for channel in channels:
                     self.redis_client.publish(channel, message)
 
-                self.logger.info(
+                self.logger.debug(
                     f"[LTP] Published enhanced tick to {', '.join(channels)}: instrument={instrument_name}, "
                     f"price={enhanced_data['last_price']}, volume={final_volume} ({volume_source})"
                 )
@@ -300,11 +313,11 @@ class LTPDataProcessor:
             raise AssertionError("Redis pubsub should be available")
 
         try:
-            # Subscribe to raw ticks channel
-            channel = f"raw_ticks:{self.key}"
+            # Subscribe to canonical tick stream envelope channel
+            pattern = f"market:tick:{self.key}:*"
             try:
-                self.pubsub.subscribe(channel)
-                print(f"[DEBUG] Subscribed successfully to {channel}")
+                self.pubsub.psubscribe(pattern)
+                print(f"[DEBUG] Subscribed successfully to {pattern}")
                 # self.logger.info(f"[LTP] Subscribed to Redis channel: {channel}")
                 print(f"[DEBUG] About to listen...")  # Debug print
                 # self.logger.info(f"[LTP] About to start listening for messages...")
@@ -318,15 +331,16 @@ class LTPDataProcessor:
             message_count = 0
             # Process messages
             for message in self.pubsub.listen():
-                self.logger.info(f"[LTP] Received message from pubsub.listen(): {message}")
-                if message["type"] == "message":
+                self.logger.debug(f"[LTP] Received message from pubsub.listen(): {message}")
+                if message["type"] in ("message", "pmessage"):
                     message_count += 1
-                    self.logger.info(f"[LTP] Processing message #{message_count}")
+                    if message_count == 1 or message_count % self._progress_log_interval == 0:
+                        self.logger.info(f"[LTP] Processed {message_count} messages from Redis stream")
 
                     try:
                         # Debug: Log the raw message data
                         raw_data = message["data"]
-                        self.logger.info(f"[LTP] Raw message data type: {type(raw_data)}")
+                        self.logger.debug(f"[LTP] Raw message data type: {type(raw_data)}")
                         
                         # Decode bytes to string if necessary
                         if isinstance(raw_data, bytes):
@@ -342,8 +356,9 @@ class LTPDataProcessor:
                             raw_data_str = raw_data
                             self.logger.debug(f"[LTP] Raw data already string, first 200 chars: {raw_data_str[:200]}")
                         
-                        tick_data = json.loads(raw_data_str)
-                        self.logger.info(f"[LTP] Parsed tick data: instrument={tick_data.get('instrument', 'unknown')}, price={tick_data.get('last_price', 'unknown')}")
+                        evt = json.loads(raw_data_str)
+                        tick_data = evt.get("payload") if isinstance(evt, dict) and isinstance(evt.get("payload"), dict) else evt
+                        self.logger.debug(f"[LTP] Parsed tick data: instrument={tick_data.get('instrument', 'unknown')}, price={tick_data.get('last_price', 'unknown')}")
                         self._process_tick(tick_data)
                     except json.JSONDecodeError as e:
                         self.logger.error(f"[LTP] JSON Decode Error: {e}")

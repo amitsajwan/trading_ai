@@ -7,6 +7,8 @@ Usage:
     from market_data.technical_indicators_constants import RSI_14, MACD_VALUE
     rsi_value = technical_data.get(RSI_14)
 """
+import os
+import sys
 
 # === TREND INDICATORS ===
 SMA_10 = "sma_10"
@@ -128,10 +130,39 @@ ALL_INDICATORS = [
 ]
 
 # === REDIS KEY PATTERNS ===
-def get_indicator_redis_key(instrument: str, indicator: str, timeframe: str = "1min") -> str:
-    """Get Redis key for a specific indicator."""
-    return f"indicators:{instrument.upper()}:{timeframe}:{indicator}"
+def _canonical_indicator_timeframe(timeframe: str) -> str:
+    """Normalize timeframe labels used by indicator Redis keys.
 
-def get_all_indicators_redis_pattern(instrument: str, timeframe: str = "1min") -> str:
+    Canonical forms:
+    - minute/1m/1min -> 1m
+    - 5min -> 5m
+    - 15min -> 15m
+    """
+    tf = (timeframe or "1m").strip().lower()
+    if tf in ("minute", "1m", "1min", "1minute"):
+        return "1m"
+    if tf.endswith("min") and tf[:-3].isdigit():
+        n = tf[:-3]
+        return "1m" if n == "1" else f"{n}m"
+    return tf
+
+
+def get_indicator_redis_key(instrument: str, indicator: str, timeframe: str = "1m") -> str:
+    """Get Redis key for a specific indicator."""
+    tf = _canonical_indicator_timeframe(timeframe)
+    raw = f"indicators:{instrument.upper()}:{tf}:{indicator}"
+    try:
+        # Ensure trading_ai root (where redis_key_manager.py lives) is importable.
+        root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
+        if root_dir not in sys.path:
+            sys.path.insert(0, root_dir)
+        # Keep indicator keys mode-aware like other market data keys.
+        from redis_key_manager import get_redis_key
+        return get_redis_key(raw)
+    except Exception:
+        return raw
+
+def get_all_indicators_redis_pattern(instrument: str, timeframe: str = "1m") -> str:
     """Get Redis key pattern for all indicators of an instrument."""
-    return f"indicators:{instrument.upper()}:{timeframe}:*"
+    tf = _canonical_indicator_timeframe(timeframe)
+    return f"indicators:{instrument.upper()}:{tf}:*"

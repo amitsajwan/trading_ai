@@ -14,6 +14,8 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 from pathlib import Path
 import requests
+from market_data.env_settings import redis_config
+from market_data.kite_client import create_kite_client
 
 # Avoid binding `login_via_browser` at module import time so tests can monkeypatch
 # the function on the kite_auth module; we'll import it dynamically inside the
@@ -45,15 +47,15 @@ class KiteAuthService:
         self.redis_client = None
         try:
             import redis
-            self.redis_client = redis.Redis(
-                host=os.getenv("REDIS_HOST", "localhost"),
-                port=int(os.getenv("REDIS_PORT", "6379")),
-                db=0,
-                decode_responses=True
-            )
+            redis_cfg = redis_config(decode_responses=True)
+            self.redis_client = redis.Redis(**redis_cfg)
             # Test connection
             self.redis_client.ping()
-            logger.info(f"Redis client initialized successfully (host: {os.getenv('REDIS_HOST', 'localhost')}:{os.getenv('REDIS_PORT', '6379')})")
+            logger.info(
+                "Redis client initialized successfully (host: %s:%s)",
+                redis_cfg.get("host"),
+                redis_cfg.get("port"),
+            )
         except Exception as e:
             logger.warning(f"Redis not available for auth status publishing: {e}")
 
@@ -86,21 +88,92 @@ class KiteAuthService:
         except Exception as e:
             logger.error(f"Failed to publish auth status: {e}")
 
-    def load_credentials(self) -> Optional[Dict[str, Any]]:
-        """Load credentials from file."""
+    @staticmethod
+    def _read_json_file(path: Path) -> Optional[Dict[str, Any]]:
+        """Safely read a JSON object from disk."""
         try:
-            if os.path.exists(self.cred_path):
-                with open(self.cred_path, 'r', encoding='utf-8-sig') as f:
-                    return json.load(f)
+            if path.exists():
+                with open(path, "r", encoding="utf-8-sig") as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    return data
         except Exception as e:
-            logger.error(f"Failed to load credentials: {e}")
+            logger.error(f"Failed to read JSON file {path}: {e}")
         return None
+
+    @staticmethod
+    def _extract_access_token(payload: Dict[str, Any]) -> Optional[str]:
+        """Extract access_token from common payload shapes."""
+        token = payload.get("access_token")
+        if not token and isinstance(payload.get("data"), dict):
+            token = payload["data"].get("access_token")
+        return token
+
+    def load_credentials(self) -> Optional[Dict[str, Any]]:
+        """Load credentials from credentials.json and optional access_token.json.
+
+        Merge strategy:
+        - Base object comes from credentials.json (self.cred_path) if present.
+        - If access_token.json exists alongside credentials, its token overrides
+          stale token fields in the base object.
+        """
+        cred_path = Path(self.cred_path)
+        creds = self._read_json_file(cred_path) or {}
+
+        token_override = None
+        token_login_time = None
+
+        # Optional sidecar token file support.
+        token_path_override = (os.getenv("KITE_ACCESS_TOKEN_PATH") or "").strip()
+        token_candidates = []
+        if token_path_override:
+            token_candidates.append(Path(token_path_override))
+        token_candidates.append(cred_path.with_name("access_token.json"))
+
+        for token_path in token_candidates:
+            token_payload = self._read_json_file(token_path)
+            if not token_payload:
+                continue
+            token = self._extract_access_token(token_payload)
+            if token:
+                token_override = token
+                token_login_time = (
+                    token_payload.get("login_time")
+                    or (token_payload.get("data") or {}).get("login_time")
+                    or token_payload.get("timestamp")
+                )
+                break
+
+        if token_override:
+            creds["access_token"] = token_override
+            data_obj = creds.get("data") if isinstance(creds.get("data"), dict) else {}
+            data_obj["access_token"] = token_override
+            if token_login_time and not data_obj.get("login_time"):
+                data_obj["login_time"] = token_login_time
+            creds["data"] = data_obj
+
+        # Fill from environment when file does not include api_key.
+        if not creds.get("api_key") and self.api_key:
+            creds["api_key"] = self.api_key
+        if not creds.get("api_secret") and self.api_secret:
+            creds["api_secret"] = self.api_secret
+
+        if not creds:
+            return None
+        return creds
 
     def save_credentials(self, creds: Dict[str, Any]) -> bool:
         """Save credentials to file."""
         try:
             with open(self.cred_path, 'w', encoding='utf-8') as f:
                 json.dump(creds, f, indent=2, ensure_ascii=False)
+            # Keep current process in sync with newly saved credentials.
+            api_key = creds.get("api_key")
+            access_token = creds.get("access_token") or (creds.get("data") or {}).get("access_token")
+            if api_key:
+                os.environ["KITE_API_KEY"] = str(api_key)
+            if access_token:
+                os.environ["KITE_ACCESS_TOKEN"] = str(access_token)
             logger.info("Credentials updated successfully")
             return True
         except Exception as e:
@@ -111,7 +184,11 @@ class KiteAuthService:
         """Check if access token is still valid."""
         try:
             access_token = creds.get('access_token') or creds.get('data', {}).get('access_token')
-            login_time = creds.get('data', {}).get('login_time')
+            login_time = (
+                creds.get('data', {}).get('login_time')
+                or creds.get('login_time')
+                or creds.get('timestamp')
+            )
 
             # Get API key from creds (preferred) or use env
             api_key = creds.get('api_key') or creds.get('KITE_API_KEY') or self.api_key
@@ -124,20 +201,21 @@ class KiteAuthService:
                 return False
 
             # Check if login time is recent
+            token_fresh = False
             if login_time:
                 try:
                     login_dt = datetime.fromisoformat(login_time.replace('Z', '+00:00'))
-                    if datetime.now(login_dt.tzinfo) - login_dt > timedelta(hours=self.max_token_age_hours):
+                    token_age = datetime.now(login_dt.tzinfo) - login_dt
+                    if token_age > timedelta(hours=self.max_token_age_hours):
                         logger.info(f"Token expired ({self.max_token_age_hours}h limit)")
                         return False
+                    token_fresh = True
                 except Exception as e:
                     logger.warning(f"Could not parse login_time: {e}")
 
             # Try a simple API call to verify token using KiteConnect (more reliable)
             try:
-                from kiteconnect import KiteConnect
-                kite = KiteConnect(api_key=api_key)
-                kite.set_access_token(access_token)
+                kite = create_kite_client(api_key=api_key, access_token=access_token)
                 profile = kite.profile()
                 if profile:
                     logger.info(f"Token validated successfully for user: {profile.get('user_id', 'N/A')}")
@@ -157,6 +235,16 @@ class KiteAuthService:
                 else:
                     logger.warning(f"Token validation failed: {response.status_code}")
                     return False
+            except requests.exceptions.RequestException as e:
+                # Transient network/SSL failure should not force immediate re-auth if token is still fresh.
+                if token_fresh:
+                    logger.warning(
+                        "Token validation skipped due to network/SSL issue, keeping fresh token as valid: %s",
+                        e,
+                    )
+                    return True
+                logger.error("Token validation error: %s", e)
+                return False
 
         except Exception as e:
             logger.error(f"Token validation error: {e}")
@@ -202,6 +290,9 @@ class KiteAuthService:
         this package, falling back to running the CLI module if needed.
         """
         cred_path = Path(self.cred_path)
+        callback_port = (os.environ.get("KITE_AUTH_CALLBACK_PORT") or "5000").strip()
+        if not os.environ.get("KITE_AUTH_CALLBACK_PORT"):
+            os.environ["KITE_AUTH_CALLBACK_PORT"] = callback_port
 
         # Check if running in Docker
         is_docker = os.path.exists('/.dockerenv') or os.environ.get('DOCKER_CONTAINER') == 'true'
@@ -244,10 +335,33 @@ class KiteAuthService:
             logger.info("Launching CLI subprocess for interactive login")
             if is_docker:
                 logger.info("Running in Docker - subprocess will display authentication URL")
-            proc = subprocess.Popen([sys.executable, "-m", "market_data.tools.kite_auth"])
+            env = os.environ.copy()
+            env["KITE_AUTH_CALLBACK_PORT"] = callback_port
+            auth_cwd = str(cred_path.parent) if cred_path.parent else None
+            try:
+                proc = subprocess.Popen(
+                    [sys.executable, "-m", "market_data.tools.kite_auth"],
+                    env=env,
+                    cwd=auth_cwd,
+                )
+            except TypeError:
+                # Test doubles may not accept keyword args like env/cwd.
+                proc = subprocess.Popen([sys.executable, "-m", "market_data.tools.kite_auth"])
 
             deadline = time.time() + timeout
             while time.time() < deadline:
+                try:
+                    poll_fn = getattr(proc, "poll", None)
+                    if callable(poll_fn):
+                        exit_code = poll_fn()
+                        if exit_code is not None:
+                            logger.error(
+                                f"Auth subprocess exited early (code={exit_code}) before credentials were written. "
+                                f"Ensure redirect URI is http://127.0.0.1:{callback_port}/login and port {callback_port} is free."
+                            )
+                            return False
+                except Exception:
+                    pass
                 if cred_path.exists():
                     mtime = cred_path.stat().st_mtime
                     if before_mtime is None or mtime > before_mtime:

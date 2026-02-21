@@ -1,6 +1,6 @@
 """Lightweight contracts for NIFTY/BANKNIFTY data handling."""
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Iterable, Optional, Protocol
 
 
@@ -65,8 +65,35 @@ class OHLCBar:
     close: float
     volume: Optional[int]
     start_at: datetime
-    end_at: datetime
+    end_at: Optional[datetime] = None
     open_interest: Optional[int] = None
+
+    def __post_init__(self) -> None:
+        if self.end_at is not None:
+            return
+
+        tf = (self.timeframe or "").strip().lower()
+        delta = timedelta(minutes=1)
+
+        if tf.endswith("min"):
+            try:
+                delta = timedelta(minutes=max(1, int(tf[:-3] or "1")))
+            except Exception:
+                delta = timedelta(minutes=1)
+        elif tf.endswith("m") and tf[:-1].isdigit():
+            try:
+                delta = timedelta(minutes=max(1, int(tf[:-1] or "1")))
+            except Exception:
+                delta = timedelta(minutes=1)
+        elif tf.endswith("h"):
+            try:
+                delta = timedelta(hours=max(1, int(tf[:-1] or "1")))
+            except Exception:
+                delta = timedelta(hours=1)
+        elif tf.endswith("d"):
+            delta = timedelta(days=1)
+
+        self.end_at = self.start_at + delta
 
 
 class MarketStore(Protocol):

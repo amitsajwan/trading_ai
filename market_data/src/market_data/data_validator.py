@@ -228,14 +228,31 @@ class DataValidator:
             'indicators_missing': []
         }
 
+        def _get_indicator_value_any_mode(base_key: str):
+            """Best-effort key lookup supporting optional mode prefixes."""
+            candidates = [
+                base_key,
+                f"live:{base_key}",
+                f"historical:{base_key}",
+                f"paper:{base_key}",
+            ]
+            for k in candidates:
+                try:
+                    v = self.redis.get(k)
+                    if v is not None:
+                        return v
+                except Exception:
+                    continue
+            return None
+
         expected_indicators = [
             'rsi_14', 'macd_value', 'macd_signal', 'bollinger_upper',
             'bollinger_lower', 'adx_14', 'sma_10', 'ema_20'
         ]
 
         for indicator in expected_indicators:
-            key = f'indicators:{instrument}:{indicator}'
-            value = self.redis.get(key)
+            key = f'indicators:{instrument}:1min:{indicator}'
+            value = _get_indicator_value_any_mode(key)
 
             if value is not None:
                 try:
@@ -250,8 +267,11 @@ class DataValidator:
         # Check for stale indicators
         if report['indicators_present']:
             # Check timestamp if available
-            timestamp_key = f'indicators:{instrument}:timestamp'
-            timestamp_str = self.redis.get(timestamp_key)
+            timestamp_key = f'indicators:{instrument}:1min:indicator_timestamp'
+            timestamp_str = _get_indicator_value_any_mode(timestamp_key)
+            if not timestamp_str:
+                timestamp_key = f'indicators:{instrument}:1min:timestamp'
+                timestamp_str = _get_indicator_value_any_mode(timestamp_key)
 
             if timestamp_str:
                 try:

@@ -30,6 +30,9 @@ except ImportError:
     CredentialsValidator = None
 
 try:
+    root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
+    if root_dir not in sys.path:
+        sys.path.insert(0, root_dir)
     from redis_key_manager import get_redis_key
 except Exception:
     def get_redis_key(key: str, *args, **kwargs):

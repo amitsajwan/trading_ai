@@ -14,6 +14,7 @@ from .runtime import (
     _sanitize_for_console,
     build_collector_env,
     check_zerodha_credentials,
+    kite_startup_preflight,
     start_process,
     wait_for_historical_ready,
     wait_for_http,
@@ -157,6 +158,35 @@ def main():
                     if msg:
                         print(f'[INFO] Details: {msg}')
                     raise SystemExit(1)
+
+                # Dedicated preflight: classify early failure as network vs credential.
+                pre_ok, pre_reason, pre_detail = kite_startup_preflight(attempts=2, base_delay_sec=1.0)
+                if not pre_ok and pre_reason == 'credential' and args.prompt_login:
+                    print('[WARN] Kite preflight detected invalid credentials; attempting automatic re-login...')
+                    try:
+                        from market_data.tools.kite_auth_service import KiteAuthService
+
+                        svc = KiteAuthService()
+                        if svc.trigger_interactive_login(timeout=300):
+                            pre_ok, pre_reason, pre_detail = kite_startup_preflight(attempts=2, base_delay_sec=1.0)
+                    except Exception as e:
+                        pre_ok = False
+                        pre_reason = 'credential'
+                        pre_detail = f'Interactive login failed: {e}'
+
+                if not pre_ok:
+                    if pre_reason == 'network':
+                        print('[ERROR] Kite preflight failed: Network/TLS to api.kite.trade is unstable')
+                        print(f'[INFO] Detail: {pre_detail}')
+                    elif pre_reason == 'credential':
+                        print('[ERROR] Kite preflight failed: Invalid/expired api_key or access_token')
+                        print(f'[INFO] Detail: {pre_detail}')
+                    else:
+                        print('[ERROR] Kite preflight failed due to an unknown issue')
+                        print(f'[INFO] Detail: {pre_detail}')
+                    raise SystemExit(1)
+
+                print(_sanitize_for_console('   [OK] Kite preflight passed'))
 
             # Use market_data module to run historical replayer
             hist_cmd = [PYTHON, '-m', 'market_data.runner_historical']

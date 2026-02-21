@@ -114,7 +114,10 @@ def create_redis_client_with_mode_check(
     try:
         env_mode = get_execution_mode()
         redis_mode_bytes = client.get("system:execution_mode")
-        redis_mode = redis_mode_bytes.decode() if redis_mode_bytes else None
+        redis_mode = (
+            redis_mode_bytes.decode() if isinstance(redis_mode_bytes, (bytes, bytearray))
+            else redis_mode_bytes
+        )
         
         if redis_mode and redis_mode != env_mode:
             logger.warning(

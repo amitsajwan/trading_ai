@@ -20,9 +20,9 @@ class FakeRedis:
             self._data.pop(k, None)
 
     def keys(self, pattern):
-        # simplistic implementation for 'tick:*:latest'
-        if pattern == 'tick:*:latest':
-            return [k for k in self._data.keys() if k.startswith('tick:') and k.endswith(':latest')]
+        # simplistic implementation for 'websocket:tick:*:latest'
+        if pattern == 'websocket:tick:*:latest':
+            return [k for k in self._data.keys() if k.startswith('websocket:tick:') and k.endswith(':latest')]
         return []
 
 
@@ -38,7 +38,7 @@ async def test_monitor_for_ticks_sets_data_ready(monkeypatch):
 
     # After a short delay, write a tick key
     await asyncio.sleep(0.2)
-    fake.set('tick:BANKNIFTY:latest', '{"last_price": 100}')
+    fake.set('websocket:tick:BANKNIFTY:latest', '{"last_price": 100}')
 
     res = await monitor
     assert res is True

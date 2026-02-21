@@ -17,7 +17,6 @@ except (ImportError, KeyboardInterrupt) as e:
 except Exception as e:
     print(f"WARNING: Zerodha options chain adapter not available: {e}")
     ZerodhaOptionsChainAdapter = None
-from .adapters.historical_tick_replayer import HistoricalTickReplayer
 from .adapters.unified_replayer import UnifiedHistoricalReplayer
 try:
     from news_module.adapters.macro_adapter import MacroDataAdapter
@@ -58,7 +57,6 @@ __all__ = [
     "InMemoryMarketStore",
     "RedisMarketStore",
     "ZerodhaOptionsChainAdapter",
-    "HistoricalTickReplayer",
     "UnifiedHistoricalReplayer",
     "MacroDataAdapter",
     "TechnicalIndicators",

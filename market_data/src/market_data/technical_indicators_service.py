@@ -30,7 +30,7 @@ import redis
 from .technical_indicators_constants import *
 from .timestamp_utils import (
     create_canonical_timestamp_payload,
-    create_mode_aware_payload,
+    create_event_envelope,
     get_instrument_channel,
     get_market_time
 )
@@ -46,7 +46,7 @@ class TechnicalIndicators:
     timestamp: str
     instrument: str
     current_price: float
-    timeframe: str = "1min"
+    timeframe: str = "1m"
 
     # === TREND INDICATORS ===
     # Moving Averages
@@ -149,6 +149,18 @@ class TechnicalIndicatorsService:
     This service uses pandas and pandas-ta to calculate comprehensive technical indicators
     on OHLC data. Maintains rolling windows of data for real-time indicator calculation.
     """
+    WARMUP_REQUIREMENTS: Dict[str, int] = {
+        "rsi": 14,
+        "macd": 26,
+        "bollinger": 20,
+        "cci": 20,
+        "stoch": 14,
+        "atr": 14,
+        "mfi": 14,
+        "roc": 12,
+        "momentum": 10,
+        "adx": 14,
+    }
 
     def __init__(
         self,
@@ -193,6 +205,141 @@ class TechnicalIndicatorsService:
         """Make dictionary JSON-safe by handling special float values."""
         return {key: self._json_safe_value(value) for key, value in data.items()}
 
+    def _normalize_ohlc_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Sort, deduplicate by timestamp, and cap to window size."""
+        if df is None or df.empty:
+            return df
+
+        out = df.copy()
+        if "timestamp" in out.columns:
+            out["timestamp"] = pd.to_datetime(out["timestamp"], errors="coerce")
+            out = out.dropna(subset=["timestamp"]).sort_values("timestamp")
+            # Keep the latest value for each candle timestamp.
+            out = out.drop_duplicates(subset=["timestamp"], keep="last")
+
+        return out.tail(self.window_size).reset_index(drop=True)
+
+    def _cache_indicator_value(
+        self,
+        instrument: str,
+        timeframe: str,
+        indicator_name: str,
+        value: Any,
+        ttl_seconds: int = 300,
+    ) -> None:
+        """Store or clear a single indicator key in Redis.
+
+        Important behavior:
+        - Writes with TTL to avoid indefinite stale values.
+        - Deletes key when value is None so stale historical values are not reused.
+        """
+        if not self.redis_client:
+            return
+
+        redis_key = get_indicator_redis_key(instrument, indicator_name, timeframe)
+        try:
+            if value is None:
+                self.redis_client.delete(redis_key)
+            else:
+                self.redis_client.setex(redis_key, ttl_seconds, str(value))
+        except Exception as e:
+            logger.debug(f"Failed to cache indicator {indicator_name} for {instrument}:{timeframe}: {e}")
+
+    def _persist_indicator_metadata(
+        self,
+        instrument: str,
+        timeframe: str,
+        indicator_timestamp: Any,
+        source: str,
+        update_type: Optional[str] = None,
+        stream: Optional[str] = None,
+        bars_available: Optional[int] = None,
+        ttl_seconds: int = 300,
+    ) -> None:
+        """Persist timestamp/source metadata for indicator consumers.
+
+        Stores canonical timeframe-scoped keys only.
+        """
+        if not self.redis_client:
+            return
+
+        ts_iso: Optional[str] = None
+        try:
+            parsed = pd.to_datetime(indicator_timestamp, errors="coerce")
+            if pd.notna(parsed):
+                parsed_dt = parsed.to_pydatetime() if hasattr(parsed, "to_pydatetime") else parsed
+                ts_iso = get_market_time(timestamp=parsed_dt, redis_client=self.redis_client).isoformat()
+        except Exception:
+            ts_iso = None
+
+        if not ts_iso:
+            ts_iso = get_market_time(redis_client=self.redis_client).isoformat()
+
+        source_value = (source or "unknown").strip().lower()
+
+        # Canonical timeframe-scoped metadata keys
+        self._cache_indicator_value(instrument, timeframe, "timestamp", ts_iso, ttl_seconds)
+        self._cache_indicator_value(instrument, timeframe, "indicator_timestamp", ts_iso, ttl_seconds)
+        self._cache_indicator_value(instrument, timeframe, "source", source_value, ttl_seconds)
+        self._cache_indicator_value(instrument, timeframe, "update_type", update_type, ttl_seconds)
+        self._cache_indicator_value(instrument, timeframe, "indicator_update_type", update_type, ttl_seconds)
+        self._cache_indicator_value(instrument, timeframe, "stream", stream, ttl_seconds)
+        self._cache_indicator_value(instrument, timeframe, "indicator_stream", stream, ttl_seconds)
+        self._cache_indicator_value(instrument, timeframe, "bars_available", bars_available, ttl_seconds)
+
+        # Best-effort cleanup of removed legacy compatibility keys.
+        legacy_timestamp_key = f"indicators:{instrument.upper()}:timestamp"
+        legacy_source_key = f"indicators:{instrument.upper()}:source"
+        try:
+            self.redis_client.delete(legacy_timestamp_key)
+            self.redis_client.delete(legacy_source_key)
+        except Exception as e:
+            logger.debug(
+                "Failed to delete legacy indicator metadata keys for %s:%s: %s",
+                instrument,
+                timeframe,
+                e,
+            )
+
+    def _next_event_sequence(self, stream: str, instrument: str, timeframe: str) -> Optional[int]:
+        if not self.redis_client:
+            return None
+        try:
+            key = f"events:seq:{stream}:{instrument}:{timeframe}"
+            return int(self.redis_client.incr(key))
+        except Exception:
+            return None
+
+    def _publish_indicator_event(
+        self,
+        *,
+        stream: str,
+        instrument: str,
+        timeframe: str,
+        payload: Dict[str, Any],
+        event_time: Any,
+        source_event_id: Optional[str] = None,
+    ) -> None:
+        if not self.redis_client:
+            return
+
+        seq = self._next_event_sequence(stream, instrument, timeframe)
+        envelope = create_event_envelope(
+            stream=stream,
+            payload=payload,
+            instrument=instrument,
+            timeframe=timeframe,
+            event_time=event_time,
+            emitted_at=payload.get("indicator_timestamp") or payload.get("indicator_timestamp_utc"),
+            source_event_id=source_event_id,
+            mode=self._mode,
+            run_id=self._run_id,
+            sequence=seq,
+        )
+
+        type_specific_channel = get_instrument_channel(instrument, "indicators")
+        self.redis_client.publish(type_specific_channel, json.dumps(envelope, default=str))
+
     def initialize_with_ohlc_data(self, instrument: str, ohlc_bars: List[Dict[str, Any]]) -> None:
         """Initialize technical indicators with existing OHLC data.
         
@@ -202,23 +349,22 @@ class TechnicalIndicatorsService:
         """
         if not ohlc_bars:
             return
-            
-        # Initialize DataFrame if needed
-        if instrument not in self._ohlc_data:
-            self._ohlc_data[instrument] = pd.DataFrame(columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'oi'])
 
-        # Add all bars to DataFrame
-        for bar in ohlc_bars[-self.window_size:]:  # Keep only recent bars
-            new_row = {
-                'timestamp': pd.to_datetime(bar.get('start_at') or bar.get('timestamp')),
+        # Rebuild frame from incoming bars, then normalize to avoid duplicate-candle drift.
+        rows = []
+        for bar in ohlc_bars[-self.window_size:]:
+            rows.append({
+                'timestamp': bar.get('start_at') or bar.get('timestamp'),
                 'open': bar['open'],
                 'high': bar['high'],
                 'low': bar['low'],
                 'close': bar['close'],
                 'volume': bar.get('volume', 0),
                 'oi': bar.get('oi')
-            }
-            self._ohlc_data[instrument].loc[len(self._ohlc_data[instrument])] = new_row
+            })
+
+        frame = pd.DataFrame(rows, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', 'oi'])
+        self._ohlc_data[instrument] = self._normalize_ohlc_dataframe(frame)
 
         # Calculate indicators with the loaded data
         if len(self._ohlc_data[instrument]) >= 14:  # Minimum for basic indicators
@@ -231,9 +377,18 @@ class TechnicalIndicatorsService:
                     indicators_dict = asdict(indicators)
                     # Store using standardized Redis keys
                     for key, value in indicators_dict.items():
-                        if value is not None and key in ALL_INDICATORS:
-                            redis_key = get_indicator_redis_key(instrument, key, indicators.timeframe)
-                            self.redis_client.setex(redis_key, 300, str(value))
+                        if key in ALL_INDICATORS:
+                            self._cache_indicator_value(instrument, indicators.timeframe, key, value)
+
+                    self._persist_indicator_metadata(
+                        instrument,
+                        indicators.timeframe,
+                        indicators.timestamp,
+                        source="ohlc_initialize",
+                        update_type="batch_initialize",
+                        stream="Y2",
+                        bars_available=len(self._ohlc_data.get(instrument, [])),
+                    )
 
                     # Publish full indicator set (including OI metrics) to Redis pub/sub for WS bridge
                     try:
@@ -247,18 +402,24 @@ class TechnicalIndicatorsService:
                             indicator_timestamp=get_market_time()
                         )
                         pub.update(timestamp_payload)
+                        pub.update({
+                            "intrabar": False,
+                            "candle_closed": True,
+                            "update_type": "batch_initialize",
+                            "indicator_update_type": "batch_initialize",
+                            "indicator_stream": "Y2",
+                            "source": "ohlc_initialize",
+                            "bars_available": len(self._ohlc_data.get(instrument, [])),
+                            "warmup_requirements": dict(self.WARMUP_REQUIREMENTS),
+                        })
 
-                        # Add mode/run metadata
-                        mode_payload = create_mode_aware_payload(
-                            mode=self._mode,
-                            run_id=self._run_id,
+                        self._publish_indicator_event(
+                            stream="Y2",
                             instrument=instrument,
                             timeframe=indicators.timeframe,
+                            payload=pub,
+                            event_time=pub.get("market_timestamp") or indicators.timestamp,
                         )
-                        pub.update(mode_payload)
-
-                        type_specific_channel = get_instrument_channel(instrument, "indicators")
-                        self.redis_client.publish(type_specific_channel, json.dumps(pub))
                     except Exception as pub_err:
                         logger.debug(f"Failed to publish indicators to Redis: {pub_err}")
                 except Exception as e:
@@ -310,9 +471,18 @@ class TechnicalIndicatorsService:
                 indicators_dict = asdict(indicators)
                 # Store using standardized Redis keys
                 for key, value in indicators_dict.items():
-                    if value is not None and key in ALL_INDICATORS:
-                        redis_key = get_indicator_redis_key(instrument, key, indicators.timeframe)
-                        self.redis_client.setex(redis_key, 300, str(value))
+                    if key in ALL_INDICATORS:
+                        self._cache_indicator_value(instrument, indicators.timeframe, key, value)
+
+                self._persist_indicator_metadata(
+                    instrument,
+                    indicators.timeframe,
+                    tick_timestamp,
+                    source="tick",
+                    update_type="tick",
+                    stream="LZ1",
+                    bars_available=len(self._ohlc_data.get(instrument, [])),
+                )
 
                 # Publish standardized complete payload (now on every tick for real-time UI)
                 try:
@@ -328,7 +498,12 @@ class TechnicalIndicatorsService:
                     pub.update({
                         "intrabar": True,        # Indicates this is calculated from ticks within current candle
                         "candle_closed": False,  # False for tick updates, True for candle-close updates
-                        "update_type": "tick"    # "tick" or "candle" to distinguish source
+                        "update_type": "tick",    # "tick" or "candle" to distinguish source
+                        "indicator_update_type": "tick",
+                        "indicator_stream": "LZ1",
+                        "source": "tick",
+                        "bars_available": len(self._ohlc_data.get(instrument, [])),
+                        "warmup_requirements": dict(self.WARMUP_REQUIREMENTS),
                     })
 
                     # Add canonical timestamps using tick timestamp
@@ -356,21 +531,13 @@ class TechnicalIndicatorsService:
                     # Update last published hash
                     self._last_published_hash[instrument] = payload_hash
 
-                    # Add mode-aware payload to ALL messages
-                    mode_payload = create_mode_aware_payload(
-                        mode=self._mode,
-                        run_id=self._run_id,
+                    self._publish_indicator_event(
+                        stream="LZ1",
                         instrument=instrument,
-                        timeframe="1min"
+                        timeframe="1min",
+                        payload=pub,
+                        event_time=pub.get("market_timestamp") or tick_ts,
                     )
-                    pub.update(mode_payload)
-
-                    # Update payload_str with mode info
-                    payload_str = json.dumps(pub, sort_keys=True)
-
-                    # Publish to type-specific channel
-                    type_specific_channel = get_instrument_channel(instrument, "indicators")
-                    self.redis_client.publish(type_specific_channel, payload_str)
                     logger.debug(f"Published intrabar indicators for {instrument} on tick update")
                 except Exception as pub_err:
                     logger.debug(f"Failed to publish intrabar indicators to Redis: {pub_err}")
@@ -378,6 +545,33 @@ class TechnicalIndicatorsService:
                 logger.warning(f"Failed to cache indicators in Redis: {e}")
 
         return indicators
+
+    def _apply_derived_state(self, indicators: TechnicalIndicators, current_price: float) -> None:
+        """Compute state fields required by dashboard cards."""
+        if indicators.rsi_14 is None:
+            indicators.rsi_status = "NEUTRAL"
+        elif indicators.rsi_14 < 30:
+            indicators.rsi_status = "OVERSOLD"
+        elif indicators.rsi_14 > 70:
+            indicators.rsi_status = "OVERBOUGHT"
+        else:
+            indicators.rsi_status = "NEUTRAL"
+
+        if indicators.atr_14 is None or current_price <= 0:
+            indicators.volatility_level = "MEDIUM"
+        else:
+            atr_ratio = float(indicators.atr_14) / float(current_price)
+            if atr_ratio < 0.0015:
+                indicators.volatility_level = "LOW"
+            elif atr_ratio < 0.0035:
+                indicators.volatility_level = "MEDIUM"
+            else:
+                indicators.volatility_level = "HIGH"
+
+        if indicators.pivot_s1 is not None:
+            indicators.support_level = indicators.pivot_s1
+        if indicators.pivot_r1 is not None:
+            indicators.resistance_level = indicators.pivot_r1
     
     def update_candle(self, instrument: str, candle: Dict[str, Any]) -> TechnicalIndicators:
         """Update indicators based on new OHLC candle using pandas.
@@ -421,8 +615,7 @@ class TechnicalIndicatorsService:
 
         # Append to DataFrame and maintain window size
         self._ohlc_data[instrument].loc[len(self._ohlc_data[instrument])] = new_row
-        if len(self._ohlc_data[instrument]) > self.window_size:
-            self._ohlc_data[instrument] = self._ohlc_data[instrument].tail(self.window_size)
+        self._ohlc_data[instrument] = self._normalize_ohlc_dataframe(self._ohlc_data[instrument])
 
         # Calculate all indicators
         indicators = self._calculate_all_indicators(instrument)
@@ -440,9 +633,18 @@ class TechnicalIndicatorsService:
                 indicators_dict = asdict(indicators)
                 # Store using standardized Redis keys
                 for key, value in indicators_dict.items():
-                    if value is not None and key in ALL_INDICATORS:
-                        redis_key = get_indicator_redis_key(instrument, key, indicators.timeframe)
-                        self.redis_client.setex(redis_key, 300, str(value))
+                    if key in ALL_INDICATORS:
+                        self._cache_indicator_value(instrument, indicators.timeframe, key, value)
+
+                self._persist_indicator_metadata(
+                    instrument,
+                    indicators.timeframe,
+                    indicators.timestamp,
+                    source="candle",
+                    update_type="candle",
+                    stream="Y2",
+                    bars_available=len(self._ohlc_data.get(instrument, [])),
+                )
 
                 # Publish standardized complete payload (only on candle close)
                 try:
@@ -458,7 +660,12 @@ class TechnicalIndicatorsService:
                     pub.update({
                         "intrabar": False,       # False for candle-close updates (stable values)
                         "candle_closed": True,   # True for candle-close updates, False for tick updates
-                        "update_type": "candle"  # "tick" or "candle" to distinguish source
+                        "update_type": "candle",  # "tick" or "candle" to distinguish source
+                        "indicator_update_type": "candle",
+                        "indicator_stream": "Y2",
+                        "source": "candle",
+                        "bars_available": len(self._ohlc_data.get(instrument, [])),
+                        "warmup_requirements": dict(self.WARMUP_REQUIREMENTS),
                     })
 
                     # Add canonical timestamps using candle timestamp (virtual time)
@@ -490,21 +697,13 @@ class TechnicalIndicatorsService:
                     # Update last published hash
                     self._last_published_hash[instrument] = payload_hash
                     
-                    # Add mode-aware payload to ALL messages
-                    mode_payload = create_mode_aware_payload(
-                        mode=self._mode,
-                        run_id=self._run_id,
+                    self._publish_indicator_event(
+                        stream="Y2",
                         instrument=instrument,
-                        timeframe="1min"
+                        timeframe="1min",
+                        payload=pub,
+                        event_time=pub.get("market_timestamp") or market_ts,
                     )
-                    pub.update(mode_payload)
-
-                    # Update payload_str with mode info
-                    payload_str = json.dumps(pub, sort_keys=True)
-
-                    # Publish to type-specific channel only
-                    type_specific_channel = get_instrument_channel(instrument, "indicators")
-                    self.redis_client.publish(type_specific_channel, payload_str)
                     logger.debug(f"Published indicators for {instrument} in {self._mode} mode on candle close")
                 except Exception as pub_err:
                     logger.warning(f"Failed to publish indicators to Redis: {pub_err}", exc_info=True)
@@ -527,10 +726,7 @@ class TechnicalIndicatorsService:
         return self._latest_indicators.get(instrument)
 
     def calculate_indicators(self, instrument: str) -> Optional[TechnicalIndicators]:
-        """Calculate indicators for instrument (API compatibility method).
-
-        This method maintains backward compatibility with existing code
-        that expects a simple calculate_indicators(instrument) call.
+        """Calculate indicators for instrument.
 
         Args:
             instrument: Instrument symbol
@@ -539,7 +735,7 @@ class TechnicalIndicatorsService:
             TechnicalIndicators object or None if calculation fails
         """
         try:
-            # Calculate indicators using existing logic
+            # Calculate indicators using current OHLC buffer
             indicators = self._calculate_all_indicators(instrument)
 
             # Publish to Redis if available
@@ -556,6 +752,16 @@ class TechnicalIndicatorsService:
                     indicator_timestamp=get_market_time(redis_client=self.redis_client)
                 )
                 safe_indicators.update(timestamp_payload)
+                safe_indicators.update({
+                    "intrabar": False,
+                    "candle_closed": True,
+                    "update_type": "batch_recalculate",
+                    "indicator_update_type": "batch_recalculate",
+                    "indicator_stream": "Y2",
+                    "source": "calculate_indicators",
+                    "bars_available": len(self._ohlc_data.get(instrument, [])),
+                    "warmup_requirements": dict(self.WARMUP_REQUIREMENTS),
+                })
 
                 # Store individual indicator values as Redis keys for verification
                 core_indicators = [
@@ -564,19 +770,24 @@ class TechnicalIndicatorsService:
                 ]
 
                 for indicator_name in core_indicators:
-                    if indicator_name in safe_indicators and safe_indicators[indicator_name] is not None:
-                        redis_key = get_indicator_redis_key(instrument, indicator_name, "1min")
-                        try:
-                            self.redis_client.set(redis_key, str(safe_indicators[indicator_name]))
-                        except Exception as store_error:
-                            logger.warning(f"Failed to store indicator {indicator_name}: {store_error}")
+                    if indicator_name in safe_indicators:
+                        self._cache_indicator_value(
+                            instrument,
+                            "1min",
+                            indicator_name,
+                            safe_indicators.get(indicator_name),
+                        )
 
                 # Store timestamp for freshness validation
-                timestamp_key = get_indicator_redis_key(instrument, 'timestamp', "1min")
-                try:
-                    self.redis_client.set(timestamp_key, safe_indicators.get('indicator_timestamp', datetime.now().isoformat()))
-                except Exception as store_error:
-                    logger.warning(f"Failed to store indicator timestamp: {store_error}")
+                self._persist_indicator_metadata(
+                    instrument,
+                    "1min",
+                    safe_indicators.get('indicator_timestamp', datetime.now().isoformat()),
+                    source="calculate_indicators",
+                    update_type="batch_recalculate",
+                    stream="Y2",
+                    bars_available=len(self._ohlc_data.get(instrument, [])),
+                )
 
                 # Publish to type-specific channel only
                 type_specific_channel = get_instrument_channel(instrument, "indicators")
@@ -585,8 +796,14 @@ class TechnicalIndicatorsService:
                 logger.info(f"Sample values - RSI: {safe_indicators.get('rsi_14')}, ATR: {safe_indicators.get('atr_14')}")
 
                 try:
-                    result = self.redis_client.publish(type_specific_channel, json.dumps(safe_indicators))
-                    logger.info(f"Publish result: {result} subscribers received")
+                    self._publish_indicator_event(
+                        stream="Y2",
+                        instrument=instrument,
+                        timeframe="1min",
+                        payload=safe_indicators,
+                        event_time=safe_indicators.get("market_timestamp") or safe_indicators.get("timestamp") or datetime.now(),
+                    )
+                    logger.info("Published envelope indicator event")
                 except Exception as pub_error:
                     logger.error(f"Failed to publish indicators to Redis: {pub_error}")
                     print(f"TECHNICAL INDICATORS PUBLISH ERROR: {pub_error}")
@@ -596,7 +813,7 @@ class TechnicalIndicatorsService:
             logger.error(f"Failed to calculate indicators for {instrument}: {e}")
             return None
 
-    def get_indicators_dict(self, instrument: str, timeframe: str = "1min") -> Dict[str, Any]:
+    def get_indicators_dict(self, instrument: str, timeframe: str = "1m") -> Dict[str, Any]:
         """Get latest indicators as dictionary.
 
         Args:
@@ -607,7 +824,7 @@ class TechnicalIndicatorsService:
             Dictionary of indicators or empty dict
         """
         # First try to get from memory
-        if timeframe == "1min":
+        if str(timeframe).strip().lower() in ("1m", "1min", "minute"):
             indicators = self._latest_indicators.get(instrument)
         else:
             indicators = self.get_indicators_mtf(instrument, timeframe)
@@ -715,22 +932,35 @@ class TechnicalIndicatorsService:
             if len(df) >= 26:
                 macd = ta.macd(df["close"])
                 if macd is not None and len(macd.columns) >= 3:
-                    indicators.macd_value = self._safe_float(macd.iloc[:, 0])    # MACD
-                    indicators.macd_signal = self._safe_float(macd.iloc[:, 1])   # MACDh
-                    indicators.macd_histogram = self._safe_float(macd.iloc[:, 2]) # MACDs
+                    # pandas_ta returns columns as MACD, MACDh (hist), MACDs (signal).
+                    # Use names when available to avoid ordering mismatches.
+                    cols = list(macd.columns)
+                    macd_col = next((c for c in cols if c.startswith("MACD_") and "MACDh" not in c and "MACDs" not in c), cols[0])
+                    hist_col = next((c for c in cols if "MACDh" in c), cols[1])
+                    signal_col = next((c for c in cols if "MACDs" in c), cols[2])
+
+                    indicators.macd_value = self._safe_float(macd[macd_col])
+                    indicators.macd_signal = self._safe_float(macd[signal_col])
+                    indicators.macd_histogram = self._safe_float(macd[hist_col])
 
             # === VOLATILITY INDICATORS ===
             # Bollinger Bands
             if len(df) >= 20:
                 bb = ta.bbands(df["close"], length=20)
                 if bb is not None and len(bb.columns) >= 3:
-                    indicators.bollinger_upper = self._safe_float(bb.iloc[:, 0])   # BBL
-                    indicators.bollinger_middle = self._safe_float(bb.iloc[:, 1])  # BBM
-                    indicators.bollinger_lower = self._safe_float(bb.iloc[:, 2])   # BBU
+                    cols = list(bb.columns)
+                    lower_col = next((c for c in cols if "BBL" in c), cols[0])
+                    middle_col = next((c for c in cols if "BBM" in c), cols[1])
+                    upper_col = next((c for c in cols if "BBU" in c), cols[2])
+
+                    indicators.bollinger_upper = self._safe_float(bb[upper_col])
+                    indicators.bollinger_middle = self._safe_float(bb[middle_col])
+                    indicators.bollinger_lower = self._safe_float(bb[lower_col])
                     # Calculate width and %B
                     if indicators.bollinger_upper and indicators.bollinger_lower and indicators.bollinger_middle:
-                        indicators.bollinger_width = (indicators.bollinger_upper - indicators.bollinger_lower) / indicators.bollinger_middle
-                        indicators.bollinger_percent_b = (current_price - indicators.bollinger_lower) / (indicators.bollinger_upper - indicators.bollinger_lower) if (indicators.bollinger_upper - indicators.bollinger_lower) != 0 else 0
+                        band_span = indicators.bollinger_upper - indicators.bollinger_lower
+                        indicators.bollinger_width = band_span / indicators.bollinger_middle
+                        indicators.bollinger_percent_b = (current_price - indicators.bollinger_lower) / band_span if band_span != 0 else None
 
             # ATR
             if len(df) >= 14:
@@ -813,10 +1043,10 @@ class TechnicalIndicatorsService:
 
             # === OSCILLATORS ===
             if len(df) >= 20:
-                indicators.cci_20 = self._safe_float(ta.cci(df["high"], df["low"], df["close"], length=20))
+                indicators.cci_20 = self._calculate_cci(df, length=20)
 
             if len(df) >= 14:
-                indicators.mfi_14 = self._safe_float(ta.mfi(df["high"], df["low"], df["close"], df["volume"], length=14))
+                indicators.mfi_14 = self._calculate_mfi(df, length=14)
 
             if len(df) >= 12:
                 indicators.roc_12 = self._safe_float(ta.roc(df["close"], length=12))
@@ -824,24 +1054,15 @@ class TechnicalIndicatorsService:
             if len(df) >= 10:
                 indicators.momentum_10 = self._safe_float(ta.mom(df["close"], length=10))
 
-            # CCI (Commodity Channel Index)
-            if len(df) >= 20:
-                indicators.cci_20 = self._safe_float(ta.cci(df["high"], df["low"], df["close"], length=20))
-
-            # MFI (Money Flow Index)
-            if len(df) >= 14:
-                indicators.mfi_14 = self._safe_float(ta.mfi(df["high"], df["low"], df["close"], df["volume"], length=14))
-
             # === SUPPORT/RESISTANCE ===
             if len(df) >= 1:
-                # Use previous day's OHLC for pivot points (simplified)
-                prev_day = df.iloc[-2] if len(df) >= 2 else df.iloc[-1]
-                pivot_base = (prev_day["high"] + prev_day["low"] + prev_day["close"]) / 3
-                indicators.pivot_point = pivot_base
-                indicators.pivot_r1 = 2 * pivot_base - prev_day["low"]
-                indicators.pivot_r2 = pivot_base + (prev_day["high"] - prev_day["low"])
-                indicators.pivot_s1 = 2 * pivot_base - prev_day["high"]
-                indicators.pivot_s2 = pivot_base - (prev_day["high"] - prev_day["low"])
+                pivot_levels = self._calculate_pivot_levels(df, indicators.timeframe)
+                if pivot_levels:
+                    indicators.pivot_point = pivot_levels.get("pivot")
+                    indicators.pivot_r1 = pivot_levels.get("r1")
+                    indicators.pivot_r2 = pivot_levels.get("r2")
+                    indicators.pivot_s1 = pivot_levels.get("s1")
+                    indicators.pivot_s2 = pivot_levels.get("s2")
 
             # === PRICE ACTION ===
             if len(df) >= 20:
@@ -928,6 +1149,7 @@ class TechnicalIndicatorsService:
         except Exception as e:
             logger.error(f"Error calculating indicators for {instrument}: {e}", exc_info=True)
 
+        self._apply_derived_state(indicators, indicators.current_price)
         return indicators
 
     def _safe_float(self, series_or_value) -> Optional[float]:
@@ -937,95 +1159,138 @@ class TechnicalIndicatorsService:
                 # It's a Series
                 if not series_or_value.empty:
                     value = series_or_value.iloc[-1]
-                    return float(value) if pd.notna(value) else None
+                    if pd.notna(value):
+                        value = float(value)
+                        if math.isinf(value) or math.isnan(value):
+                            return None
+                        return value
             else:
                 # It's a scalar
-                return float(series_or_value) if series_or_value is not None and pd.notna(series_or_value) else None
+                if series_or_value is not None and pd.notna(series_or_value):
+                    value = float(series_or_value)
+                    if math.isinf(value) or math.isnan(value):
+                        return None
+                    return value
+                return None
         except (ValueError, TypeError, IndexError):
             return None
-            if macd is not None and not macd.empty:
-                indicators.macd_value = float(macd["MACD_12_26_9"].iloc[-1]) if pd.notna(macd["MACD_12_26_9"].iloc[-1]) else None
-                indicators.macd_signal = float(macd["MACDs_12_26_9"].iloc[-1]) if pd.notna(macd["MACDs_12_26_9"].iloc[-1]) else None
-                indicators.macd_histogram = float(macd["MACDh_12_26_9"].iloc[-1]) if pd.notna(macd["MACDh_12_26_9"].iloc[-1]) else None
-            
-            # === VOLATILITY INDICATORS ===
-            atr = ta.atr(df["high"], df["low"], df["close"], length=14)
-            if not atr.empty and pd.notna(atr.iloc[-1]):
-                indicators.atr_14 = float(atr.iloc[-1])
-                
-                # Volatility level
-                atr_pct = (indicators.atr_14 / current_price) * 100
-                if atr_pct < 1.0:
-                    indicators.volatility_level = "LOW"
-                elif atr_pct > 2.5:
-                    indicators.volatility_level = "HIGH"
-                else:
-                    indicators.volatility_level = "MEDIUM"
-            
-            # Bollinger Bands
-            bbands = ta.bbands(df["close"], length=20, std=2)
-            if bbands is not None and not bbands.empty:
-                # Handle different column naming (BBU_20_2.0 or similar)
-                cols = bbands.columns
-                upper_col = [c for c in cols if 'BBU' in c][0] if any('BBU' in c for c in cols) else None
-                middle_col = [c for c in cols if 'BBM' in c][0] if any('BBM' in c for c in cols) else None
-                lower_col = [c for c in cols if 'BBL' in c][0] if any('BBL' in c for c in cols) else None
-                
-                if upper_col and pd.notna(bbands[upper_col].iloc[-1]):
-                    indicators.bollinger_upper = float(bbands[upper_col].iloc[-1])
-                if middle_col and pd.notna(bbands[middle_col].iloc[-1]):
-                    indicators.bollinger_middle = float(bbands[middle_col].iloc[-1])
-                if lower_col and pd.notna(bbands[lower_col].iloc[-1]):
-                    indicators.bollinger_lower = float(bbands[lower_col].iloc[-1])
-            
-            # === TREND STRENGTH ===
-            adx_result = ta.adx(df["high"], df["low"], df["close"], length=14)
-            if adx_result is not None and not adx_result.empty and "ADX_14" in adx_result.columns:
-                indicators.adx_14 = float(adx_result["ADX_14"].iloc[-1]) if pd.notna(adx_result["ADX_14"].iloc[-1]) else None
-            
-            # === VOLUME INDICATORS ===
-            if "volume" in df.columns:
-                vol_sma = ta.sma(df["volume"], length=20)
-                if not vol_sma.empty and pd.notna(vol_sma.iloc[-1]):
-                    indicators.volume_sma_20 = float(vol_sma.iloc[-1])
-                    current_vol = float(df["volume"].iloc[-1])
-                    indicators.volume_ratio = current_vol / indicators.volume_sma_20 if indicators.volume_sma_20 > 0 else 1.0
-            
-            # === SUPPORT/RESISTANCE ===
-            lookback = min(20, len(df))
-            indicators.support_level = float(df["low"].tail(lookback).min())
-            indicators.resistance_level = float(df["high"].tail(lookback).max())
-            
-            # === TREND DIRECTION ===
-            if indicators.sma_20 is not None:
-                if current_price > indicators.sma_20 * 1.005:  # 0.5% above
-                    indicators.trend_direction = "UP"
-                    indicators.trend_strength = min(100, ((current_price - indicators.sma_20) / indicators.sma_20 * 100) * 10)
-                elif current_price < indicators.sma_20 * 0.995:  # 0.5% below
-                    indicators.trend_direction = "DOWN"
-                    indicators.trend_strength = min(100, ((indicators.sma_20 - current_price) / current_price * 100) * 10)
-                else:
-                    indicators.trend_direction = "SIDEWAYS"
-                    indicators.trend_strength = 30.0
-            
-        except Exception as e:
-            logger.warning(f"Error calculating indicators for {instrument}: {e}")
-        
-        return indicators
-    
-    def get_indicators_dict(self, instrument: str) -> Dict[str, Any]:
-        """Get latest indicators as dictionary for specified instrument.
-        
-        This is a convenience method for agents that prefer dict format.
-        
-        Args:
-            instrument: Instrument symbol
-            
-        Returns:
-            Dictionary of technical indicators or empty dict if not available
+
+    def _calculate_cci(self, df: pd.DataFrame, length: int = 20) -> Optional[float]:
+        """Calculate CCI manually for stability.
+
+        pandas_ta CCI has shown unstable/extreme outputs in this environment for
+        futures bars, so we compute using the canonical formula:
+        CCI = (TP - SMA(TP)) / (0.015 * MeanDeviation(TP)).
         """
-        indicators = self.get_indicators(instrument)
-        return indicators.to_dict() if indicators else {}
+        if len(df) < length:
+            return None
+
+        try:
+            high = pd.to_numeric(df["high"], errors="coerce")
+            low = pd.to_numeric(df["low"], errors="coerce")
+            close = pd.to_numeric(df["close"], errors="coerce")
+
+            tp = (high + low + close) / 3.0
+            sma = tp.rolling(length).mean()
+            mean_dev = tp.rolling(length).apply(
+                lambda x: float((abs(x - x.mean())).mean()),
+                raw=False,
+            )
+
+            if mean_dev.empty or pd.isna(mean_dev.iloc[-1]) or float(mean_dev.iloc[-1]) <= 1e-9:
+                return None
+
+            cci = (tp - sma) / (0.015 * mean_dev)
+            value = self._safe_float(cci)
+            # Protect UI from pathological spikes caused by near-zero denominators.
+            if value is not None and abs(value) > 10000:
+                return None
+            return value
+        except Exception:
+            return None
+
+    def _calculate_mfi(self, df: pd.DataFrame, length: int = 14) -> Optional[float]:
+        """Calculate MFI with volume-quality guardrails."""
+        if len(df) < length:
+            return None
+
+        try:
+            volume = pd.to_numeric(df["volume"], errors="coerce").fillna(0.0)
+            if float(volume.tail(length).sum()) <= 0.0:
+                # No usable volume in lookback window; MFI is not meaningful.
+                return None
+
+            value = self._safe_float(
+                ta.mfi(
+                    pd.to_numeric(df["high"], errors="coerce"),
+                    pd.to_numeric(df["low"], errors="coerce"),
+                    pd.to_numeric(df["close"], errors="coerce"),
+                    volume,
+                    length=length,
+                )
+            )
+            if value is None:
+                return None
+            # MFI is a bounded oscillator.
+            return value if 0.0 <= value <= 100.0 else None
+        except Exception:
+            return None
+
+    def _calculate_pivot_levels(self, df: pd.DataFrame, timeframe: str = "1min") -> Optional[Dict[str, float]]:
+        """Calculate pivot levels with robust context selection.
+
+        Priority:
+        1) Previous completed trading-day OHLC (when timestamps span multiple dates)
+        2) Multi-bar lookback window excluding current bar (fallback)
+        """
+        if df is None or len(df) < 2:
+            return None
+
+        source_df: Optional[pd.DataFrame] = None
+
+        try:
+            # Preferred source: previous completed trading day.
+            if "timestamp" in df.columns:
+                ts = pd.to_datetime(df["timestamp"], errors="coerce")
+                if ts is not None and not ts.isna().all():
+                    dates = sorted(pd.Series(ts.dt.date).dropna().unique())
+                    if len(dates) >= 2:
+                        previous_date = dates[-2]
+                        mask = ts.dt.date == previous_date
+                        if bool(mask.any()):
+                            source_df = df.loc[mask]
+
+            # Fallback source: recent context excluding current bar.
+            if source_df is None or source_df.empty:
+                tf = (timeframe or "").strip().lower()
+                lookback = 20 if tf in ("1m", "1min", "minute") else 10
+                end_idx = len(df) - 1  # exclude current bar
+                start_idx = max(0, end_idx - lookback)
+                source_df = df.iloc[start_idx:end_idx] if end_idx > 0 else df.iloc[-1:]
+                if source_df.empty:
+                    source_df = df.iloc[-1:]
+
+            high = pd.to_numeric(source_df["high"], errors="coerce").max()
+            low = pd.to_numeric(source_df["low"], errors="coerce").min()
+            close = pd.to_numeric(source_df["close"], errors="coerce").iloc[-1]
+
+            if not (pd.notna(high) and pd.notna(low) and pd.notna(close)):
+                return None
+
+            high_f = float(high)
+            low_f = float(low)
+            close_f = float(close)
+
+            pivot = (high_f + low_f + close_f) / 3.0
+            return {
+                "pivot": pivot,
+                "r1": (2.0 * pivot) - low_f,
+                "r2": pivot + (high_f - low_f),
+                "s1": (2.0 * pivot) - high_f,
+                "s2": pivot - (high_f - low_f),
+            }
+        except Exception:
+            return None
     
     def get_raw_data(self, instrument: str, periods: int = 50) -> List[Dict[str, Any]]:
         """Get raw OHLCV data for instrument.
@@ -1078,8 +1343,7 @@ class TechnicalIndicatorsService:
         
         # Append to DataFrame and maintain window size
         self._ohlc_data_mtf[key].loc[len(self._ohlc_data_mtf[key])] = new_row
-        if len(self._ohlc_data_mtf[key]) > self.window_size:
-            self._ohlc_data_mtf[key] = self._ohlc_data_mtf[key].tail(self.window_size)
+        self._ohlc_data_mtf[key] = self._normalize_ohlc_dataframe(self._ohlc_data_mtf[key])
         
         # Calculate all indicators for this timeframe
         indicators = self._calculate_all_indicators_mtf(instrument, timeframe)
@@ -1092,12 +1356,22 @@ class TechnicalIndicatorsService:
             try:
                 indicators_dict = asdict(indicators)
                 for key_name, value in indicators_dict.items():
-                    if value is not None and key_name in ALL_INDICATORS:
-                        redis_key = f"indicators:{instrument}:{timeframe}:{key_name}"
-                        self.redis_client.setex(redis_key, 300, str(value))
+                    if key_name in ALL_INDICATORS:
+                        self._cache_indicator_value(instrument, timeframe, key_name, value)
+
+                self._persist_indicator_metadata(
+                    instrument,
+                    timeframe,
+                    indicators.timestamp,
+                    source="candle_mtf",
+                    update_type="candle",
+                    stream="Y2",
+                    bars_available=len(self._ohlc_data_mtf.get((instrument, timeframe), [])),
+                )
             except Exception as e:
                 logger.warning(f"Failed to cache MTF indicators in Redis: {e}")
         
+        self._apply_derived_state(indicators, indicators.current_price)
         return indicators
     
     def get_indicators_mtf(
@@ -1161,7 +1435,9 @@ class TechnicalIndicatorsService:
         key = (instrument, timeframe)
         df = self._ohlc_data_mtf.get(key)
         
-        if df is None or len(df) < 20:
+        # Keep warm-up threshold aligned with single-timeframe path so
+        # indicators like RSI(14) become available as soon as enough bars exist.
+        if df is None or len(df) < 10:
             current_price = float(df["close"].iloc[-1]) if df is not None and len(df) > 0 else 0.0
             return TechnicalIndicators(
                 timestamp=datetime.now().isoformat(),
@@ -1207,25 +1483,36 @@ class TechnicalIndicatorsService:
             if len(df) >= 26:
                 macd = ta.macd(df["close"])
                 if macd is not None and len(macd.columns) >= 3:
-                    indicators.macd_value = self._safe_float(macd.iloc[:, 0])
-                    indicators.macd_signal = self._safe_float(macd.iloc[:, 1])
-                    indicators.macd_histogram = self._safe_float(macd.iloc[:, 2])
+                    cols = list(macd.columns)
+                    macd_col = next((c for c in cols if c.startswith("MACD_") and "MACDh" not in c and "MACDs" not in c), cols[0])
+                    hist_col = next((c for c in cols if "MACDh" in c), cols[1])
+                    signal_col = next((c for c in cols if "MACDs" in c), cols[2])
+
+                    indicators.macd_value = self._safe_float(macd[macd_col])
+                    indicators.macd_signal = self._safe_float(macd[signal_col])
+                    indicators.macd_histogram = self._safe_float(macd[hist_col])
             
             # === VOLATILITY INDICATORS ===
             if len(df) >= 20:
                 bb = ta.bbands(df["close"], length=20)
                 if bb is not None and len(bb.columns) >= 3:
-                    indicators.bollinger_upper = self._safe_float(bb.iloc[:, 0])
-                    indicators.bollinger_middle = self._safe_float(bb.iloc[:, 1])
-                    indicators.bollinger_lower = self._safe_float(bb.iloc[:, 2])
+                    cols = list(bb.columns)
+                    lower_col = next((c for c in cols if "BBL" in c), cols[0])
+                    middle_col = next((c for c in cols if "BBM" in c), cols[1])
+                    upper_col = next((c for c in cols if "BBU" in c), cols[2])
+
+                    indicators.bollinger_upper = self._safe_float(bb[upper_col])
+                    indicators.bollinger_middle = self._safe_float(bb[middle_col])
+                    indicators.bollinger_lower = self._safe_float(bb[lower_col])
                     if indicators.bollinger_upper and indicators.bollinger_lower and indicators.bollinger_middle:
+                        band_span = indicators.bollinger_upper - indicators.bollinger_lower
                         indicators.bollinger_width = (
-                            (indicators.bollinger_upper - indicators.bollinger_lower) / indicators.bollinger_middle
+                            band_span / indicators.bollinger_middle
                         )
-                        if (indicators.bollinger_upper - indicators.bollinger_lower) != 0:
+                        if band_span != 0:
                             indicators.bollinger_percent_b = (
                                 (current_price - indicators.bollinger_lower) / 
-                                (indicators.bollinger_upper - indicators.bollinger_lower)
+                                band_span
                             )
             
             if len(df) >= 14:
@@ -1289,10 +1576,10 @@ class TechnicalIndicatorsService:
 
             # === ADDITIONAL OSCILLATORS ===
             if len(df) >= 20:
-                indicators.cci_20 = self._safe_float(ta.cci(df["high"], df["low"], df["close"], length=20))
+                indicators.cci_20 = self._calculate_cci(df, length=20)
 
             if len(df) >= 14:
-                indicators.mfi_14 = self._safe_float(ta.mfi(df["high"], df["low"], df["close"], df["volume"], length=14))
+                indicators.mfi_14 = self._calculate_mfi(df, length=14)
 
             if len(df) >= 12:
                 indicators.roc_12 = self._safe_float(ta.roc(df["close"], length=12))
@@ -1302,14 +1589,13 @@ class TechnicalIndicatorsService:
 
             # === SUPPORT/RESISTANCE ===
             if len(df) >= 1:
-                # Use previous day's OHLC for pivot points (simplified)
-                prev_day = df.iloc[-2] if len(df) >= 2 else df.iloc[-1]
-                pivot_base = (prev_day["high"] + prev_day["low"] + prev_day["close"]) / 3
-                indicators.pivot_point = pivot_base
-                indicators.pivot_r1 = 2 * pivot_base - prev_day["low"]
-                indicators.pivot_r2 = pivot_base + (prev_day["high"] - prev_day["low"])
-                indicators.pivot_s1 = 2 * pivot_base - prev_day["high"]
-                indicators.pivot_s2 = pivot_base - (prev_day["high"] - prev_day["low"])
+                pivot_levels = self._calculate_pivot_levels(df, timeframe)
+                if pivot_levels:
+                    indicators.pivot_point = pivot_levels.get("pivot")
+                    indicators.pivot_r1 = pivot_levels.get("r1")
+                    indicators.pivot_r2 = pivot_levels.get("r2")
+                    indicators.pivot_s1 = pivot_levels.get("s1")
+                    indicators.pivot_s2 = pivot_levels.get("s2")
 
             # === PRICE ACTION ===
             if len(df) >= 20:
@@ -1418,7 +1704,7 @@ class TechnicalIndicatorsService:
             })
         
         df = pd.DataFrame(data)
-        df = df.sort_values('timestamp').reset_index(drop=True)
+        df = self._normalize_ohlc_dataframe(df)
         
         # Store in MTF data
         key = (instrument, timeframe)
@@ -1434,9 +1720,18 @@ class TechnicalIndicatorsService:
                 indicators_dict = asdict(indicators)
                 # Store using standardized Redis keys with timeframe
                 for key_name, value in indicators_dict.items():
-                    if value is not None and key_name in ALL_INDICATORS:
-                        redis_key = get_indicator_redis_key(instrument, key_name, timeframe)
-                        self.redis_client.setex(redis_key, 300, str(value))
+                    if key_name in ALL_INDICATORS:
+                        self._cache_indicator_value(instrument, timeframe, key_name, value)
+
+                self._persist_indicator_metadata(
+                    instrument,
+                    timeframe,
+                    indicators.timestamp,
+                    source="ohlc_bars",
+                    update_type="batch_recalculate",
+                    stream="Y2",
+                    bars_available=len(df),
+                )
             except Exception as e:
                 logger.warning(f"Failed to store MTF indicators for {instrument}:{timeframe}: {e}")
         

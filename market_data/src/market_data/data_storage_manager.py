@@ -349,13 +349,30 @@ class DataStorageManager:
 
     def _normalize_timeframe(self, timeframe: str) -> str:
         """Normalize timeframe strings."""
-        timeframe = timeframe.lower()
-        if timeframe == "minute":
-            return "1min"
-        elif timeframe.endswith("minute"):
-            minutes = timeframe.replace("minute", "").strip()
-            return f"{minutes}m"
-        return timeframe
+        tf = (timeframe or "").strip().lower()
+
+        # Canonical intraday minute aliases
+        if tf in ("minute", "1m", "1min", "1minute"):
+            return "1m"
+
+        # "5minute" / "15minute" -> "5m" / "15m"
+        if tf.endswith("minute"):
+            digits = tf.replace("minute", "").strip()
+            if digits.isdigit():
+                return "1m" if digits == "1" else f"{digits}m"
+
+        # "5min" / "15min" -> "5m" / "15m"
+        if tf.endswith("min"):
+            digits = tf[:-3]
+            if digits.isdigit():
+                return "1m" if digits == "1" else f"{digits}m"
+
+        # "5m" / "15m" already canonical, handle any numeric suffix
+        if tf.endswith("m") and tf[:-1].isdigit():
+            digits = tf[:-1]
+            return "1m" if digits == "1" else f"{digits}m"
+
+        return tf
 
     def cleanup_old_data(self, days_to_keep: int = 30) -> int:
         """Clean up old data beyond retention period."""

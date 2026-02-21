@@ -52,17 +52,29 @@ def validate_mode_consistency(redis_client: redis.Redis, service_name: str = "se
     warnings: List[str] = []
     
     try:
-        # Get Redis mode configuration
+        # Get Redis mode configuration (handle bytes or str returned by Redis client)
         redis_mode_bytes = redis_client.get("system:execution_mode")
-        redis_mode = redis_mode_bytes.decode() if redis_mode_bytes else None
-        
+        redis_mode = (
+            redis_mode_bytes.decode() if isinstance(redis_mode_bytes, (bytes, bytearray))
+            else redis_mode_bytes
+        )
+
         virtual_time_enabled_bytes = redis_client.get("system:virtual_time:enabled")
-        virtual_time_enabled = virtual_time_enabled_bytes == b"1" if virtual_time_enabled_bytes else False
-        
+        if virtual_time_enabled_bytes is None:
+            virtual_time_enabled = False
+        else:
+            # support both bytes (b"1") and string ("1") responses
+            virtual_time_enabled = (
+                virtual_time_enabled_bytes == b"1"
+                or str(virtual_time_enabled_bytes) == "1"
+            )
+
         virtual_time_current = None
         if virtual_time_enabled:
             vt_bytes = redis_client.get("system:virtual_time:current")
-            virtual_time_current = vt_bytes.decode() if vt_bytes else None
+            virtual_time_current = (
+                vt_bytes.decode() if isinstance(vt_bytes, (bytes, bytearray)) else vt_bytes
+            )
     except Exception as e:
         logger.warning(f"Failed to read Redis mode configuration: {e}")
         redis_mode = None

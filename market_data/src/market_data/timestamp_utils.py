@@ -9,6 +9,8 @@ ensuring consistent timezone handling and proper separation of:
 """
 
 import logging
+import os
+import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Dict, Any
 
@@ -36,10 +38,18 @@ def get_market_time(timestamp: Optional[datetime] = None, redis_client=None) -> 
         if redis_client:
             try:
                 virtual_enabled = redis_client.get("system:virtual_time:enabled")
-                if virtual_enabled and virtual_enabled.decode() == "1":
+                ve = (
+                    virtual_enabled.decode() if isinstance(virtual_enabled, (bytes, bytearray))
+                    else (str(virtual_enabled) if virtual_enabled is not None else None)
+                )
+                if ve == "1":
                     virtual_time_str = redis_client.get("system:virtual_time:current")
                     if virtual_time_str:
-                        virtual_time = datetime.fromisoformat(virtual_time_str.decode())
+                        vts = (
+                            virtual_time_str.decode() if isinstance(virtual_time_str, (bytes, bytearray))
+                            else str(virtual_time_str)
+                        )
+                        virtual_time = datetime.fromisoformat(vts)
                         if virtual_time.tzinfo is None:
                             return virtual_time.replace(tzinfo=IST)
                         else:
@@ -143,6 +153,71 @@ def create_mode_aware_payload(
         "timeframe": timeframe,
     }
     return payload
+
+
+def _coerce_datetime(value: Any, fallback: Optional[datetime] = None) -> datetime:
+    """Best-effort datetime coercion used by envelope builders."""
+    if isinstance(value, datetime):
+        return value
+
+    if isinstance(value, str):
+        raw = value.strip()
+        if raw:
+            try:
+                return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            except Exception:
+                pass
+
+    if fallback is not None:
+        return fallback
+    return datetime.now(timezone.utc)
+
+
+def create_event_envelope(
+    *,
+    stream: str,
+    payload: Dict[str, Any],
+    instrument: str,
+    timeframe: Optional[str],
+    event_time: Any,
+    emitted_at: Optional[Any] = None,
+    source_event_id: Optional[str] = None,
+    event_id: Optional[str] = None,
+    mode: Optional[str] = None,
+    run_id: Optional[str] = None,
+    schema_version: str = "v1",
+    sequence: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Create canonical stream envelope: X/Y/L stream + lineage + explicit timestamps.
+
+    Notes:
+    - event_time is the data/market time represented by the event.
+    - emitted_at is processing/publish time (defaults to now, UTC).
+    """
+    evt_dt = _coerce_datetime(event_time)
+    emit_dt = _coerce_datetime(emitted_at, fallback=datetime.now(timezone.utc))
+
+    eff_mode = (mode or os.getenv("EXECUTION_MODE") or "live").strip().lower()
+    eff_run_id = run_id if run_id is not None else os.getenv("RUN_ID", "")
+
+    envelope: Dict[str, Any] = {
+        "event_id": event_id or str(uuid.uuid4()),
+        "stream": str(stream),
+        "instrument": str(instrument),
+        "timeframe": str(timeframe) if timeframe else None,
+        "event_time": evt_dt.astimezone(timezone.utc).isoformat(),
+        "emitted_at": emit_dt.astimezone(timezone.utc).isoformat(),
+        "source_event_id": source_event_id,
+        "mode": eff_mode,
+        "run_id": eff_run_id,
+        "schema_version": schema_version,
+        "payload": payload if isinstance(payload, dict) else {},
+    }
+
+    if sequence is not None:
+        envelope["sequence"] = int(sequence)
+
+    return envelope
 
 
 def detect_instrument_type(instrument: str) -> str:

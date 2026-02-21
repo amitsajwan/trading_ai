@@ -3,8 +3,10 @@
 This document describes the **actual runtime behavior** of the current stack in this repository.
 
 If anything conflicts with old docs, trust this file and `market_data/README.md`.
+For day-to-day run commands and source/mode selection, use `RUN_MODES_GUIDE.md`.
 
-For fastest startup commands by scenario, use the matrix in `README.md` (repo root).**For GenAI agent data integration**, see `GENAI_AGENT_DATA_REFERENCE.md`.
+For fastest startup commands by scenario, use the matrix in `README.md` (repo root).
+**For GenAI agent data integration**, see `GENAI_AGENT_DATA_REFERENCE.md`.
 ## Overview
 
 The platform has three running layers:
@@ -20,6 +22,16 @@ Core runtime ports:
 - Redis from environment (`REDIS_HOST`, `REDIS_PORT`) — this repo commonly uses `6380`
 
 ## End-to-End Data Flow
+
+### Source-only architecture rule
+
+The system is designed so only the **source adapter** changes across scenarios.
+Core processing stays the same:
+
+`source adapter -> unified replay/ingestion -> Redis store -> indicators -> API -> dashboard/UI`
+
+Canonical replay engine: `UnifiedHistoricalReplayer`.
+Legacy compatibility shim modules have been removed.
 
 ### 1) Startup orchestration
 
@@ -60,6 +72,19 @@ Examples:
 - Pub/Sub tick: `market:tick:{instrument}:*`
 - Pub/Sub indicators: `indicators:{instrument}:*`
 
+Indicator metadata contract (for recency/provenance):
+
+- API/dashboard indicator responses include `indicator_timestamp` and `indicator_source`
+- Indicator metadata also includes:
+	- `indicator_stream` (`Y2` snapshot, `LZ1` intrabar)
+	- `indicator_update_type` (`candle`, `tick`, `batch_initialize`, `batch_recalculate`)
+	- `bars_available` + `warmup_requirements` (for warm-up visibility)
+- Redis indicator metadata keys are timeframe-aware:
+	- `indicators:{instrument}:{timeframe}:timestamp`
+	- `indicators:{instrument}:{timeframe}:indicator_timestamp`
+	- `indicators:{instrument}:{timeframe}:source`
+- For 1-minute compatibility, legacy key `indicators:{instrument}:timestamp` is also maintained
+
 ### 4) Dashboard backend bridge
 
 `market_data_dashboard/app.py`:
@@ -81,7 +106,9 @@ Topic mapping:
 ### 5) Browser update loop
 
 The dashboard UI refreshes charts/status with throttling and coalescing to avoid request storms.
-Tick-topic rendering load is intentionally minimized in UI, with polling fallback on repeated websocket failures.
+Tick-topic rendering load is intentionally minimized in UI.
+On repeated websocket failures, UI reports websocket unavailability and does not auto-fallback to REST polling.
+UI also surfaces indicator metadata (calculated time/source/timeframe/update type/mode/status) in the Indicator Metadata card.
 
 ## Fail-Fast Policy (Important)
 

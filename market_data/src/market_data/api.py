@@ -10,6 +10,14 @@ from .contracts import MarketStore, OptionsData, MarketIngestion
 from .store import InMemoryMarketStore
 from .adapters.redis_store import RedisMarketStore
 from .adapters.unified_replayer import UnifiedHistoricalReplayer
+from .env_settings import redis_config, resolve_instrument_symbol
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
 
 
 def build_store(redis_client=None) -> MarketStore:
@@ -27,18 +35,26 @@ def build_store(redis_client=None) -> MarketStore:
         
         # Redis-backed for production
         import redis
-        r = redis.Redis(host='localhost', port=6379, decode_responses=True)
+        r = redis.Redis(
+            host=os.getenv("REDIS_HOST", "localhost"),
+            port=int(os.getenv("REDIS_PORT", "6379")),
+            decode_responses=True,
+        )
         store = build_store(redis_client=r)
     """
     if redis_client is not None:
         return RedisMarketStore(redis_client)
-    
-    # Use environment variables for Redis connection
-    import redis
-    redis_host = os.getenv('REDIS_HOST', 'localhost')
-    redis_port = int(os.getenv('REDIS_PORT', '6379'))
-    r = redis.Redis(host=redis_host, port=redis_port, decode_responses=True)
-    return RedisMarketStore(r)
+
+    # Use environment variables for Redis connection when available.
+    # For isolated tests/dev where Redis is not running, gracefully fall back
+    # to in-memory storage.
+    try:
+        import redis
+        r = redis.Redis(**redis_config(decode_responses=True))
+        r.ping()
+        return RedisMarketStore(r)
+    except Exception:
+        return InMemoryMarketStore()
 
 
 def build_historical_replay(store: MarketStore, data_source: str = "synthetic", start_date: Optional[datetime] = None, kite=None, speed: Optional[float] = None, instrument_symbol: Optional[str] = None) -> MarketIngestion:
@@ -75,6 +91,10 @@ def build_historical_replay(store: MarketStore, data_source: str = "synthetic", 
             "This is a real-only mode: install kiteconnect and provide valid credentials/token."
         )
 
+    use_virtual_time = _env_bool("USE_VIRTUAL_TIME", False)
+    default_rebase_to_now = (data_source in ("synthetic", "local"))
+    rebase_to_now = _env_bool("HISTORICAL_REBASE_TO_NOW", default_rebase_to_now)
+
     if data_source == "zerodha" and kite:
         # Use real Zerodha historical data
         if start_date:
@@ -91,11 +111,11 @@ def build_historical_replay(store: MarketStore, data_source: str = "synthetic", 
             store=store,
             data_source="zerodha",
             kite=kite,
-            instrument_symbol=instrument_symbol or os.getenv("INSTRUMENT_SYMBOL", "BANKNIFTY26JANFUT"),  # Use configured instrument
+            instrument_symbol=instrument_symbol or resolve_instrument_symbol(),  # Use configured instrument
             from_date=from_date,
             to_date=to_date,
             interval="minute",
-            rebase=False,  # Don't rebase historical data - keep original timestamps
+            rebase=(rebase_to_now and not use_virtual_time),
             speed=speed  # Use provided speed parameter
         )
         return replayer
@@ -103,24 +123,30 @@ def build_historical_replay(store: MarketStore, data_source: str = "synthetic", 
         # Preserve provided data_source (may be 'synthetic' or a path to a file)
         if data_source == "synthetic":
             replay_speed = 1.0 if speed is None else float(speed)
+            should_rebase = (rebase_to_now and not use_virtual_time)
+            # When rebasing, keep replay target at "now" while allowing start_date
+            # to remain a data anchor (used by the synthetic generator seed).
+            rebase_target = datetime.now() if should_rebase else (start_date or datetime.now())
             return UnifiedHistoricalReplayer(
                 store=store,
                 data_source="synthetic",
-                instrument_symbol=instrument_symbol or os.getenv("INSTRUMENT_SYMBOL", "BANKNIFTY26JANFUT"),
-                rebase=True,
-                rebase_to=start_date or datetime.now(),
+                instrument_symbol=instrument_symbol or resolve_instrument_symbol(),
+                rebase=should_rebase,
+                rebase_to=rebase_target,
+                start_date=start_date,
                 speed=replay_speed
             )
         else:
             # Treat as a file path or explicit data source
-            replay_speed = 10.0 if speed is None else float(speed)
+            replay_speed = (1.0 if data_source == "local" else 10.0) if speed is None else float(speed)
             return UnifiedHistoricalReplayer(
                 store=store,
                 data_source=data_source,
-                instrument_symbol=instrument_symbol or os.getenv("INSTRUMENT_SYMBOL", "BANKNIFTY26JANFUT"),
-                rebase=False,
+                instrument_symbol=instrument_symbol or resolve_instrument_symbol(),
+                rebase=(rebase_to_now and not use_virtual_time),
                 rebase_to=start_date or datetime.now(),
-                speed=replay_speed
+                speed=replay_speed,
+                start_date=start_date,
             )
 
 

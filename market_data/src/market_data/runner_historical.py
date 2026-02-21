@@ -12,7 +12,7 @@ import sys
 # Add paths
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from market_data.runtime import resolve_historical_replay_config, run_historical_replay
+from market_data.runtime import resolve_historical_replay_config, run_historical_replay, monitor_for_ticks
 
 
 def main() -> None:

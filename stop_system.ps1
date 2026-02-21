@@ -37,11 +37,14 @@ try {
     $rootNorm = $root.Replace('\\', '\\')
     $orphans = Get-CimInstance Win32_Process | Where-Object {
         $_.Name -eq 'python.exe' -and $_.CommandLine -and (
-            $_.CommandLine -like "*$rootNorm*" -or $_.CommandLine -like "*market_data*"
-        ) -and (
-            $_.CommandLine -like '*-m market_data.api_service*' -or
-            $_.CommandLine -like '*-m market_data.runner_historical*' -or
-            $_.CommandLine -like '*-m market_data.sources.websocket*' -or
+            (
+                ($_.CommandLine -like "*$rootNorm*" -or $_.CommandLine -like "*market_data*") -and (
+                    $_.CommandLine -like '*-m market_data.runner*' -or
+                    $_.CommandLine -like '*-m market_data.api_service*' -or
+                    $_.CommandLine -like '*-m market_data.runner_historical*' -or
+                    $_.CommandLine -like '*-m market_data.sources.websocket*'
+                )
+            ) -or
             $_.CommandLine -like '*start_dashboard.py*'
         )
     }

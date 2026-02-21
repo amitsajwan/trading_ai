@@ -19,9 +19,29 @@ import time
 from urllib.parse import unquote
 from dotenv import load_dotenv
 from typing import Optional, Dict, Any
+from market_data.kite_client import create_kite_client
 
-# Load environment variables from .env file
-load_dotenv()
+def _load_dotenv_candidates() -> None:
+    """Load env vars from common project .env locations, independent of cwd."""
+    if (os.environ.get("KITE_SKIP_DOTENV_LOAD") or "").strip() in ("1", "true", "yes"):
+        return
+    try:
+        here = Path(__file__).resolve()
+        candidates = [
+            Path.cwd() / ".env",
+            here.parents[4] / ".env",  # trading_ai/.env
+            here.parents[4] / "market_data" / ".env",
+        ]
+        for p in candidates:
+            if p.exists():
+                load_dotenv(dotenv_path=p, override=False)
+    except Exception:
+        # Keep auth flow resilient even if env-file discovery fails.
+        pass
+
+
+# Load environment variables at import time using stable paths.
+_load_dotenv_candidates()
 
 class CredentialsValidator:
     """Validates and manages Kite Connect credentials."""
@@ -47,8 +67,7 @@ class CredentialsValidator:
     def verify_credentials(api_key: str, access_token: str) -> bool:
         """Verify credentials by making a test API call."""
         try:
-            kite = KiteConnect(api_key=api_key)
-            kite.set_access_token(access_token)
+            kite = create_kite_client(api_key=api_key, access_token=access_token)
             # Test API call
             profile = kite.profile()
             print(f"Credentials verified for user: {profile.get('user_id')}")
@@ -74,8 +93,11 @@ def serialize_data(data):
     return data
 
 
-def start_http_server():
-    """Start a local HTTP server to capture the request_token."""
+def start_http_server(port: int = 5000):
+    """Start a local HTTP server to capture the request_token.
+
+    Uses a fixed callback port (default 5000) so Kite app redirect URI stays stable.
+    """
     class RequestHandler(http.server.BaseHTTPRequestHandler):
         def log_message(self, format, *args):
             # Suppress default logging
@@ -140,27 +162,25 @@ def start_http_server():
                 self.wfile.write(error_msg)
                 print(f"\n[WARNING] Failed to capture request_token from path: {self.path}")
 
-    # Try to find an available port (start with 5000, try others if needed)
-    port = 5000
-    max_attempts = 10
-    server = None
-    
-    for attempt in range(max_attempts):
+    configured_port = (os.environ.get("KITE_AUTH_CALLBACK_PORT") or "").strip()
+    if configured_port:
         try:
-            server = http.server.HTTPServer(("127.0.0.1", port), RequestHandler)
-            server.request_token = None
-            print(f"[OK] HTTP server started on http://127.0.0.1:{port}")
-            break
-        except OSError as e:
-            if "Address already in use" in str(e) or "address is already in use" in str(e).lower():
-                port += 1
-                if attempt < max_attempts - 1:
-                    print(f"[WARNING] Port {port-1} in use, trying {port}...")
-                    continue
-            raise
-    
-    if server is None:
-        raise RuntimeError(f"Could not start HTTP server on any port (tried {5000}-{5000+max_attempts-1})")
+            port = int(configured_port)
+        except ValueError:
+            raise RuntimeError(
+                f"Invalid KITE_AUTH_CALLBACK_PORT='{configured_port}'. Expected an integer port."
+            )
+
+    try:
+        server = http.server.HTTPServer(("127.0.0.1", port), RequestHandler)
+        server.request_token = None
+        print(f"[OK] HTTP server started on http://127.0.0.1:{port}")
+    except OSError as e:
+        raise RuntimeError(
+            f"Could not start HTTP server on 127.0.0.1:{port}. "
+            f"Ensure this port is free and set Kite redirect URI to http://127.0.0.1:{port}/login. "
+            f"Original error: {e}"
+        ) from e
 
     def run_server():
         server.serve_forever()
@@ -187,10 +207,31 @@ def login_via_browser(api_key: Optional[str] = None,
     - exit_code: 0 on success, non-zero on failure
     """
     # Resolve keys from environment if not provided
+    _load_dotenv_candidates()
     if api_key is None:
         api_key = os.environ.get("KITE_API_KEY")
     if api_secret is None:
         api_secret = os.environ.get("KITE_API_SECRET")
+
+    # Fallback: infer from local credentials.json when env isn't available.
+    if (not api_key or not api_secret):
+        try:
+            cred_candidates = [Path.cwd() / "credentials.json"]
+            configured_cred = (os.environ.get("KITE_CREDENTIALS_PATH") or "").strip()
+            if configured_cred:
+                cred_candidates.insert(0, Path(configured_cred))
+            for cp in cred_candidates:
+                if not cp.exists():
+                    continue
+                payload = json.loads(cp.read_text(encoding="utf-8-sig"))
+                if not api_key:
+                    api_key = payload.get("api_key") or payload.get("KITE_API_KEY")
+                if not api_secret:
+                    api_secret = payload.get("api_secret") or payload.get("KITE_API_SECRET")
+                if api_key and api_secret:
+                    break
+        except Exception:
+            pass
 
     if not api_key or not api_secret:
         print("Error: Please set KITE_API_KEY and KITE_API_SECRET as environment variables.")
@@ -228,7 +269,7 @@ def login_via_browser(api_key: Optional[str] = None,
     print("Starting Kite Connect authentication...")
 
     # Initialize KiteConnect
-    kite = KiteConnect(api_key=api_key)
+    kite = create_kite_client(api_key=api_key)
 
     # Start HTTP server to capture request_token
     server = start_http_server()

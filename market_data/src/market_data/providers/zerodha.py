@@ -8,14 +8,14 @@ except ImportError:
     KiteConnect = None
 
 from .base import ProviderBase
+from ..kite_client import create_kite_client
 
 
 class ZerodhaProvider(ProviderBase):
     def __init__(self, api_key: str, access_token: str):
         if not KiteConnect:
             raise RuntimeError("KiteConnect library not installed")
-        self.kite = KiteConnect(api_key=api_key)
-        self.kite.set_access_token(access_token)
+        self.kite = create_kite_client(api_key=api_key, access_token=access_token)
 
     @staticmethod
     def from_credentials_file(path: str = "credentials.json") -> Optional["ZerodhaProvider"]:

@@ -4,7 +4,9 @@ Canonical runtime guide for ingestion, replay, and API.
 
 For full system behavior (including dashboard + WS bridge), also read `../MODE_SYSTEM.md`.
 For quick command selection (live / real historical / mock), see `../README.md`.
+For explicit mode/source execution instructions, see `../RUN_MODES_GUIDE.md`.
 **For GenAI agent data integration**, see `../GENAI_AGENT_DATA_REFERENCE.md`.
+For stream topology and timestamp lineage, see `src/market_data/EVENT_DERIVATION_CONTRACT.md`.
 
 ## What this module provides
 
@@ -66,6 +68,8 @@ Interactive auth helper:
     python -m market_data.runner --mode historical --historical-source zerodha --historical-from 2026-02-11 --historical-speed 1
     ```
   - Or use helper script: `./stop_system.ps1; ./start_system.ps1 -Source historical -HistoricalSource zerodha -HistoricalFrom 2026-02-11 -HistoricalSpeed 1 -FreshStart`
+  - Now-like replay for a historical date (example 13 Feb 2026):
+    - `./stop_system.ps1; ./start_system.ps1 -Source historical -HistoricalSource zerodha -HistoricalFrom 2026-02-13 -HistoricalSpeed 1 -TimeSemantics rebase -FreshStart`
 - Live:
   - `./start_system.ps1 -Source kite`
 - Mock/dev:
@@ -92,6 +96,31 @@ Stop:
 
 - API: `http://127.0.0.1:8004/health`
 - Dashboard proxy health (if dashboard running): `http://127.0.0.1:8000/api/market-data/health`
+- Indicator metadata sample: `http://127.0.0.1:8004/api/v1/technical/indicators/{instrument}?timeframe=1min`
+
+Indicator metadata contract:
+
+- `indicator_timestamp`: when indicator was calculated
+- `indicator_source`: source/update path (`redis_cache`, `ohlc_recalculated`, `tick`, `candle`, etc.)
+- `indicator_stream`: transport stream (`Y2` snapshot, `LZ1` intrabar)
+- `indicator_update_type`: `candle`, `tick`, `batch_initialize`, `batch_recalculate`
+- `bars_available`: bars currently available for the timeframe
+- `warmup_requirements`: minimum bars map used by indicator warm-up logic
+- Use these fields for recency/provenance instead of custom freshness flags
+
+## Technical indicator warm-up matrix
+
+| Indicator | Minimum bars | First non-null expectation | Publish trigger |
+|---|---:|---|---|
+| RSI(14) | 14 | after 14 closed bars | candle-close / batch |
+| MACD | 26 | after 26 closed bars | candle-close / batch |
+| Bollinger(20) | 20 | after 20 closed bars | candle-close / batch |
+| CCI(20) | 20 | after 20 closed bars | candle-close / batch |
+| Stoch(14) | 14 | after 14 closed bars | candle-close / batch |
+| ATR(14) | 14 | after 14 closed bars | candle-close / batch |
+| MFI(14) | 14 | after 14 bars with usable volume | candle-close / batch |
+| ROC(12) | 12 | after 12 closed bars | candle-close / batch |
+| Momentum(10) | 10 | after 10 closed bars | candle-close / batch |
 
 ## Runtime environment variables
 
@@ -137,9 +166,12 @@ Check logs:
 
 - verify instrument is present in Redis with `historical:ohlc_sorted:*` (e.g., `historical:ohlc_sorted:BANKNIFTY26MARFUT:1min`)
 - 5m charts need the first five 1m candles to populate; initial `No OHLC data found ...:5min` is expected until ~5 bars are stored
-- verify dashboard can connect to `/ws`
+- verify dashboard can connect to `ws://127.0.0.1:8000/ws` (full-stack canonical)
+- ensure clients are not pointing to `ws://localhost:8889/ws` (not used by this stack)
 - verify Redis pub/sub channels (`market:ohlc:*`) are active
 - if OI indicators throw numba typing errors, update to latest code (pandas fallbacks) and restart
+
+Note: dashboard UI does not auto-fallback to REST polling on repeated websocket failures; it reports websocket unavailable until reconnect/manual refresh.
 
 ### Charts move but technical indicator cards stay `--`
 
@@ -155,4 +187,4 @@ Checks:
 
 ---
 
-Last updated: 2026-02-12
+Last updated: 2026-02-13

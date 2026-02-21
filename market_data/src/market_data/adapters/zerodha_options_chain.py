@@ -7,7 +7,10 @@ This adapter provides options chain data by using:
 - Works for both live trading and historical backtesting
 """
 
+import asyncio
 import logging
+import os
+import re
 from typing import Optional, Dict, Any, List
 from datetime import datetime, date, timedelta
 import pandas as pd
@@ -51,11 +54,38 @@ class ZerodhaOptionsChainAdapter(OptionsData):
             use_live_quotes: If True, use kite.quote() for real-time bid/ask. If False, use kite.ltp() for last traded price.
         """
         self.kite = kite
-        self.instrument_symbol = instrument_symbol.upper()
+        # Normalize contracts like BANKNIFTY26MARFUT to underlying (BANKNIFTY).
+        self.instrument_symbol = self._extract_underlying_symbol(instrument_symbol.upper())
         self.use_live_quotes = use_live_quotes
         self._instruments_df: Optional[pd.DataFrame] = None
         self._options_df: Optional[pd.DataFrame] = None
         self._last_prices: Dict[str, Dict] = {}
+        self._last_initialize_error: Optional[str] = None
+        self._last_initialize_attempt_at: Optional[datetime] = None
+        self._initialize_retry_cooldown_seconds = int(
+            os.getenv("OPTIONS_INIT_RETRY_COOLDOWN_SECONDS", "60")
+        )
+
+    def _retry_initialize_allowed(self) -> bool:
+        """Rate-limit costly instruments initialization retries on repeated failures."""
+        if self._last_initialize_attempt_at is None:
+            return True
+        elapsed = (datetime.utcnow() - self._last_initialize_attempt_at).total_seconds()
+        return elapsed >= max(1, self._initialize_retry_cooldown_seconds)
+
+    @staticmethod
+    def _normalized_execution_mode() -> str:
+        mode = (
+            os.getenv("EXECUTION_MODE")
+            or os.getenv("TRADING_MODE")
+            or os.getenv("ZERODHA_MODE")
+            or os.getenv("MODE")
+            or "LIVE"
+        )
+        mode = str(mode).strip().upper()
+        if mode in {"LIVE", "HISTORICAL"}:
+            return mode
+        return "LIVE"
     
     def _extract_underlying_symbol(self, symbol: str) -> str:
         """Extract underlying symbol from futures/options contract.
@@ -73,7 +103,6 @@ class ZerodhaOptionsChainAdapter(OptionsData):
             if suffix in symbol_upper:
                 # Find the position and extract everything before it
                 # Also remove date pattern like 26FEB, 27JAN, etc.
-                import re
                 # Match pattern: SYMBOL + DATE (YYMMMDD or YYMM) + TYPE (FUT/CE/PE)
                 match = re.match(r'^([A-Z]+)\d{2}[A-Z]{3}', symbol_upper)
                 if match:
@@ -92,12 +121,27 @@ class ZerodhaOptionsChainAdapter(OptionsData):
             logger.info(f"Initializing ZerodhaOptionsChainAdapter for {self.instrument_symbol}")
 
             if self.kite is None:
+                self._last_initialize_error = "No kite client provided"
                 logger.warning("No kite client provided, using empty instruments")
                 return
 
+            if not self._retry_initialize_allowed():
+                remaining = int(
+                    self._initialize_retry_cooldown_seconds
+                    - (datetime.utcnow() - self._last_initialize_attempt_at).total_seconds()
+                )
+                logger.info(
+                    "Skipping NFO instruments refresh for %s due to retry cooldown (%ss remaining)",
+                    self.instrument_symbol,
+                    max(0, remaining),
+                )
+                return
+
+            self._last_initialize_attempt_at = datetime.utcnow()
+
             # Download all NFO instruments
             logger.info("Downloading NFO instruments...")
-            instruments = self.kite.instruments("NFO")
+            instruments = await asyncio.to_thread(self.kite.instruments, "NFO")
 
             # Convert to DataFrame for easier filtering
             self._instruments_df = pd.DataFrame(instruments)
@@ -113,6 +157,7 @@ class ZerodhaOptionsChainAdapter(OptionsData):
                 logger.warning(f"Zerodha instruments dataframe missing expected columns, falling back to empty: {e}")
                 self._instruments_df = pd.DataFrame()
                 self._options_df = pd.DataFrame()
+                self._last_initialize_error = f"Invalid instruments dataframe: {e}"
                 return
 
             logger.info(f"Filtered {len(self._options_df)} {self.instrument_symbol} options")
@@ -128,11 +173,15 @@ class ZerodhaOptionsChainAdapter(OptionsData):
                 # Get strike range
                 strikes = sorted(self._options_df['strike'].unique())
                 logger.info(f"Strike range: {strikes[0]} - {strikes[-1]} (interval: {strikes[1] - strikes[0] if len(strikes) > 1 else 'N/A'})")
+                self._last_initialize_error = None
+            else:
+                self._last_initialize_error = f"No options contracts found for {self.instrument_symbol}"
 
         except Exception as e:
             logger.warning(f"Failed to initialize Zerodha options chain (falling back to empty): {e}")
             self._instruments_df = pd.DataFrame()
             self._options_df = pd.DataFrame()
+            self._last_initialize_error = str(e)
             return
 
     async def fetch_options_chain(self, instrument: Optional[str] = None, expiry: Optional[str] = None,
@@ -152,12 +201,20 @@ class ZerodhaOptionsChainAdapter(OptionsData):
                     await self.initialize()
                 else:
                     return self._create_empty_response("No kite client available for initialization")
+                if self._options_df is None or len(self._options_df) == 0:
+                    reason = self._last_initialize_error or f"No options found for {target_instrument}"
+                    return self._create_empty_response(reason)
 
             # Filter options for underlying symbol (not the futures contract)
             options_df = self._options_df
             if underlying_symbol.upper() != self.instrument_symbol:
                 # If different instrument requested, filter from main instruments
                 if self._instruments_df is not None:
+                    required_cols = {"name", "instrument_type"}
+                    if not required_cols.issubset(set(self._instruments_df.columns)):
+                        return self._create_empty_response(
+                            f"Instruments cache missing columns {sorted(required_cols)}"
+                        )
                     options_df = self._instruments_df[
                         (self._instruments_df["name"] == underlying_symbol.upper()) &
                         (self._instruments_df["instrument_type"].isin(["CE", "PE"]))
@@ -165,7 +222,7 @@ class ZerodhaOptionsChainAdapter(OptionsData):
                 else:
                     return self._create_empty_response(f"No data for {underlying_symbol}")
 
-            if len(options_df) == 0:
+            if options_df is None or len(options_df) == 0:
                 return self._create_empty_response(f"No options found for {target_instrument}")
 
             # Select expiry
@@ -201,7 +258,7 @@ class ZerodhaOptionsChainAdapter(OptionsData):
                     else:
                         spot_symbol = f"NSE:{underlying_symbol}"
 
-                    spot_data = self.kite.ltp([spot_symbol])
+                    spot_data = await asyncio.to_thread(self.kite.ltp, [spot_symbol])
                     if spot_data and spot_symbol in spot_data:
                         underlying_price = spot_data[spot_symbol].get('last_price')
                         logger.info(f"Using underlying price {underlying_price} for {underlying_symbol}")
@@ -209,7 +266,13 @@ class ZerodhaOptionsChainAdapter(OptionsData):
                 logger.warning(f"Could not get underlying price for IV calculations: {e}")
 
             # Organize by strikes and calculate IV/Greeks
-            strikes_data = self._organize_by_strikes(expiry_options, price_data, underlying_price)
+            execution_mode = self._normalized_execution_mode()
+            strikes_data = self._organize_by_strikes(
+                expiry_options,
+                price_data,
+                underlying_price,
+                execution_mode=execution_mode,
+            )
 
             return {
                 "available": True,
@@ -251,12 +314,12 @@ class ZerodhaOptionsChainAdapter(OptionsData):
                 try:
                     if self.use_live_quotes:
                         # Use quote() for real-time bid/ask prices (live trading)
-                        batch_quotes = self.kite.quote(batch)
+                        batch_quotes = await asyncio.to_thread(self.kite.quote, batch)
                         all_price_data.update(batch_quotes)
                         logger.debug(f"Fetched live quotes for {len(batch)} contracts")
                     else:
                         # Use ltp() for last traded price (works after hours, historical)
-                        batch_ltp = self.kite.ltp(batch)
+                        batch_ltp = await asyncio.to_thread(self.kite.ltp, batch)
                         all_price_data.update(batch_ltp)
                         logger.debug(f"Fetched LTP for {len(batch)} contracts")
                 except Exception as e:
@@ -309,8 +372,13 @@ class ZerodhaOptionsChainAdapter(OptionsData):
             else:
                 raise ValueError(f"Failed to fetch LTP from Zerodha API: {e}")
 
-    def _organize_by_strikes(self, options_df: pd.DataFrame, price_data: Dict[str, Dict],
-                           underlying_price: float = None) -> List[Dict]:
+    def _organize_by_strikes(
+        self,
+        options_df: pd.DataFrame,
+        price_data: Dict[str, Dict],
+        underlying_price: float = None,
+        execution_mode: str = "LIVE",
+    ) -> List[Dict]:
         """Organize options data by strike prices and calculate IV/Greeks."""
 
         strikes_data = []
@@ -349,24 +417,13 @@ class ZerodhaOptionsChainAdapter(OptionsData):
                             T = time_to_expiry(expiry_str)
                             
                             if T > 0:
-                                # Determine execution mode for context-aware calculations
-                                execution_mode = "LIVE"  # Default assumption
-                                try:
-                                    import redis
-                                    r = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
-                                    mode = r.get("system:execution_mode") or "LIVE"
-                                    if mode in ["LIVE", "HISTORICAL"]:
-                                        execution_mode = mode
-                                except Exception:
-                                    pass  # Keep default LIVE mode
-
                                 option_metrics = calculate_option_metrics(
                                     market_price=market_price,
                                     S=underlying_price,
                                     K=float(strike),
                                     T=T,
                                     option_type=option_type.lower(),
-                                    mode=execution_mode,
+                                    mode=execution_mode if execution_mode in {"LIVE", "HISTORICAL"} else "LIVE",
                                     data_timestamp=price_info.get('timestamp')
                                 )
                         except Exception as e:
@@ -427,12 +484,13 @@ class ZerodhaOptionsChainAdapter(OptionsData):
             from_date_obj = date.fromisoformat(from_date)
             to_date_obj = date.fromisoformat(to_date)
 
-            data = self.kite.historical_data(
+            data = await asyncio.to_thread(
+                self.kite.historical_data,
                 instrument_token=instrument_token,
                 from_date=from_date_obj,
                 to_date=to_date_obj,
                 interval=interval,
-                oi=True
+                oi=True,
             )
 
             return data

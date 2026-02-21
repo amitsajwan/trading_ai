@@ -14,6 +14,7 @@ import logging
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
 from datetime import datetime, timedelta
+from market_data.kite_client import create_kite_client
 
 # Configure logging
 logging.basicConfig(
@@ -76,6 +77,7 @@ class AuthStartup:
         try:
             access_token = creds.get('access_token') or creds.get('data', {}).get('access_token')
             login_time = creds.get('login_time') or creds.get('data', {}).get('login_time')
+            token_fresh = False
 
             if not access_token:
                 logger.warning("⚠️ No access token found in credentials")
@@ -95,19 +97,18 @@ class AuthStartup:
                         return False
                     else:
                         logger.info(f"✅ Token age check passed ({age})")
+                        token_fresh = True
                 except Exception as e:
                     logger.warning(f"⚠️ Could not parse login_time: {e}")
 
             # Try API validation with KiteConnect
             try:
-                from kiteconnect import KiteConnect
                 api_key = creds.get('api_key') or self.api_key
                 if not api_key:
                     logger.error("❌ No API key available for validation")
                     return False
                 
-                kite = KiteConnect(api_key=api_key)
-                kite.set_access_token(access_token)
+                kite = create_kite_client(api_key=api_key, access_token=access_token)
                 profile = kite.profile()
                 
                 if profile:
@@ -122,6 +123,19 @@ class AuthStartup:
                 logger.warning("⚠️ KiteConnect not available; cannot validate token")
                 return False
             except Exception as e:
+                msg = str(e).lower()
+                if token_fresh and (
+                    "httpsconnectionpool" in msg
+                    or "ssleoferror" in msg
+                    or "unexpected_eof_while_reading" in msg
+                    or "max retries exceeded" in msg
+                    or "temporarily unavailable" in msg
+                ):
+                    logger.warning(
+                        "⚠️ Token validation skipped due to network/SSL issue, keeping fresh token as valid: %s",
+                        e,
+                    )
+                    return True
                 logger.error(f"❌ Token validation error: {e}")
                 return False
 
@@ -192,7 +206,7 @@ class AuthStartup:
             logger.error(f"❌ Interactive login error: {e}")
             return False
 
-    def startup_check(self) -> Tuple[bool, str]:
+    def startup_check(self, allow_interactive: bool = True) -> Tuple[bool, str]:
         """
         Perform complete authentication check at startup.
         
@@ -235,6 +249,10 @@ class AuthStartup:
                 self.save_credentials(env_creds)
                 return True, "Authenticated via environment variables"
         
+        if not allow_interactive:
+            logger.warning("⚠️ Interactive login disabled for this startup check")
+            return False, "No valid credentials in non-interactive mode"
+
         # Step 4: Interactive login required
         logger.info("\n🔄 Step 4: Interactive login required...")
         logger.info("   🌐 Opening browser for Zerodha authentication...")
