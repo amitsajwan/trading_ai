@@ -439,7 +439,6 @@ export interface AgentMemoryItem {
 }
 
 const ENGINE_BASE = ''
-const DASHBOARD_BASE = ''
 
 function extractSignalsFromPayload(payload: any): any[] {
   if (Array.isArray(payload)) return payload
@@ -565,7 +564,7 @@ export const toggleOptionsAlgo = createAsyncThunk(
 
 export const fetchSignals = createAsyncThunk(
   'trading/fetchSignals',
-  async (instrument?: string, { rejectWithValue }) => {
+  async (instrument: string | undefined, { rejectWithValue }) => {
     try {
       const requestedInstrument = (instrument || '').trim().toUpperCase()
       let runtimeInstrument = requestedInstrument
@@ -677,7 +676,7 @@ export const fetchOptionsStrategy = createAsyncThunk(
 
 export const executeOptionsStrategy = createAsyncThunk(
   'trading/executeOptionsStrategy',
-  async (strategyData?: any, { rejectWithValue }) => {
+  async (strategyData: any, { rejectWithValue }) => {
     try {
       const response = await axios.post(`${ENGINE_BASE}/api/options-strategy-execute`, strategyData || {})
       return response.data

@@ -122,38 +122,6 @@ function Wait-PortListening {
     return $false
 }
 
-function Get-ProcessTreeIds {
-    param([Parameter(Mandatory = $true)][int]$RootProcessId)
-
-    $all = @()
-    $seen = New-Object 'System.Collections.Generic.HashSet[int]'
-    $queue = New-Object 'System.Collections.Generic.Queue[int]'
-    $queue.Enqueue($RootProcessId)
-
-    while ($queue.Count -gt 0) {
-        $current = [int]$queue.Dequeue()
-        if ($seen.Contains($current)) {
-            continue
-        }
-        $null = $seen.Add($current)
-        $all += $current
-
-        try {
-            $children = Get-CimInstance Win32_Process -Filter ("ParentProcessId = {0}" -f $current) -ErrorAction SilentlyContinue |
-                Select-Object -ExpandProperty ProcessId
-            foreach ($child in @($children)) {
-                if ($child) {
-                    $queue.Enqueue([int]$child)
-                }
-            }
-        } catch {
-            # Best effort.
-        }
-    }
-
-    return $all
-}
-
 function Get-PortOwnerIds {
     param([Parameter(Mandatory = $true)][int]$Port)
     try {
